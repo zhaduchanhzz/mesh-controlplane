@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	apiv2 "github.com/juanfont/headscale/hscontrol/api/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v2"
 )
 
 // The probe-* recordings cited here are raw captures of the live Tailscale

@@ -16,12 +16,12 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/hashicorp/golang-lru/v2/expirable"
-	"github.com/juanfont/headscale/hscontrol/db"
-	"github.com/juanfont/headscale/hscontrol/templates"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/change"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/templates"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"golang.org/x/oauth2"
 	"tailscale.com/util/rands"
 )

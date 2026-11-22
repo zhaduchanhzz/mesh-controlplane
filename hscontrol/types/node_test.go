@@ -11,10 +11,10 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/juanfont/headscale/hscontrol/policy/matcher"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/matcher"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"pgregory.net/rapid"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/tailcfg"

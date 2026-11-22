@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strconv"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/spf13/cobra"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 )
 
 const (

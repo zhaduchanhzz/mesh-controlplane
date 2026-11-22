@@ -6,9 +6,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/policy/matcher"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/matcher"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"go4.org/netipx"
 	"pgregory.net/rapid"
 	"tailscale.com/tailcfg"

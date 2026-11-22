@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/juanfont/headscale/hscontrol/capver"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/capver"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )

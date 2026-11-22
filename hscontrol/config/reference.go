@@ -8,8 +8,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	hsdns "github.com/juanfont/headscale/hscontrol/dns"
-	"github.com/juanfont/headscale/hscontrol/types"
+	hsdns "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"go.yaml.in/yaml/v3"
 )
 

@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/change"
-	"github.com/juanfont/headscale/hscontrol/util/zlog/zf"
 	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/set"
 )

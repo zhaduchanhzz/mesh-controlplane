@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/rs/zerolog"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 )
 
 // Parse errors of the value types below are *ConfigError without the key;

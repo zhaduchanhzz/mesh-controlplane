@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
-	"github.com/juanfont/headscale/integration/hsic"
-	"github.com/juanfont/headscale/integration/integrationutil"
-	"github.com/juanfont/headscale/integration/tsic"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/hsic"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/integrationutil"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/tsic"
 )
 
 // TestAPIAuthenticationBypass tests that the API authentication middleware

@@ -14,15 +14,15 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
-	"github.com/juanfont/headscale/hscontrol"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
-	"github.com/juanfont/headscale/hscontrol/util/zlog/zf"
 	"github.com/prometheus/common/model"
 	"github.com/pterm/pterm"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
 	"gopkg.in/yaml.v3"
 )
 

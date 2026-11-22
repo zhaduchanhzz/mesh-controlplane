@@ -11,8 +11,8 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 	"github.com/fsnotify/fsnotify"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/set"
 )

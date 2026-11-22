@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/tailcfg"
 )
 

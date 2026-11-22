@@ -3,8 +3,8 @@ package types
 import (
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/stretchr/testify/assert"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 )
 
 // TestNodeIsTagged tests the [Node.IsTagged] method for determining if a node is tagged.

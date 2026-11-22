@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/db/sqliteconfig"
 	"github.com/stretchr/testify/require"
 	"github.com/tailscale/tailsql/server/tailsql"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/sqliteconfig"
 )
 
 // TestTailSQLReadOnly runs what a tailsql user could send through the same

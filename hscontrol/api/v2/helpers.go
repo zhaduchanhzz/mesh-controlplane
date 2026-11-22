@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 )
 
 // emptyIfNil ensures a slice serializes as [] rather than null, which the

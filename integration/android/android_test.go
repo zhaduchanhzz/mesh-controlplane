@@ -16,14 +16,14 @@ import (
 	"testing"
 	"time"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
-	"github.com/juanfont/headscale/integration"
-	"github.com/juanfont/headscale/integration/androidic"
-	"github.com/juanfont/headscale/integration/dockertestutil"
-	"github.com/juanfont/headscale/integration/hsic"
-	"github.com/juanfont/headscale/integration/tsic"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/androidic"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/dockertestutil"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/hsic"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/tsic"
 	"tailscale.com/tailcfg"
 )
 

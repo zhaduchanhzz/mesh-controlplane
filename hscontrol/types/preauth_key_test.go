@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 )
 
 func TestCanUsePreAuthKey(t *testing.T) {

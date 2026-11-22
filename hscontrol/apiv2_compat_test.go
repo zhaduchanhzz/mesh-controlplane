@@ -4,7 +4,7 @@
 // Test data source: servertest/testdata/steps/{oauth,policy-api,key-list,key-expiry}.hujson,
 // loaded by name. oauth's late joins are also replayed with real clients by
 // TestAPIv2OAuthClientDeleteCompat in servertest.
-// Source format:    github.com/juanfont/headscale/hscontrol/types/testcapture
+// Source format:    github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture
 
 package hscontrol
 
@@ -25,13 +25,13 @@ import (
 	"testing"
 	"time"
 
-	apiv2 "github.com/juanfont/headscale/hscontrol/api/v2"
-	"github.com/juanfont/headscale/hscontrol/mapper"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tailscale/hujson"
+	apiv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/mapper"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )

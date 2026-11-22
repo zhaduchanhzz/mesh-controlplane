@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/db"
-	"github.com/juanfont/headscale/hscontrol/derp"
-	"github.com/juanfont/headscale/hscontrol/policy"
-	"github.com/juanfont/headscale/hscontrol/state"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/change"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/derp"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netmap"
 )
@@ -2263,7 +2263,7 @@ func TestMapSessionOverlapLimitConcurrent(t *testing.T) {
 func waitInitialMapSendParked(t *testing.T) {
 	t.Helper()
 
-	const addNode = "github.com/juanfont/headscale/hscontrol/mapper.(*Batcher).AddNode("
+	const addNode = "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/mapper.(*Batcher).AddNode("
 
 	buf := make([]byte, 1<<22)
 

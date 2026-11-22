@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"os"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
-	"github.com/juanfont/headscale/hscontrol/config"
-	"github.com/juanfont/headscale/hscontrol/db"
-	"github.com/juanfont/headscale/hscontrol/policy"
 	"github.com/spf13/cobra"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy"
 )
 
 const (

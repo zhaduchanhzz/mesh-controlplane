@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/change"
-	"github.com/juanfont/headscale/hscontrol/util/zlog/zf"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
 	"tailscale.com/tailcfg"
 )
 

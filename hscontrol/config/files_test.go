@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	policyv2 "github.com/juanfont/headscale/hscontrol/policy/v2"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/libdns/cloudflare"
 	"github.com/stretchr/testify/require"
+	policyv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/types/key"
 )
 

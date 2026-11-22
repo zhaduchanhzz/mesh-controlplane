@@ -15,10 +15,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/juanfont/headscale/integration/dockertestutil"
-	"github.com/juanfont/headscale/integration/integrationutil"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/dockertestutil"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/integrationutil"
 	"tailscale.com/util/rands"
 )
 

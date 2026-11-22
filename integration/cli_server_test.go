@@ -3,10 +3,10 @@ package integration
 import (
 	"testing"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // TestServerInfoCommands covers the standalone server/info commands that do not

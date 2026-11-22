@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	hscontrol "github.com/juanfont/headscale/hscontrol"
-	"github.com/juanfont/headscale/hscontrol/config"
-	hsdns "github.com/juanfont/headscale/hscontrol/dns"
-	"github.com/juanfont/headscale/hscontrol/state"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/change"
+	hscontrol "github.com/zhaduchanhzz/mesh-controlplane/hscontrol"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	hsdns "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
 	"tailscale.com/net/memnet"
 	"tailscale.com/tailcfg"
 )

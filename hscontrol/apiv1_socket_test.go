@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
 )
 
 // TestAPIV1SocketClient proves the CLI's local transport: the Huma handler over

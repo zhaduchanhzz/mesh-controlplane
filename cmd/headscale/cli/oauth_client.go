@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	clientv2 "github.com/juanfont/headscale/gen/client/v2"
 	"github.com/spf13/cobra"
+	clientv2 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v2"
 )
 
 // oauthTailnet is the single Headscale tailnet the v2 API addresses as "-".

@@ -4,7 +4,7 @@
 // routes, DNS, policy and SSH change.
 //
 // Test data source: testdata/steps/expiry.hujson, loaded by name.
-// Source format:    github.com/juanfont/headscale/hscontrol/types/testcapture
+// Source format:    github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture
 
 package servertest_test
 
@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/servertest"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netmap"
 )

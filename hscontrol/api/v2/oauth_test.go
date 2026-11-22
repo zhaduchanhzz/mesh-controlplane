@@ -3,8 +3,8 @@ package apiv2
 import (
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // TestNarrowTagsRejectsMalformed asserts the token endpoint validates tag

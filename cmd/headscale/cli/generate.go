@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"net/http"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
 
-	"github.com/juanfont/headscale/hscontrol/config"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/spf13/cobra"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/types/key"
 )
 

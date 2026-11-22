@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/tailcfg"
 )
 

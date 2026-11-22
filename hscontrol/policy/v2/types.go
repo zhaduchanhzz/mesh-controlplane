@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/go-json-experiment/json"
-	"github.com/juanfont/headscale/hscontrol/derp"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/tailscale/hujson"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/derp"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"go4.org/netipx"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/tailcfg"

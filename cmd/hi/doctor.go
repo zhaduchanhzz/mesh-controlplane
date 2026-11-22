@@ -9,8 +9,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/juanfont/headscale/integration/dockertestutil"
-	"github.com/juanfont/headscale/integration/k3sic"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/dockertestutil"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/k3sic"
 )
 
 const (

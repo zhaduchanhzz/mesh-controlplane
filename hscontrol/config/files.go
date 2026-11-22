@@ -11,10 +11,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/juanfont/headscale/hscontrol/derp"
-	"github.com/juanfont/headscale/hscontrol/dns"
-	policyv2 "github.com/juanfont/headscale/hscontrol/policy/v2"
-	"github.com/juanfont/headscale/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/derp"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns"
+	policyv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/types/key"
 )
 

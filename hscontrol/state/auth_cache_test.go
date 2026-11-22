@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 func newTestAuthCache(t *testing.T, maxEntries int, ttl time.Duration) *expirable.LRU[types.AuthID, *types.AuthRequest] {

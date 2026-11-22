@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/servertest"
-	"github.com/juanfont/headscale/hscontrol/types/change"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netmap"
 )

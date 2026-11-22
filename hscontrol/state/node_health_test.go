@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/db"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 func TestGivenNameMapsToValidFQDNCheck(t *testing.T) {

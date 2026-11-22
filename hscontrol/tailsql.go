@@ -9,12 +9,12 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/db/sqliteconfig"
-	"github.com/juanfont/headscale/hscontrol/state"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/rs/zerolog/log"
 	"github.com/tailscale/tailsql/authorizer"
 	"github.com/tailscale/tailsql/server/tailsql"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/sqliteconfig"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"tailscale.com/net/netx"
 )
 

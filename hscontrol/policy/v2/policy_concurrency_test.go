@@ -6,9 +6,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // TestPolicyManagerConcurrentReads is the correctness guard for the #3346 fix:

@@ -3,9 +3,9 @@ package state
 import (
 	"fmt"
 
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util/zlog/zf"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
 )
 
 // nodeHealthCheck names a class of stored-node-data defect that breaks normal

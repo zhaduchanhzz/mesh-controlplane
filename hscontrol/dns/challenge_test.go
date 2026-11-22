@@ -8,10 +8,10 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/dns/dnstest"
 	"github.com/libdns/libdns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns/dnstest"
 )
 
 const (

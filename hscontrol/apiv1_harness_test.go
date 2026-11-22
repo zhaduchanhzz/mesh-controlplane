@@ -15,9 +15,9 @@ import (
 	"time"
 	"unicode"
 
-	apiv1 "github.com/juanfont/headscale/hscontrol/api/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiv1 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v1"
 )
 
 // apiV1Harness drives a request through the Huma service and compares the result

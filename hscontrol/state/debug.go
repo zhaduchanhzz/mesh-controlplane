@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	hsdb "github.com/juanfont/headscale/hscontrol/db"
-	"github.com/juanfont/headscale/hscontrol/types"
+	hsdb "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/tailcfg"
 )
 

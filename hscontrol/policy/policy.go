@@ -4,10 +4,10 @@ import (
 	"net/netip"
 	"slices"
 
-	"github.com/juanfont/headscale/hscontrol/policy/matcher"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/matcher"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"tailscale.com/util/set"
 )
 

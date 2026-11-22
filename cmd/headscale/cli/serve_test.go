@@ -14,12 +14,12 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/juanfont/headscale/hscontrol/config"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 var errClassifierUnrelated = errors.New("not a bind error")

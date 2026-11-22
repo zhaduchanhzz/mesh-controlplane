@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"tailscale.com/tailcfg"
 )
 

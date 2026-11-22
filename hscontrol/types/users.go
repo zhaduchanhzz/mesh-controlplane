@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/util"
-	"github.com/juanfont/headscale/hscontrol/util/zlog/zf"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
 	"gorm.io/gorm"
 	"tailscale.com/tailcfg"
 )

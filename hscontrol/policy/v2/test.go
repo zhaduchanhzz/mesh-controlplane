@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/go-json-experiment/json"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"go4.org/netipx"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/views"

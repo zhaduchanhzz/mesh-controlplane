@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tailcfg/peercap"
 	"tailscale.com/types/views"

@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/spf13/cobra"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 func init() {

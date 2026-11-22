@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/integration/hsic"
-	"github.com/juanfont/headscale/integration/tsic"
-	"github.com/juanfont/headscale/integration/tsric"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/hsic"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/tsic"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/tsric"
 )
 
 // TestTailscaleRustAxum tests that the tailscale-rs axum example can join a

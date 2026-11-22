@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/assets"
-	"github.com/juanfont/headscale/hscontrol/templates"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util/zlog/zf"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/assets"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/templates"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/truncate"
 )

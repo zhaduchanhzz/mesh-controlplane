@@ -14,11 +14,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
-	"github.com/juanfont/headscale/integration/dockertestutil"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/dockertestutil"
 	"tailscale.com/tailcfg"
 )
 

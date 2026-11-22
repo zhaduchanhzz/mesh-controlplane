@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/servertest"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	tsclient "tailscale.com/client/tailscale/v2"
 )
 

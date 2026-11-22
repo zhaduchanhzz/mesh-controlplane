@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
 	"go.yaml.in/yaml/v3"
 )
 

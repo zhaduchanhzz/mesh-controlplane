@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/juanfont/headscale/hscontrol/config"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 )
 
 func init() {
