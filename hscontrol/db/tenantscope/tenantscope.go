@@ -13,6 +13,12 @@
 //     tenant's primary key can never rewrite or adopt that tenant's row.
 //   - A statement on a tenant table without a scope fails with
 //     tailnet.ErrNoScope before reaching the database.
+//   - Every INSERT/UPDATE/DELETE on a tenant table is fenced (I12): inside
+//     the statement's own transaction the tailnets row is read (FOR SHARE on
+//     PostgreSQL, so an ownership move waits for writers in flight) and its
+//     owner_cluster_id/owner_epoch must equal the tailnet.Fence of the
+//     context. A different owner or epoch fails with ErrFenced; a mutation
+//     without a fence fails with ErrNoFence.
 //
 // Tables without the column are untouched. Raw SQL (db.Raw / db.Exec) is not
 // parsed and must be reviewed by hand; see evidence/source-inventory-P03b.md.
@@ -36,9 +42,16 @@ const (
 	name      = "tenantscope"
 )
 
-// ErrForeignTenant reports a write whose row names a different tailnet than
-// the statement's scope.
-var ErrForeignTenant = errors.New("row belongs to another tailnet")
+var (
+	// ErrForeignTenant reports a write whose row names a different tailnet
+	// than the statement's scope.
+	ErrForeignTenant = errors.New("row belongs to another tailnet")
+	// ErrFenced reports a write by a process that no longer owns the tailnet
+	// (another cluster, or a newer owner_epoch). The write is rolled back.
+	ErrFenced = errors.New("tailnet ownership fence failed: owned by another cluster or epoch")
+	// ErrNoFence reports a write to tenant data without an ownership fence.
+	ErrNoFence = errors.New("tenant write without an ownership fence")
+)
 
 // Register installs the plugin's callbacks on db.
 func Register(db *gorm.DB) error {
@@ -50,6 +63,13 @@ func Register(db *gorm.DB) error {
 		cb.Update().Before("gorm:update").Register(name+":update", scopeMutation),
 		cb.Delete().Before("gorm:delete").Register(name+":delete", scopeMutation),
 		cb.Create().Before("gorm:create").Register(name+":create", stampCreate),
+		// After the scope callbacks, inside the default transaction.
+		cb.Create().After(name+":create").After("gorm:begin_transaction").Before("gorm:create").
+			Register(name+":fence_create", checkFence),
+		cb.Update().After(name+":update").After("gorm:begin_transaction").Before("gorm:update").
+			Register(name+":fence_update", checkFence),
+		cb.Delete().After(name+":delete").After("gorm:begin_transaction").Before("gorm:delete").
+			Register(name+":fence_delete", checkFence),
 	}
 
 	return errors.Join(steps...)
@@ -231,4 +251,46 @@ func confineUpsert(db *gorm.DB, f *schema.Field, id tailnet.ID) {
 	oc.Where.Exprs = append(oc.Where.Exprs, whereTailnet(db, f, id))
 	c.Expression = oc
 	db.Statement.Clauses["ON CONFLICT"] = c
+}
+
+// checkFence verifies, in the statement's transaction, that the fence of the
+// context still owns the scope's tailnet.
+func checkFence(db *gorm.DB) {
+	if db.Error != nil || tenantField(db) == nil {
+		return
+	}
+
+	s, ok := scopeOf(db)
+	if !ok {
+		return
+	}
+
+	f, ok := tailnet.FenceFromContext(db.Statement.Context)
+	if !ok {
+		_ = db.AddError(ErrNoFence)
+
+		return
+	}
+
+	q := `SELECT owner_cluster_id, owner_epoch FROM tailnets WHERE id = ?`
+	if db.Dialector.Name() == "postgres" {
+		q = `SELECT owner_cluster_id, owner_epoch FROM tailnets WHERE id = $1 FOR SHARE`
+	}
+
+	var (
+		owner string
+		epoch int64
+	)
+
+	err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, q, s.ID().String()).Scan(&owner, &epoch)
+	if err != nil {
+		_ = db.AddError(fmt.Errorf("%w: reading owner of %s: %w", ErrFenced, s.ID(), err))
+
+		return
+	}
+
+	if owner != f.Cluster() || epoch < 0 || tailnet.Epoch(epoch) != f.Epoch() {
+		_ = db.AddError(fmt.Errorf("%w: tailnet %s is owned by %q at epoch %d, writer holds %q at epoch %d",
+			ErrFenced, s.ID(), owner, epoch, f.Cluster(), f.Epoch()))
+	}
 }

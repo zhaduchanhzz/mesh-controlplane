@@ -37,6 +37,21 @@ type item struct {
 	Name      string
 }
 
+// tailnetRow is the platform table the fence reads (no tailnet_id column, so
+// the plugin itself does not scope it).
+type tailnetRow struct {
+	ID             string `gorm:"primaryKey"`
+	OwnerClusterID string `gorm:"column:owner_cluster_id;not null"`
+	OwnerEpoch     int64  `gorm:"column:owner_epoch;not null"`
+}
+
+func (tailnetRow) TableName() string { return "tailnets" }
+
+const (
+	testCluster = "c1"
+	testEpoch   = 1
+)
+
 // global has no tailnet column; the plugin must leave it alone.
 type global struct {
 	ID   uint64 `gorm:"primaryKey"`
@@ -45,11 +60,32 @@ type global struct {
 
 func ctxFor(t *testing.T, id string) context.Context {
 	t.Helper()
+
+	return fencedCtx(t, id, testCluster, testEpoch)
+}
+
+// scopeOnlyCtx carries a scope but no ownership fence.
+func scopeOnlyCtx(t *testing.T, id string) context.Context {
+	t.Helper()
 	s, err := tailnet.NewScope(tailnet.MustParseID(id), tailnet.SourceInternalService, "test", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, err := tailnet.WithScope(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return ctx
+}
+
+func fencedCtx(t *testing.T, id, cluster string, epoch tailnet.Epoch) context.Context {
+	t.Helper()
+	f, err := tailnet.NewFence(cluster, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := tailnet.WithFence(scopeOnlyCtx(t, id), f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,8 +132,13 @@ func openDB(t *testing.T) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	if err := db.AutoMigrate(&owner{}, &item{}, &global{}); err != nil {
+	if err := db.AutoMigrate(&owner{}, &item{}, &global{}, &tailnetRow{}); err != nil {
 		t.Fatal(err)
+	}
+	for _, tn := range []string{idA, idB} {
+		if err := db.Create(&tailnetRow{ID: tn, OwnerClusterID: testCluster, OwnerEpoch: testEpoch}).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	// Seed both tenants directly, bypassing the plugin (registered after).
 	for _, tn := range []string{idA, idB} {
