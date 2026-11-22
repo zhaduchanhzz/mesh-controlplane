@@ -55,7 +55,7 @@ import (
 type result struct {
 	Index      int
 	Phase      string
-	Register   time.Duration // TryLogin start -> return (0 for pre-registered nodes)
+	Register   time.Duration // TryLogin start -> return (re-login for pre-registered nodes)
 	FirstMap   time.Duration // map request sent -> first frame read
 	Total      time.Duration // start -> first frame read
 	Peers      int           // peers in the first map, -1 if not decoded
@@ -362,7 +362,10 @@ func enrollOne(ctx, phaseCtx context.Context, cfg config, r *result, streams *sy
 
 	start := time.Now()
 
-	if !preRegistered {
+	// A pre-registered node logs in with its existing node key, as
+	// tailscaled does on restart: the server finds the node and authorises
+	// it without a key. That also fetches the server's Noise key.
+	{
 		url, err := direct.TryLogin(nodeCtx, controlclient.LoginDefault)
 		if err != nil {
 			direct.Close()
