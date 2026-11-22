@@ -4,6 +4,10 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
+
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
@@ -104,5 +108,15 @@ func (ns *noiseServer) refuseRoute(w http.ResponseWriter, err error) {
 		return
 	}
 
-	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if errors.Is(err, errSessionUnbound) || errors.Is(err, db.ErrUnknownTenant) ||
+		errors.Is(err, db.ErrTailnetNotActive) || errors.Is(err, db.ErrTailnetNotOwned) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+
+		return
+	}
+
+	// A lookup that failed (database unreachable) is retried by the client.
+	log.Error().Err(err).Str(zf.MachineKey, ns.machineKey.ShortString()).Msg("resolving tailnet of noise request")
+	w.Header().Set("Retry-After", "10")
+	http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 }
