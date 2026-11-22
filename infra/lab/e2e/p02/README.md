@@ -8,14 +8,60 @@ expected RED state, recorded in `evidence/P02-e2e-red-baseline.md`.
 
 ```bash
 # From Git Bash, WSL or Linux, at the repo root.
-bash infra/lab/e2e/p02/run.sh                 # all tests
+bash infra/lab/e2e/p02/run.sh                 # all tests (~40 s)
+bash infra/lab/e2e/p02/run.sh --fast          # HTTP/TLS only, K01-K09 (~4 s)
 ONLY="K01 K05 R02" bash infra/lab/e2e/p02/run.sh
+JOBS=1 bash infra/lab/e2e/p02/run.sh          # one test at a time
 ```
 
-Exit code: `0` = no FAIL, `1` = at least one FAIL, `2` = harness/setup error.
-Every line is `PASS|FAIL|SKIP <id> <mapping> <reason>`. Results also go to
-`artifacts/<gitsha>/P02/e2e-<UTC>/results.tsv`, with redacted client logs.
-`artifacts/` is gitignored.
+Lab invocation with the P02 POC (one admin CLI per tailnet):
+
+```bash
+HS='sudo -u headscale /usr/local/bin/headscale'
+HS_A="$HS -c /etc/headscale/tailnets/a.yaml" HS_B="$HS -c /etc/headscale/tailnets/b.yaml"   HEADSCALE="$HS -c /etc/headscale/tailnets/hs.yaml" bash infra/lab/e2e/p02/run.sh [--fast]
+```
+
+Exit code: `0` = no FAIL, `1` = at least one FAIL, `2` = harness/setup error,
+interrupt, or a cleanup that could not prove it removed everything it created.
+Each result line is `PASS|FAIL|SKIP <id> <mapping> <seconds> <reason>`, printed as
+tests finish. The summary at the end always uses the same order.
+
+Artifacts go to `artifacts/<gitsha>/P02/e2e-<UTC>/` (gitignored):
+
+- `results.tsv`: `id, mapping, status, reason, duration_s`, in fixed order.
+- `results.json`: the same rows plus `run_id`, `repo`, `mode`, `only`, `jobs`,
+  `wall_time_s` (whole run including cleanup), `tests_wall_time_s`, `exit_code`,
+  `cleanup_ok` and PASS/FAIL/SKIP counts.
+- `logs/<slot>-<id>.log`: one redacted log per test. Also redacted client logs
+  (`p02-*.cli.log`, `*.tailscaled.log`, `*.noise-dials.log`, `K10-*.log`),
+  `env.txt` and `keys.txt`.
+
+### Modes and speed
+
+- `--fast` runs only K01–K09 (curl against `/key` and `/ts2021`). It does not
+  touch `mc-ci` and creates nothing on `mc-cp`; it reads only the server version
+  for `env.txt`. `ONLY=` filters within the mode.
+- Tests run concurrently, at most `JOBS` at a time (default 4). The two `/key`
+  fetches that K01/K04/K09 need, the node snapshot used for cleanup, and the
+  image check run concurrently during setup. Every client scenario (R01,
+  R02/`v1.84.3`, R02/`v1.104.7` + N8, R03) has its own containers, volumes,
+  hostnames, nodes and keys (`p02-r01-a|b`, `p02-r02-<tag>`, `p02-r03`), so the
+  scenarios share no state. K10 probes A and B at once.
+- Images are checked once per run and pulled only if missing.
+- Readiness waits poll up to a timeout instead of sleeping a fixed time
+  (container start, state after `switch`, state after `docker restart`). The
+  only fixed wait left is R01's 5 s observation window. R01 is a negative test,
+  since a leaked peer would arrive asynchronously. The window ends early only
+  if a leak is seen.
+- SSH: the harness opens one ControlMaster per host in a private temp dir
+  (removed on exit) and probes it first. Git Bash's msys OpenSSH starts a
+  master, but its sessions fail and fall back to new connections, so there the
+  probe turns multiplexing off and plain connections are used (~0.35 s each on
+  the LAN). On WSL/Linux it is used.
+
+Timings on 2026-11-22 against the live endpoint (Git Bash, `JOBS=4`): the full
+suite went from 98 s (sequential) to 40 s, and `--fast` takes 3–4 s. See
+`evidence/source-inventory-P02.md` §7.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -24,20 +70,35 @@ Every line is `PASS|FAIL|SKIP <id> <mapping> <reason>`. Results also go to
 | `HOST_A`, `HOST_B`, `HOST_UNKNOWN` | `a.`, `b.`, `zz.cp.gta5web.online` | tailnet hostnames and an unknown one |
 | `PORT`, `PUBLIC_IP` | `8443`, `116.118.3.46` | public endpoint (VPS forwarder) |
 | `IMAGE_NEW`, `IMAGE_MIN` | `v1.104.7`, `v1.84.3` | `tailscale/tailscale` tags (latest pinned and minimum capver 116) |
-| `KEYCMD_A`, `KEYCMD_B` | `headscale preauthkeys create --user lab-test --expiration 30m -o json` | mint a key for tailnet A / B. The baseline has one tailnet, so both use the same user. Point `KEYCMD_B` at tailnet B once it exists |
+| `HEADSCALE`, `HS_A`, `HS_B` | `sudo -u headscale /usr/local/bin/headscale` | admin CLI (server version) and the CLI of tailnet A / B. Node and key IDs are tagged `A:<id>` / `B:<id>` |
+| `KEYCMD_A`, `KEYCMD_B` | `$HS_A` / `$HS_B preauthkeys create --user lab-test --expiration 30m -o json` | mint a key for tailnet A / B |
+| `ONLY` | empty | space-separated test IDs |
+| `JOBS` | `4` | max tests running at once |
 | `KEEP` | `0` | `1` skips cleanup (debug only; the temp dir then still holds keys) |
 
 ## What it touches
 
 - `mc-cp`: read-only, except that it creates pre-auth keys (≤30 min) and
   deletes the nodes and keys this run created. Nodes are deleted only if they did
-  not exist before the run **and** are named `p02-*`.
-- `mc-ci`: containers `p02-*` with label `p02-e2e=<run id>` and volumes `p02-*`,
-  all removed on exit. `ts-home1` and other containers are never touched.
+  not exist before the run **and** are named `p02-*`, per tailnet via the
+  `A:`/`B:` tagged IDs (one SSH call per tailnet, IDs validated as `[AB]:<digits>`).
+- `mc-ci`: containers `p02-*` (and K10's `--rm` containers) with label
+  `p02-e2e=<run id>` and volumes `p02-*`, all removed on exit. `ts-home1` and
+  other containers are never touched.
 - Pre-auth keys sit in a mode-700 temp dir (files mode 600). They are piped to
   `tailscale up|login --auth-key=file:/dev/stdin` and never printed. CLI and
-  tailscaled logs pass through `redact()`, which removes `tskey-`/`hskey-` tokens and
-  `/register/<id>` URLs and shortens public keys.
+  tailscaled logs, and every per-test log, pass through `redact()`, which removes
+  `tskey-`/`hskey-` tokens and `/register/<id>` URLs and shortens public keys.
+- Cleanup runs on normal exit, on FAIL, and on Ctrl-C/TERM. It first kills
+  every running test (each runs in its own process group). Then it removes
+  containers, volumes, new `p02-*` nodes and the run's keys (expire, then
+  delete), and **verifies** that none of them is left: no labelled container,
+  none of the run's volumes, no new `p02-*` node, none of the run's key IDs in
+  `preauthkeys list`. Stragglers (for example a `docker run` still in flight at
+  the interrupt) are retried for up to 90 s, after which the run exits `2`.
+  Known limit: if an interrupt cuts the SSH reply of a `preauthkeys create`, the
+  harness never learns that key's ID. Such a key is unused and expires within
+  30 min.
 
 ## Tests
 
