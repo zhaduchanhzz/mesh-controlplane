@@ -28,6 +28,10 @@ const (
 // OAuth credentials.
 type Credential struct {
 	ID         uint64         `gorm:"primary_key"`
+
+	// TailnetID is the tenant this row belongs to (tailnet_id NOT NULL). The
+	// tenantscope plugin sets and filters it; code never chooses it.
+	TailnetID string `gorm:"column:tailnet_id;not null"`
 	Kind       CredentialKind `gorm:"not null;index:idx_credentials_identifier,unique,priority:1"`
 	Identifier string         `gorm:"index:idx_credentials_identifier,unique,priority:2"`
 	Hash       []byte

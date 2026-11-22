@@ -29,6 +29,7 @@ func (src *User) Clone() *User {
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _UserCloneNeedsRegeneration = User(struct {
 	gorm.Model
+	TailnetID          string
 	Name               string
 	DisplayName        string
 	Email              string
@@ -87,6 +88,7 @@ func (src *Node) Clone() *Node {
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _NodeCloneNeedsRegeneration = Node(struct {
 	ID                 NodeID
+	TailnetID          string
 	MachineKey         key.MachinePublic
 	NodeKey            key.NodePublic
 	DiscoKey           key.DiscoPublic
@@ -201,6 +203,7 @@ func (src *Credential) Clone() *Credential {
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _CredentialCloneNeedsRegeneration = Credential(struct {
 	ID             uint64
+	TailnetID      string
 	Kind           CredentialKind
 	Identifier     string
 	Hash           []byte

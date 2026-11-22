@@ -85,7 +85,7 @@ func ListNodes(tx *gorm.DB, nodeIDs ...types.NodeID) (types.Nodes, error) {
 	nodes := types.Nodes{}
 
 	err := preloadNode(tx).
-		Where(nodeIDs).Find(&nodes).Error
+		Where(nodeIDs).Order("nodes.id").Find(&nodes).Error
 	if err != nil {
 		return nil, err
 	}

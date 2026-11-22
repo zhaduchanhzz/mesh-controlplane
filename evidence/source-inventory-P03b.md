@@ -66,3 +66,23 @@
 
 ## 5. Giả định
 - Upstream cho phép cùng machine key trên nhiều user **trong một** tailnet (`nodesByMachineKey map[mk]map[UserID]`, `node_store.go:209`). Vì vậy chỉ thêm index `(tailnet_id, machine_key)`, không unique, để không phá ngữ nghĩa upstream. Ticket viết "UNIQUE(tailnet_id, machine_key)". Lệch này cần reviewer chốt.
+
+## 6. Tiến độ
+
+### Bước 1: plugin `hscontrol/db/tenantscope` (Implemented, Verified trên SQLite và PostgreSQL)
+- Commit: `41382f5` (plugin + test), `a5c5dab` (fixture cho PostgreSQL), cùng commit hỗ trợ `MESH_TEST_POSTGRES_DSN`.
+- RED: `go test ./hscontrol/db/tenantscope/` exit 1 (build fail). GREEN: 8/8.
+- SQLite, `CGO_ENABLED=1 go test -race` trên mc-ci: ok. **PostgreSQL 17.12** (container `postgres:17-alpine`, password ngẫu nhiên, chỉ bind 127.0.0.1, xóa sau khi chạy): 8/8 PASS. Lần chạy PostgreSQL đầu fail 1 test vì fixture tạo item với `OwnerID=0`. PostgreSQL kiểm FK, còn SQLite trong test thì không. Đã sửa fixture; plugin không đổi.
+- **Phát hiện bẫy GORM:** `Save` với UPDATE không trúng dòng nào sẽ chuyển sang `INSERT … ON CONFLICT DO UPDATE SET <mọi cột>`, nên tenant A **ghi đè và chiếm dòng của B** theo primary key. Mutation test xác nhận lỗi này có thật khi bỏ `confineUpsert`. Plugin thêm `DO UPDATE … WHERE tailnet_id = ?`.
+- Mutation check: bỏ `confineUpsert` → `TestSaveCannotOverwriteOtherTenant` FAIL; bỏ scope ở callback Update → `TestNoScopeFailsClosed` và `TestScopeLimitsWrites` FAIL.
+- Guard "thiếu WHERE" của GORM được áp lại: nếu không, việc tự thêm `WHERE tailnet_id` sẽ biến một lệnh ghi vô tình lên toàn bảng thành lệnh ghi lên toàn tenant mà không báo lỗi.
+
+### Tiếp theo
+- Bước 2: schema v0.1 (PostgreSQL + SQLite tương đương), bảng `tailnets` có `owner_cluster_id`/`owner_epoch`, `versioncheck` từ chối DB cũ.
+- Bước 3: nối plugin vào `HSDatabase` (context có scope của tailnet runtime), review tay mọi `Raw`/`Exec`.
+
+### Bước 2–3: kết quả (Implemented, Verified)
+- Commit `3a4cb6c` (schema v0.1, gắn runtime vào tailnet), sửa thêm `nodeFieldImpact` cho `TailnetID`.
+- `hscontrol/db/...` trên mc-ci (`CGO_ENABLED=1 -race`, PostgreSQL 16.15 qua `postgrestest`): 3/3 package ok. Các subtest PostgreSQL **thực sự chạy**, không skip (cài `postgresql`, service hệ thống tắt).
+- Full suite `go test -count=1 -timeout 120m ./...` (không có nix, nên thiếu `tscli`): 35 package ok. FAIL `servertest` `TestAPIv2/TSCLI` (thiếu công cụ, giống baseline) và `state` `TestUpdateChangesCoversEveryNodeField` (trường mới `TailnetID` chưa được phân loại). Đã sửa; `state` chạy lại với `-race`: ok (178 s).
+- Phát hiện kèm theo: các test PostgreSQL của baseline **bị skip âm thầm** trên mc-ci vì thiếu `pg_ctl`/`initdb`. Nay đã chạy thật.

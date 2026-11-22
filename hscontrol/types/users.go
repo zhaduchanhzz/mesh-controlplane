@@ -65,6 +65,10 @@ func (u Users) String() string {
 type User struct {
 	gorm.Model //nolint:embeddedstructfieldcheck
 
+	// TailnetID is the tenant this row belongs to (tailnet_id NOT NULL). The
+	// tenantscope plugin sets and filters it; code never chooses it.
+	TailnetID string `gorm:"column:tailnet_id;not null"`
+
 	// The index `idx_name_provider_identifier` is to enforce uniqueness
 	// between Name and ProviderIdentifier. This ensures that
 	// you can have multiple users with the same name in OIDC,

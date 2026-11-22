@@ -91,6 +91,10 @@ func (v *UserView) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 
 func (v UserView) Model() gorm.Model { return v.ж.Model }
 
+// TailnetID is the tenant this row belongs to (tailnet_id NOT NULL). The
+// tenantscope plugin sets and filters it; code never chooses it.
+func (v UserView) TailnetID() string { return v.ж.TailnetID }
+
 // Name (username) for the user, is used if email is empty
 // Should not be used, please use [User.Username].
 // It is unique if [User.ProviderIdentifier] is not set.
@@ -120,6 +124,7 @@ func (v UserView) ProfilePicURL() string { return v.ж.ProfilePicURL }
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _UserViewNeedsRegeneration = User(struct {
 	gorm.Model
+	TailnetID          string
 	Name               string
 	DisplayName        string
 	Email              string
@@ -195,7 +200,11 @@ func (v *NodeView) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	return nil
 }
 
-func (v NodeView) ID() NodeID                             { return v.ж.ID }
+func (v NodeView) ID() NodeID { return v.ж.ID }
+
+// TailnetID is the tenant this row belongs to (tailnet_id NOT NULL). The
+// tenantscope plugin sets and filters it; code never chooses it.
+func (v NodeView) TailnetID() string                      { return v.ж.TailnetID }
 func (v NodeView) MachineKey() key.MachinePublic          { return v.ж.MachineKey }
 func (v NodeView) NodeKey() key.NodePublic                { return v.ж.NodeKey }
 func (v NodeView) DiscoKey() key.DiscoPublic              { return v.ж.DiscoKey }
@@ -323,6 +332,7 @@ func (v NodeView) String() string                    { return v.ж.String() }
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _NodeViewNeedsRegeneration = Node(struct {
 	ID                 NodeID
+	TailnetID          string
 	MachineKey         key.MachinePublic
 	NodeKey            key.NodePublic
 	DiscoKey           key.DiscoPublic
@@ -550,7 +560,11 @@ func (v *CredentialView) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	return nil
 }
 
-func (v CredentialView) ID() uint64                    { return v.ж.ID }
+func (v CredentialView) ID() uint64 { return v.ж.ID }
+
+// TailnetID is the tenant this row belongs to (tailnet_id NOT NULL). The
+// tenantscope plugin sets and filters it; code never chooses it.
+func (v CredentialView) TailnetID() string             { return v.ж.TailnetID }
 func (v CredentialView) Kind() CredentialKind          { return v.ж.Kind }
 func (v CredentialView) Identifier() string            { return v.ж.Identifier }
 func (v CredentialView) Hash() views.ByteSlice[[]byte] { return views.ByteSliceOf(v.ж.Hash) }
@@ -592,6 +606,7 @@ func (v CredentialView) Revoked() views.ValuePointer[time.Time] {
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _CredentialViewNeedsRegeneration = Credential(struct {
 	ID             uint64
+	TailnetID      string
 	Kind           CredentialKind
 	Identifier     string
 	Hash           []byte

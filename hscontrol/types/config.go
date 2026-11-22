@@ -282,6 +282,17 @@ type Config struct { //nolint:recvcheck // MarshalJSON reads a value, so a Confi
 	// off it keeps the upstream semantics.
 	PolicyEmptyDenies bool `json:"-" koanf:"-"`
 
+	// ClusterID names the cluster this process serves for (ADR 0005). The
+	// runtime only binds a tailnet whose owner_cluster_id matches. Set from
+	// Go only; empty means "local" (single-node development and tests).
+	ClusterID string `json:"-" koanf:"-"`
+
+	// TailnetID selects the tailnet this runtime serves. Set from Go only
+	// (serve-tailnets sets it per runtime). Empty: a database with no
+	// tailnet gets one default tailnet, one with exactly one tailnet uses
+	// it, and a database with several refuses to start (no default tenant).
+	TailnetID string `json:"-" koanf:"-"`
+
 	// dns is nil until [Config.StartDNS].
 	dns *liveDNS
 }

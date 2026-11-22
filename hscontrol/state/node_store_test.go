@@ -1958,6 +1958,9 @@ func TestNodeStoreAdjacencyMatchesFullBuild(t *testing.T) {
 // across the write.
 var nodeFieldImpact = map[string]string{
 	"ID": "relation", "IPv4": "relation", "IPv6": "relation",
+	// Immutable tenant boundary; classified as relation so any change would
+	// at least force a full peer rebuild (P05 will refuse the change).
+	"TailnetID": "relation",
 	"UserID": "relation", "User": "relation", "Tags": "relation",
 	"ApprovedRoutes": "relation", "Hostinfo": "relation",
 	"AutoApprovedRoutes": "payload",

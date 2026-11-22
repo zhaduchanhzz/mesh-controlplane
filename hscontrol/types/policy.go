@@ -15,6 +15,10 @@ var (
 type Policy struct {
 	gorm.Model
 
+	// TailnetID is the tenant this row belongs to (tailnet_id NOT NULL). The
+	// tenantscope plugin sets and filters it; code never chooses it.
+	TailnetID string `gorm:"column:tailnet_id;not null"`
+
 	// Data contains the policy in HuJSON format.
 	Data string
 }

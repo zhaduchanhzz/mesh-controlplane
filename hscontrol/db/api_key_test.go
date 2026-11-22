@@ -199,9 +199,9 @@ func TestAPIKeyWithPrefix(t *testing.T) {
 
 				now := time.Now()
 				err = db.DB.Exec(`
-					INSERT INTO credentials (kind, identifier, hash, created_at)
-					VALUES (?, ?, ?, ?)
-				`, types.CredentialAPIKey, legacyPrefix, hash, now).Error
+					INSERT INTO credentials (tailnet_id, kind, identifier, hash, created_at)
+					VALUES (?, ?, ?, ?, ?)
+				`, db.Tailnet().ID, types.CredentialAPIKey, legacyPrefix, hash, now).Error
 				require.NoError(t, err)
 
 				// Validate legacy key through the v2 path, which must also
@@ -310,8 +310,8 @@ func TestAPIKeyLazyRehashesBcrypt(t *testing.T) {
 	require.NoError(t, err)
 
 	err = db.DB.Exec(
-		`INSERT INTO credentials (kind, identifier, hash, created_at) VALUES (?, ?, ?, ?)`,
-		types.CredentialAPIKey, prefix, hash, time.Now(),
+		`INSERT INTO credentials (tailnet_id, kind, identifier, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
+		db.Tailnet().ID, types.CredentialAPIKey, prefix, hash, time.Now(),
 	).Error
 	require.NoError(t, err)
 

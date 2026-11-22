@@ -519,9 +519,9 @@ func TestPreAuthKeyLazyRehashesBcrypt(t *testing.T) {
 	require.NoError(t, err)
 
 	err = db.DB.Exec(
-		`INSERT INTO credentials (kind, identifier, hash, user_id, reusable, ephemeral, used, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		types.CredentialPreAuthKey, prefix, hash, user.ID, true, false, false, time.Now(),
+		`INSERT INTO credentials (tailnet_id, kind, identifier, hash, user_id, reusable, ephemeral, used, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		db.Tailnet().ID, types.CredentialPreAuthKey, prefix, hash, user.ID, true, false, false, time.Now(),
 	).Error
 	require.NoError(t, err)
 
