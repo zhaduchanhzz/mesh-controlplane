@@ -4,7 +4,7 @@
 //
 // Test data source: ../../servertest/testdata/steps/tag-owner-chain.hujson,
 // loaded by name; the servertest step captures live there.
-// Source format:    github.com/juanfont/headscale/hscontrol/types/testcapture
+// Source format:    github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture
 
 package v2
 
@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
 )
 
 // tagOwnerSkipReasons lists checks where headscale differs from SaaS, keyed

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/juanfont/headscale/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"go4.org/netipx"
 	"tailscale.com/tailcfg"
 )

@@ -6,11 +6,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/juanfont/headscale/hscontrol/config"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/tailscale/squibble"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 func init() {

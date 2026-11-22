@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/dns"
-	"github.com/juanfont/headscale/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/util/dnsname"
 )

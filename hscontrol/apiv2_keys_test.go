@@ -10,10 +10,10 @@ import (
 	"github.com/danielgtaylor/huma/v2/humatest"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	apiv2 "github.com/juanfont/headscale/hscontrol/api/v2"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // taggedCaps builds capabilities for a tagged auth key.

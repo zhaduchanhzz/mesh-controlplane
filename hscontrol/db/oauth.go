@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/scope"
-	"github.com/juanfont/headscale/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/scope"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"gorm.io/gorm"
 	"tailscale.com/util/multierr"
 	"tailscale.com/util/set"

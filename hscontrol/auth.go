@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/state"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"gorm.io/gorm"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"

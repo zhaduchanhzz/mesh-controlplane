@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
-	policyv2 "github.com/juanfont/headscale/hscontrol/policy/v2"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/integration/hsic"
-	"github.com/juanfont/headscale/integration/integrationutil"
-	"github.com/juanfont/headscale/integration/tsic"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
+	policyv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/hsic"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/integrationutil"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/tsic"
 	"tailscale.com/tailcfg"
 )
 

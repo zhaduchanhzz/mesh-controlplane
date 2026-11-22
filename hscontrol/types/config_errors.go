@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/juanfont/headscale/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 )
 
 // ErrConfig is a sentinel matching any *ConfigError. Callers can do

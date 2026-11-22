@@ -13,11 +13,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
 	"github.com/libdns/cloudflare"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/dnstype"
 )

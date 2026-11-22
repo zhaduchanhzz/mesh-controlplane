@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/config"
-	policyv2 "github.com/juanfont/headscale/hscontrol/policy/v2"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	policyv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/v2"
 )
 
 func TestSkipsInitConfig(t *testing.T) {

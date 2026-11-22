@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 func newConfirmRequest(t *testing.T, authID types.AuthID, formCSRF, cookieCSRF string) *http.Request {

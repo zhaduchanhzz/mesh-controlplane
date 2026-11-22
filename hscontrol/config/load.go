@@ -20,15 +20,15 @@ import (
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
-	hsdns "github.com/juanfont/headscale/hscontrol/dns"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/knadh/koanf/parsers/json"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
 	"github.com/prometheus/common/model"
 	"github.com/tailscale/hujson"
+	hsdns "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 )
 
 const (

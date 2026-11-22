@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/tailcfg"
 )
 

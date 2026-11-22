@@ -2,7 +2,7 @@
 // against [ApplyPolicy] and the derp.paths loader.
 //
 // Test data source: ../policy/v2/testdata/nodeattrs_results/nodeattrs-derpmap-*.hujson
-// Source format:    github.com/juanfont/headscale/hscontrol/types/testcapture
+// Source format:    github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture
 
 package derp
 
@@ -15,10 +15,10 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tailscale/hujson"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
 	"tailscale.com/tailcfg"
 )
 

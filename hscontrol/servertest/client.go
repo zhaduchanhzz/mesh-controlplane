@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
 	"tailscale.com/control/controlclient"
 	_ "tailscale.com/feature/c2n" // registers the c2n answer hook used by [WithC2NHandler]
 	"tailscale.com/health"

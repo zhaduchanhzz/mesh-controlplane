@@ -8,10 +8,10 @@ import (
 
 	"github.com/danielgtaylor/huma/v2/humatest"
 	"github.com/google/go-cmp/cmp"
-	apiv2 "github.com/juanfont/headscale/hscontrol/api/v2"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // settingsAPIWithConfig registers the v2 API over a Backend carrying cfg and a

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"testing"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
-	"github.com/juanfont/headscale/integration/hsic"
-	"github.com/juanfont/headscale/integration/tsic"
 	"github.com/stretchr/testify/require"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/hsic"
+	"github.com/zhaduchanhzz/mesh-controlplane/integration/tsic"
 )
 
 // This file holds the shared helpers used by the per-command CLI integration

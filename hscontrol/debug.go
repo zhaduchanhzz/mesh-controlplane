@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/arl/statsviz"
-	"github.com/juanfont/headscale/hscontrol/config"
-	"github.com/juanfont/headscale/hscontrol/templates"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/change"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/templates"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsweb"
 )

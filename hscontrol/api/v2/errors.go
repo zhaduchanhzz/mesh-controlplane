@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/juanfont/headscale/hscontrol/db"
-	policyv2 "github.com/juanfont/headscale/hscontrol/policy/v2"
-	"github.com/juanfont/headscale/hscontrol/state"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	policyv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"gorm.io/gorm"
 	"tailscale.com/util/multierr"
 )

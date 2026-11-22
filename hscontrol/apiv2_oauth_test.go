@@ -13,13 +13,13 @@ import (
 	"strings"
 	"testing"
 
-	clientv2 "github.com/juanfont/headscale/gen/client/v2"
-	apiv2 "github.com/juanfont/headscale/hscontrol/api/v2"
-	"github.com/juanfont/headscale/hscontrol/scope"
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientv2 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v2"
+	apiv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/scope"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
 	"tailscale.com/tailcfg"
 	tskey "tailscale.com/types/key"
 )

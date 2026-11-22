@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	clientv1 "github.com/juanfont/headscale/gen/client/v1"
 	"github.com/spf13/cobra"
+	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
 )
 
 func init() {

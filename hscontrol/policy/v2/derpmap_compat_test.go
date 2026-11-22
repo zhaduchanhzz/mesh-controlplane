@@ -4,7 +4,7 @@
 // same words.
 //
 // Test data source: testdata/nodeattrs_results/nodeattrs-derpmap-*.hujson
-// Source format:    github.com/juanfont/headscale/hscontrol/types/testcapture
+// Source format:    github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture
 
 package v2
 

@@ -1,4 +1,4 @@
-module github.com/juanfont/headscale
+module github.com/zhaduchanhzz/mesh-controlplane
 
 go 1.27.4
 

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/juanfont/headscale/hscontrol/types/testcapture"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/testcapture"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netmap"
 )

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	apiv2 "github.com/juanfont/headscale/hscontrol/api/v2"
-	"github.com/juanfont/headscale/hscontrol/scope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/scope"
 )
 
 // apiReq issues an arbitrary-method request with an optional bearer token and JSON

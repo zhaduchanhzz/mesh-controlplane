@@ -9,9 +9,9 @@ import (
 	"time"
 
 	gocmp "github.com/google/go-cmp/cmp"
-	hsdns "github.com/juanfont/headscale/hscontrol/dns"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/require"
+	hsdns "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/tailcfg"
 )
 

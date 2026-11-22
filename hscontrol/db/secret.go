@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"

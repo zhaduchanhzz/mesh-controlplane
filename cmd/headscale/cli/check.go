@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/juanfont/headscale/hscontrol/config"
-	policyv2 "github.com/juanfont/headscale/hscontrol/policy/v2"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/spf13/cobra"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	policyv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/v2"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 var errCheckFailed = errors.New("check failed")

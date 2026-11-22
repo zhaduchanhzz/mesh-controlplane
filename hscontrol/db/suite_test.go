@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"zombiezen.com/go/postgrestest"
 )
 

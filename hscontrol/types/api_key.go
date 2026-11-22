@@ -3,8 +3,8 @@ package types
 import (
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/util/zlog/zf"
 	"github.com/rs/zerolog"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
 )
 
 // NewAPIKeyPrefixLength is the length of the prefix for new API keys.

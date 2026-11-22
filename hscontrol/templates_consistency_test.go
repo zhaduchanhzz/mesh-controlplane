@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/templates"
 	"github.com/stretchr/testify/assert"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/templates"
 )
 
 func TestTemplateHTMLConsistency(t *testing.T) {

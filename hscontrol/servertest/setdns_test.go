@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanfont/headscale/hscontrol/dns/dnstest"
-	"github.com/juanfont/headscale/hscontrol/servertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns/dnstest"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tailcfg/nodecap"
 	"tailscale.com/types/netmap"

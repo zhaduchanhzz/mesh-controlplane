@@ -9,9 +9,9 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/juanfont/headscale/hscontrol/types"
-	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"go4.org/netipx"
 	"gorm.io/gorm"
 	"tailscale.com/net/tsaddr"

@@ -17,11 +17,11 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	apiv1 "github.com/juanfont/headscale/hscontrol/api/v1"
-	"github.com/juanfont/headscale/hscontrol/config"
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiv1 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v1"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"gopkg.in/yaml.v3"
 )
 

@@ -3,8 +3,8 @@ package integration
 import (
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // TestAuthCommandValidation exercises the validation permutations of the auth

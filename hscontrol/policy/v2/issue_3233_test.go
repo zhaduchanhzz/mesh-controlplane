@@ -10,8 +10,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/tailcfg"
 )
