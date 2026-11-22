@@ -1,307 +1,405 @@
-# KẾ HOẠCH TRIỂN KHAI — HEADSCALE NATIVE MULTI-TAILNET & SHARDING
+# KẾ HOẠCH TRIỂN KHAI — HEADSCALE NATIVE MULTI-TAILNET & CLUSTER
 
-**Phiên bản:** 1.1 (22/11/2026) · **Ngôn ngữ:** Tiếng Việt · **Đối tượng:** AI coding agent + Go reviewer + security reviewer + lab operator.
+**Phiên bản:** 2.0 (22/11/2026) · **Ngôn ngữ:** Tiếng Việt · **Đối tượng:** AI coding agent + Go reviewer + security reviewer + lab operator.
 
-> Bản 1.1 ghi lại các quyết định của chủ dự án ngày 2026-11-22: baseline v0.1, fresh schema, NodeID/UserID toàn cục, runtime theo tailnet, policy rỗng = DENY, shard classes và tenant migration trong MVP. Lý do và phương án thay thế nằm trong [`design/adr/`](design/adr/). Mọi mục dưới đây vẫn là `Planned` cho tới khi có code và bằng chứng.
+> Bản 2.0 ghi lại kiến trúc cluster của chủ dự án ([ADR 0005](design/adr/0005-cluster-architecture-shared-postgres-bootstrap-incremental-netmap.md), kể cả "Bổ sung 2"):
+> - **PostgreSQL dùng chung** cho mọi cluster;
+> - **bootstrap** trả URL trực tiếp của cluster sở hữu tenant, không có hostname theo tenant;
+> - **mỗi cluster một Noise key**;
+> - mỗi cluster gồm **active + standby**, failover tự động bằng lease;
+> - cô lập tenant **chỉ ở tầng ứng dụng**;
+> - netmap tăng dần được phép khi có biện pháp bảo vệ.
+>
+> Các quyết định của bản 1.1 vẫn giữ: baseline v0.1, fresh schema, ID toàn cục, runtime theo tailnet, policy rỗng = DENY, shard classes và tenant migration trong MVP. Mục nào chưa ghi trạng thái khác thì vẫn là `Planned` cho tới khi có code và bằng chứng. Bản 1.1 (SQLite riêng mỗi shard, edge định tuyến theo Host, Noise key theo tailnet) nằm trong lịch sử Git; ADR 0001–0003 ghi phần nào đã bị thay.
 
 ## 0. Mục tiêu, giả định và tiêu chí thành công
 
 ### Phạm vi phải hoàn thành
 
 1. **Hard fork** từ snapshot nhánh `main` của upstream Headscale (đang phát triển 0.30, migration upstream cuối `202611171200-node-key-expiry-disabled`). Không tồn tại tag `v0.29.7` trong checkout; dự án đánh version từ **v0.1**. Giữ provenance BSD-3-Clause. Bản vá bảo mật upstream được **cherry-pick thủ công** và ghi nhật ký (xem `evidence/source-inventory-P00.md` §1).
-2. Một server process quản lý **từ hai tailnet trở lên**. Mỗi tailnet có registry, identity, machine/node key, policy, routes, DNS, IP allocation, netmap và event stream độc lập, chạy trên **runtime riêng** (NodeStore, PolicyManager, Batcher, IPAM, authCache, cấu hình DERP/DNS, Noise key). Không chỉ tạo nhiều Headscale `User`.
-3. Client Tailscale thật đăng ký, đổi profile và duy trì kết nối cho các tailnet độc lập; netmap **không chứa** peer hoặc private policy của tailnet khác, kể cả khi thiết bị/machine key/IP/hostname trùng nhau.
-4. Nhiều server process thành **shard**; tailnet có một owner tại một thời điểm (`shard_id`, `epoch`). Tạo mới và route tailnet đúng shard; chống split brain.
-5. **Mục tiêu dung lượng: multi-tenant.** Hai lớp shard:
+2. Một process quản lý **từ hai tailnet trở lên**. Mỗi tailnet có registry, identity, machine/node key, policy, routes, DNS, IP allocation, netmap và event stream độc lập, chạy trên **runtime riêng** (NodeStore, PolicyManager, Batcher, IPAM, authCache, cấu hình DERP/DNS). **Noise key thuộc về cluster** và dùng chung cho mọi runtime trong cluster. Không chỉ tạo nhiều Headscale `User`.
+3. Client Tailscale thật đăng ký, đổi profile và duy trì kết nối cho các tailnet độc lập. Netmap **không chứa** peer hoặc private policy của tailnet khác, kể cả khi thiết bị/machine key/IP/hostname trùng nhau, và kể cả khi hai tailnet nằm trên **cùng cluster, cùng ControlURL, cùng Noise key**.
+4. Nhiều **cluster** dùng chung một PostgreSQL. Mỗi tailnet có đúng một cluster sở hữu tại một thời điểm (`owner_cluster_id`, `owner_epoch` trên bảng `tailnets`). **Bootstrap** trả URL trực tiếp của cluster đó; cluster tự kiểm lại quyền sở hữu, không tin bootstrap. Chống split brain bằng epoch.
+5. **Sẵn sàng trong một cluster:** mỗi cluster gồm một process **active** và một process **standby**, dùng chung Noise key của cluster. Lease của cluster nằm trong PostgreSQL và có TTL. Active chết hoặc treo thì standby **tự động** lấy lease với epoch mới; client reconnect với cùng key, **không đăng nhập lại**. Active cũ sống lại thấy epoch cũ và từ chối ghi.
+6. **Mục tiêu dung lượng: multi-tenant.** Hai lớp shard (một shard = một cluster):
    - *shared*: nhiều tenant, mỗi tenant có hard quota **5.000 thiết bị**, cảnh báo ở 80% (4.000).
    - *dedicated*: một tenant, 5.000–10.000 thiết bị.
 
-   Tailnet lớn nhất dự kiến 1k–10k thiết bị, nên **một process phải chịu được 10k thiết bị**. Đây là mục tiêu, chưa phải năng lực đã đo: P00b đo baseline single-process ở 1k/5k/10k trước khi làm sharding.
-6. **Tenant migration trong MVP (P12b):** khi tenant vượt ngưỡng, chuyển tenant sang shard khác bằng một cơ chế làm tăng dần. MVP gồm bước (1) fenced move (cold) và (2) rolling drain. Bước (3) pre-copy và (4) read-replica trong lúc drain chỉ làm sau khi có số đo. Chi tiết: [ADR 0003](design/adr/0003-shard-classes-and-tenant-migration.md).
-7. Test E2E chạy bằng lab VM/container tạo từ **Proxmox VE**, có cấu hình lại bằng code (IaC), traffic P2P và DERP fallback, negative security tests, chaos testing và benchmark.
-8. Mọi tính năng admin/observability/relay có bảo vệ đa tenant. Một process treo/crash không bị quảng bá là hard isolation.
+   Một tailnet **không bao giờ trải qua nhiều cluster**. Đây là mục tiêu, chưa phải năng lực. Theo P00b, với code upstream hiện tại một process chỉ phục vụ được khoảng **1.5k–2.5k thiết bị với policy thực tế** (`allow_all`, `personal_devices`), đo bằng client chạy trong cùng process (`evidence/P00b-capacity-baseline.md` §7). P00c đang tối ưu và đo **server-only**.
+7. **Tenant migration giữa cluster trong MVP (P12b):** đổi chủ sở hữu (`owner_cluster_id`, `owner_epoch`) trong PostgreSQL, không copy dữ liệu. Cluster đích có URL và Noise key khác, nên client **phải gọi lại bootstrap, đổi ControlURL và đăng nhập lại**; thủ tục có thông báo trước. Chi tiết: [ADR 0003](design/adr/0003-shard-classes-and-tenant-migration.md), ADR 0005, `tickets/P12b.md`.
+8. Test E2E chạy bằng lab VM/container tạo từ **Proxmox VE**, có IaC, traffic P2P và DERP fallback, negative security tests, failover tests, chaos testing và benchmark.
+9. Mọi tính năng admin/observability/relay có bảo vệ đa tenant. Một process treo/crash không bị quảng bá là hard isolation.
 
 ### Không làm trong phạm vi này
 
 - SaaS Portal, billing, multi-org UI, SCIM, production rollout; không tích hợp `network-access-mesh`.
 - **Không nâng cấp từ database Headscale.** v0.1 dùng fresh schema; DB Headscale cũ bị từ chối khi khởi động.
-- Live migration **zero-staleness** (client không thấy netmap cũ trong lúc chuyển) không thuộc MVP; giữ ở P16. Pre-copy và read-replica (bước 3–4) chỉ bắt đầu sau khi P12b có số đo.
-- Phân tán **một tailnet** qua nhiều shard không phải mục tiêu; đơn vị placement là nguyên tailnet.
-- Không cam kết “thiết bị không giới hạn” hoặc tuyến tính theo số shard khi chưa benchmark. Các con số 5.000/10.000 ở trên là quota và mục tiêu thiết kế, không phải capacity claim.
-- Shard DB không hỗ trợ PostgreSQL; PostgreSQL chỉ dùng cho placement registry.
+- **Không có hostname ổn định theo tenant** (ADR 0005 Bổ sung 2). Chuyển tenant giữa cluster không giữ được ControlURL.
+- Chuyển tenant giữa cluster **mà client không phải đăng nhập lại**, và zero-staleness: không thuộc MVP; để ở P16, chỉ sau một ADR mới.
+- **Row-level security** của PostgreSQL và **role DB theo cluster**: không làm (ADR 0005 Bổ sung 2 §3). Rủi ro còn lại ghi ở `03-isolation-threat-model.md` §8.
+- Phân tán **một tailnet** qua nhiều cluster; đơn vị placement là nguyên tailnet.
+- Không cam kết "thiết bị không giới hạn" hoặc tăng tuyến tính theo số cluster khi chưa benchmark. 5.000/10.000 là quota và mục tiêu thiết kế, không phải capacity claim.
+- SQLite cho production. SQLite chỉ dùng cho dev và unit test, với **cùng schema v0.1**.
 
 ### Definition of Done mức dự án
 
-- `N1`: 2 tailnet/1 process; các test xuyên tenant S01–S18 pass với Tailscale client thật.
-- `N2`: 2 shard/2 process; 3+ tailnet được tạo/định tuyến đúng, không có ghi nhận owner kép; một tailnet được chuyển shard bằng fenced move + rolling drain (P12b) mà không đổi NodeID/StableNodeID và không có owner kép.
-- `N3`: backup/restore, restart/reconnect, upgrade canary, dashboard giám sát và các failure-mode tests pass.
-- `N4`: load test ở các tổ hợp nhiều tailnet nhỏ / một tailnet lớn (tới 10k thiết bị, so với baseline P00b) / reconnect storm; report p50/p95/p99, RAM, CPU và DB writes; capacity limits được **đo** chứ không đoán.
+- `N1`: 2 tailnet/1 process (cùng Noise key cluster); các test xuyên tenant S01–S18 pass với Tailscale client thật.
+- `N2`: 2 cluster, mỗi cluster có active + standby, trên một PostgreSQL dùng chung. 3+ tailnet được tạo và bootstrap trả đúng cluster. Không có ghi nhận owner kép. Failover active → standby tự động, client không đăng nhập lại (F01–F04). Một tailnet được chuyển cluster bằng P12b (re-bootstrap + đổi ControlURL + đăng nhập lại) mà không có owner kép.
+- `N3`: HA PostgreSQL (primary + replica, failover có kiểm thử), backup/restore không làm lùi epoch, restart/reconnect, upgrade canary theo cluster, xoay Noise key cluster, dashboard giám sát và failure-mode tests pass.
+- `N4`: load test các tổ hợp nhiều tailnet nhỏ / một tailnet lớn (so với baseline P00b/P00c) / reconnect storm / failover storm; report p50/p95/p99, RAM, CPU, DB writes và số kết nối PostgreSQL. Capacity limits được **đo** chứ không đoán.
 
-## 1. Quyết định kỹ thuật ban đầu (không nhầm với điều đã chứng minh)
+## 1. Quyết định kỹ thuật (không nhầm với điều đã chứng minh)
 
-| Chủ đề | Thiết kế khởi đầu | Cổng kiểm chứng |
+| Chủ đề | Thiết kế | Cổng kiểm chứng |
 |---|---|---|
 | Baseline | Snapshot upstream `main` 0.30-dev (squash `2558340`, migration cuối `202611171200`), hard fork version **v0.1**. Không có tag `v0.29.7`. Cherry-pick thủ công bản vá bảo mật upstream | Commit hash, `PROVENANCE.md`, nhật ký cherry-pick, `go test ./...` trên Linux (`mc-ci`) |
 | Source | Repo hiện tại; một module Go cho core; tách binary bằng `cmd/` | Baseline build/test trước khi đổi module/import path |
 | Multi-tailnet | `TailnetID` là boundary bảo mật; `UserID` chỉ scoped bên trong tailnet | Test lộ node/policy/API/DNS/routes |
-| Runtime theo tailnet | Mỗi tailnet có NodeStore, PolicyManager, Batcher, IPAM, authCache, cấu hình DERP/DNS và Noise key riêng. Dùng chung: DB handle (repo đã scoped), listeners, lease client. Chi phí peer map lý thuyết Σnᵢ² thay vì (Σn)²; isolation có sẵn do cấu trúc ([ADR 0001](design/adr/0001-per-tailnet-runtime.md)) | Không còn state toàn process keyed theo node/IP/key; benchmark P00b + L1–L4 |
-| ID toàn cục | NodeID và UserID **duy nhất toàn cục** giữa các shard, vì StableNodeID = NodeID (`hscontrol/types/node.go:92`) và relocation không được đánh số lại ([ADR 0002](design/adr/0002-v0.1-fresh-schema-and-global-ids.md)) | Allocator hai shard không trùng; move giữ nguyên StableNodeID; ID không tái sử dụng |
-| Storage | **PostgreSQL dùng chung cho mọi shard/cluster** ([ADR 0005](design/adr/0005-cluster-architecture-shared-postgres-bootstrap-incremental-netmap.md), thay ADR 0002 về storage). Fresh schema v0.1: `tailnet_id NOT NULL`, composite FK, unique `(tailnet_id, …)`; scope fail-closed ở ORM; cân nhắc row-level security; `versioncheck` từ chối DB Headscale cũ. HA PostgreSQL là yêu cầu N3 | Test transaction, tenant filtering, failover, concurrent write |
-| Registry | PostgreSQL độc lập cho placement và ownership epochs | CAS và fencing tests |
-| Default policy | Khi tạo tailnet, ghi **cùng transaction** policy `{"grants":[]}` và `PENDING`; chỉ active khi cấu hình hợp lệ. Với tailnet tenant, policy nil/rỗng/`{}` = **DENY** (khác upstream: `policy.go:341`, `filter.go:135`, `types.go:3427` coi là allow-all). Không dựa vào round-trip JSON vì `omitempty` trên `ACLs`/`Grants` (`types.go:2140-2141`) làm mất `[]` | Concurrency test: không có cửa sổ allow-all; round-trip test policy rỗng vẫn deny |
-| Endpoint | **Bootstrap** trả URL của cluster đang sở hữu tenant; client kết nối thẳng tới cluster ([ADR 0005](design/adr/0005-cluster-architecture-shared-postgres-bootstrap-incremental-netmap.md)). Chuyển tenant sang cluster khác thì client phải đổi ControlURL (trừ khi dùng hostname ổn định, câu hỏi mở) | Client thật + bootstrap từ chối tenant MOVING/SUSPENDED |
-| Noise identity | **Một Noise key cho mỗi cluster**, các tenant trong cluster dùng chung (ADR 0005). Ranh giới tenant: credential gắn tailnet + `tailnet_id` trong DB + scope fail-closed. POC P02 (key theo tenant) giữ làm hồ sơ | Cross-tenant register/map tests với client thật |
-| OIDC | N1 dùng signed tenant-bound enrollment token + web approval tối thiểu; chưa bật OIDC upstream global trên shared shard | Replay, cross-tenant approve & expiry tests |
-| DERP | N1 ưu tiên DERP external có verify scoped; embedded DERP **disabled** cho tới khi audit xong | Relay data/security/DoS test và verify fail-closed |
-| Sharding | Một tailnet chỉ có một active shard. Hai lớp: *shared* (nhiều tenant, hard quota 5.000 thiết bị/tenant, cảnh báo 80%) và *dedicated* (một tenant, 5k–10k) ([ADR 0003](design/adr/0003-shard-classes-and-tenant-migration.md)) | Epoch+lease ownership, stale request tests, quota enforcement test, số đo P00b |
-| Migration | Một cơ chế làm tăng dần: (1) fenced move cold, (2) rolling drain — **MVP, P12b**; (3) pre-copy, (4) read-replica trong lúc drain — sau khi đo. State trong bộ nhớ (authCache, sshCheckAuth, pings, ephemeral GC timers) bị từ chối hoặc reset khi move. Phương án thay thế: chuyển các tenant hàng xóm. Zero-staleness = P16 | Không owner kép, NodeID giữ nguyên, kiểm `key_inventory`, rollback, client thật reconnect |
+| Runtime theo tailnet | Mỗi tailnet có NodeStore, PolicyManager, Batcher, IPAM, authCache, cấu hình DERP/DNS riêng. Dùng chung trong process: pool DB (qua repo đã scoped), listeners, **Noise key của cluster**, lease client. Chi phí peer map lý thuyết Σnᵢ² thay vì (Σn)² ([ADR 0001](design/adr/0001-per-tailnet-runtime.md); phần Noise key đã bị ADR 0005 thay) | Không còn state toàn process keyed theo node/IP/key; benchmark P00c + L1–L4 |
+| Storage | **Một PostgreSQL dùng chung cho mọi cluster** (ADR 0005). Fresh schema v0.1: `tailnet_id NOT NULL` trên mọi bảng tenant, composite FK, unique `(tailnet_id, …)`. SQLite chỉ cho dev/unit test, cùng schema. `versioncheck` từ chối DB Headscale cũ. HA PostgreSQL là yêu cầu N3 | Test transaction, FK/unique âm tính, schema SQLite ≡ PostgreSQL, failover PG |
+| Cô lập dữ liệu | **Chỉ ở tầng ứng dụng:** plugin GORM fail-closed (thiếu scope → lỗi); kiểm owner + epoch trong cùng transaction; review tay mọi SQL thô; test/lint chặn SQL thô mới ngoài allowlist. **Không** RLS, **không** role DB theo cluster. Rủi ro còn lại được chấp nhận: lỗi app bỏ qua scope không có lớp chặn ở DB (ADR 0005 Bổ sung 2 §3) | Plugin tests (thiếu scope → `ErrNoScope`), lint SQL thô trong CI, test isolation âm tính |
+| ID | NodeID và UserID **duy nhất toàn cục**, cấp bởi **sequence của PostgreSQL**, không tái sử dụng (StableNodeID = NodeID, `hscontrol/types/node.go:92`), giới hạn < 2^53. Thay cơ chế cấp khối ID của [ADR 0002](design/adr/0002-v0.1-fresh-schema-and-global-ids.md) mục 4 | Hai cluster ghi đồng thời không trùng ID; ID đã xóa không tái dùng |
+| Registry | **Nằm trong cùng PostgreSQL dùng chung**: bảng `clusters`, `cluster_leases`, và cột `owner_cluster_id`, `owner_epoch` trên `tailnets`. Package `internal/placement`; API operator `cmd/mesh-placement` | CAS, fencing, stale-epoch tests (P10) |
+| Default policy | Khi tạo tailnet, ghi **cùng transaction** policy `{"grants":[]}` và `PENDING`. Với tailnet tenant, policy nil/rỗng/`{}` = **DENY** (P03a, đã merge). Không fallback allow-all khi parse lỗi | Concurrency test: không có cửa sổ allow-all; round-trip policy rỗng vẫn deny |
+| Endpoint | **Bootstrap** (`internal/bootstrap`, `cmd/mesh-bootstrap`) trả **URL trực tiếp của cluster** sở hữu tenant, ví dụ `https://cluster-2.cp.gta5web.online:8443`; client kết nối thẳng tới đó. **Không** hostname theo tenant, **không** edge định tuyến theo Host. Bootstrap từ chối `MOVING`/`SUSPENDED`; cluster tự kiểm lại quyền sở hữu | F06–F07 + client thật (P11) |
+| Noise identity | **Một Noise key cho mỗi cluster**, dùng chung cho mọi tenant trên cluster và cho cả active lẫn standby. Ranh giới tenant của phiên: credential đăng ký gắn tailnet → bản ghi node `(machine_key, node_key)` → `tailnet_id`; scope fail-closed. POC P02 (key theo tenant, chọn theo Host) giữ làm hồ sơ | S05, S10, S11 với client thật; xoay key cluster là gate N3 |
+| OIDC | N1 dùng signed tenant-bound enrollment token + web approval tối thiểu; chưa bật OIDC upstream global | Replay, cross-tenant approve & expiry tests |
+| DERP | DERP external có verify scoped; embedded DERP **disabled** cho tới khi audit xong | Relay data/security/DoS test và verify fail-closed |
+| Sharding | Shard = cluster. Một tailnet chỉ có một cluster sở hữu và không trải qua nhiều cluster. Hai lớp: *shared* (quota 5.000/tenant, cảnh báo 80%) và *dedicated* (một tenant, 5k–10k) ([ADR 0003](design/adr/0003-shard-classes-and-tenant-migration.md)) | Owner/epoch tests, quota enforcement, số đo P00b/P00c |
+| Runtime HA | Mỗi cluster = active + standby. Lease cluster trong PostgreSQL, TTL đánh giá bằng `now()` của DB. Standby tự lấy lease với epoch mới. Active cũ tự fence (đồng hồ monotonic) và bị fence ở DB (epoch). Failover không đổi `owner_epoch` của tenant (ADR 0005 Bổ sung 2 §2) | F01–F05 (P11b) |
+| Migration | Chuyển tenant giữa cluster = đổi `owner_cluster_id` + tăng `owner_epoch` trong một transaction; không copy dữ liệu. Có thông báo trước; client re-bootstrap, đổi ControlURL, đăng nhập lại. State trong bộ nhớ không mang theo. Zero-staleness và "không đăng nhập lại" để ở P16 | Không owner kép, NodeID giữ nguyên trong DB, đo thời gian đăng nhập lại (P12b) |
+| Netmap | Được phép **cập nhật peer map tăng dần** và gửi delta chỉ tới node bị ảnh hưởng. Biện pháp bắt buộc: equivalence test (`rapid`) so với full rebuild; đổi policy luôn full rebuild; đối chiếu định kỳ khi chạy, lệch thì thay bằng full rebuild; delta thu hồi luôn gửi + full map định kỳ; **công tắc mặc định OFF** cho tới khi review; E2E thu hồi với client thật (P00d) | M01–M06 |
 
-**Chú ý về Noise:** phải chứng minh key theo tailnet tương thích với Tailscale client. Nếu POC thất bại, không tự ý chuyển sang “1 Noise key chung cho shard” và tuyên bố isolation. Agent lập ADR phương án thay thế, bằng chứng protocol-level và chờ duyệt bảo mật.
+**Chú ý về Noise (AGENTS rule 12):** chủ dự án đã quyết định tường minh một key cho mỗi cluster (ADR 0005). Agent không tự đổi sang thiết kế khác (key theo tenant, trial-decrypt nhiều key, …). Nếu client thật cho thấy hành vi không tương thích với key dùng chung (ví dụ trộn hai profile cùng ControlURL), dừng PR, ghi ADR kèm log protocol đã redact và chờ duyệt.
 
 ## 2. Cấu trúc repository mục tiêu
 
 ```text
 mesh-controlplane/
 ├── cmd/
-│   ├── mesh-controlplane/      # binary điều khiển VPN; đổi tên sau baseline
-│   ├── mesh-placement/         # registry/placement coordinator
+│   ├── mesh-controlplane/      # binary của cluster (active hoặc standby, cùng binary)
+│   ├── mesh-bootstrap/         # dịch vụ bootstrap: tenant → URL cluster (P11)
+│   ├── mesh-placement/         # API operator: tạo tailnet, đặt cluster, move (P10)
 │   ├── gen-openapi/            # upstream: sinh OpenAPI từ Huma
-│   └── hi/                     # giữ/upstream adapt integration harness
+│   └── hi/                     # integration harness upstream
 ├── hscontrol/                 # bắt đầu từ upstream, refactor từng lớp
 │   ├── state/                 # runtime theo tailnet, NodeStore, sự kiện
-│   ├── db/                    # fresh schema v0.1, typed scoped queries
-│   ├── mapper/                # MapResponse + delta + stream scoped
+│   ├── db/                    # fresh schema v0.1 (PostgreSQL + SQLite dev), migration
+│   │   └── tenantscope/       # plugin GORM fail-closed (P03b)
+│   ├── mapper/                # MapResponse + delta + stream scoped; netmap tăng dần (P00d)
 │   ├── policy/v2/             # engine policy theo tailnet
+│   ├── frontdoor/             # P02: chuẩn hóa Host/SNI; nay = allowlist hostname của cluster
 │   ├── scope/                 # upstream: OAuth scope của API v2 (KHÔNG phải tailnet scope)
 │   ├── servertest/            # upstream: TestScale, test server in-memory
 │   ├── dns/  routes/  derp/   # cấm global tenant-confused settings
 │   └── ...
 ├── internal/
 │   ├── tailnet/               # TailnetID, VerifiedScope, context, authorization
-│   ├── placement/             # model, CAS, lease, routing policy
+│   ├── placement/             # clusters, owner/epoch, CAS, shard class, quota (P10)
+│   ├── lease/                 # lease cluster, fencing token, self-fence (P11b)
+│   ├── bootstrap/             # tra owner, từ chối MOVING/SUSPENDED (P11)
 │   └── controlapi/            # tenant-scoped admin API
-├── integration/               # tiếp tục harness Tailscale thật
-├── infra/lab/                # OpenTofu, cloud-init, Ansible, scripts
-├── design/adr/               # ADR của fork
-├── tickets/                  # ticket Pxx
-├── evidence/                 # source-inventory-Pxx.md và bằng chứng PR
-├── docs/                     # upstream mkdocs (giữ nguyên)
-├── gen/client/v1|v2/         # client sinh bởi oapi-codegen; không sửa tay
+├── tools/capload/             # P00c: load generator server-only
+├── integration/               # harness Tailscale thật
+├── infra/lab/                 # OpenTofu, cloud-init, Ansible, scripts, e2e
+├── design/adr/                # ADR của fork
+├── tickets/                   # ticket Pxx
+├── evidence/                  # source-inventory-Pxx.md và bằng chứng PR
+├── docs/                      # upstream mkdocs (giữ nguyên)
+├── gen/client/v1|v2/          # client sinh bởi oapi-codegen; không sửa tay
 ├── go.mod  go.sum
 └── AGENTS.md
 ```
 
-**Lưu ý tên package:** `hscontrol/scope` đã tồn tại và là OAuth scope của API v2 (`scope.Scope`), không liên quan tới tailnet. Kiểu tailnet (`TailnetID`, `VerifiedScope`, helper context) đặt ở `internal/tailnet`, không đặt tên package là `scope` để tránh nhầm khi review.
+**Lưu ý tên package:** `hscontrol/scope` đã tồn tại và là OAuth scope của API v2 (`scope.Scope`), không liên quan tới tailnet. Kiểu tailnet (`TailnetID`, `VerifiedScope`, helper context) đặt ở `internal/tailnet`. Tên package mới (`internal/lease`, `internal/bootstrap`, `hscontrol/db/tenantscope`) là đề xuất; ticket chốt sau khi đọc source.
+
+**Front door và `serve-tailnets` (P02):**
+- `hscontrol/frontdoor` được **giữ** làm lớp kiểm Host/SNI của listener cluster (allowlist hostname của cluster, 421 fail closed). Nó không còn chọn tailnet theo Host.
+- `headscale serve-tailnets` (N runtime, mỗi runtime một DB và một key) **deprecated**. Vẫn chạy trên `mc-cp` vì endpoint public và harness E2E P02 đang dùng và chưa có thay thế. Không thêm tính năng. Gỡ trong P05 hoặc ngay sau P09, kèm cập nhật harness (ADR 0005 Bổ sung 2 §5).
 
 **Codegen:** repo không có `proto/`. API dùng Huma + OpenAPI: `make openapi` (`cmd/gen-openapi`) xuất spec, `make generate` sinh code và gọi `make client` để tạo `gen/client/v1/client.gen.go`, `gen/client/v2/client.gen.go` (oapi-codegen được pin trong `Makefile`).
 
 **Tài liệu dự án:** các file `03-…06-*.md`, `PLAN.md`, `HANDOFF_PROMPT.md` nằm ở root. `docs/` là tài liệu mkdocs của upstream.
 
-Không bắt đầu bằng thao tác `sed` toàn bộ import của Headscale: giữ nguyên baseline build, sau đó thay module/import theo một PR riêng có full test. `go.mod` của snapshot ghi `go 1.27.4` (không có dòng `toolchain`); phải dùng Go theo checkout, **không dùng Go 1.23 hệ thống**.
+Không bắt đầu bằng thao tác `sed` toàn bộ import của Headscale. `go.mod` ghi `go 1.27.4` (không có dòng `toolchain`); phải dùng Go theo checkout, **không dùng Go 1.23 hệ thống**.
 
 ## 3. Sơ đồ hoạt động và trust boundary
 
 ```mermaid
 flowchart TB
-  C["Tailscale client + tailnet-specific URL"] --> E["TLS edge / tenant hostname route"]
-  E -->|"immutable verified tailnet binding"| S1["Shard 1: Go process"]
-  E -->|"immutable verified tailnet binding"| S2["Shard 2: Go process"]
-  R["Placement Registry PostgreSQL"] -->|"ownership epoch / signed route manifest"| E
-  R -->|"CAS lease & shard assignment"| S1
-  R -->|"CAS lease & shard assignment"| S2
-  S1 --> D1["SQLite 1 — tailnets A/B/C"]
-  S2 --> D2["SQLite 2 — tailnets D/E"]
-  S1 --> REL["Dedicated DERP relay + STUN"]
-  S2 --> REL
-  A["Operator / internal admin API"] -->|"mTLS + scoped token + epoch"| S1
-  A -->|"mTLS + scoped token + epoch"| S2
+  C["Tailscale client"] -->|"1. hỏi bootstrap (tenant)"| B["Bootstrap service"]
+  B -->|"đọc owner_cluster_id, status"| PG
+  B -->|"2. URL trực tiếp https://cluster-2.cp…:8443"| C
+  C -->|"3. /key, /ts2021, map (ControlURL = URL cluster)"| EP2["Endpoint cluster 2 (VIP / L4 health check)"]
+  EP2 --> A2["Cluster 2 ACTIVE (giữ lease, epoch e)"]
+  EP2 -.->|"chỉ khi giữ lease"| S2["Cluster 2 STANDBY (cùng Noise key)"]
+  EP1["Endpoint cluster 1"] --> A1["Cluster 1 ACTIVE"]
+  EP1 -.-> S1["Cluster 1 STANDBY"]
+  A1 & S1 & A2 & S2 -->|"lease CAS + owner/epoch trong mọi transaction"| PG[("PostgreSQL dùng chung (primary + replica): tailnets, nodes, …, clusters, cluster_leases")]
+  P["mesh-placement (operator API)"] -->|"tạo tailnet, đặt cluster, move"| PG
+  A1 & A2 --> REL["DERP relay + STUN (verify scoped, fail closed)"]
+  OP["Operator"] -->|"mTLS + scoped token + epoch"| P
 ```
 
-Bên trong mỗi shard, listener nhận request rồi chọn **runtime của đúng tailnet** theo binding đã xác thực; các runtime không chia sẻ NodeStore, PolicyManager, Batcher hay cache.
+Bên trong mỗi process active, listener nhận request, kiểm Host thuộc cluster, rồi chọn **runtime của đúng tailnet** theo scope đã xác thực (credential đăng ký hoặc bản ghi node). Các runtime không chia sẻ NodeStore, PolicyManager, Batcher hay cache. Chúng chỉ dùng chung Noise key của cluster, listener và pool PostgreSQL.
 
 ### Quy tắc định tuyến và xác thực
 
-1. TLS edge nhận domain `<tailnet>.mesh.test`, xác thực đúng SNI/Host; không chấp nhận header giả do client gửi như `X-Tailnet-ID`.
-2. Edge xây `VerifiedRouteContext(tailnet_id, shard_id, epoch)` chỉ bằng mapping do placement registry quản lý, chuyển qua kênh tin cậy; shard **phải kiểm tra lại** quyền và epoch.
-3. `/key` và Noise upgrade/request sử dụng đúng `VerifiedRouteContext`. Map/auth/poll trên **cùng một session** không được thay đổi tailnet. `tailnet_id` từ payload client chỉ là tín hiệu đối chiếu, không phải nguồn đáng tin.
-4. Khi đăng ký qua browser, trạng thái pending phải gắn tailnet, requester, hashed machine/node identity, nonce, time-bound claim và single-use approval.
-5. API admin yêu cầu mTLS service identity + credential scoped tailnet + operation + epoch (và idempotency key cho mutate); quyền super-admin quản lý shard tách hoàn toàn khỏi token tenant.
+1. **Bootstrap** chỉ trả URL của cluster đang sở hữu tenant (`owner_cluster_id`) khi tenant `ACTIVE`. `MOVING`, `SUSPENDED`, `PENDING`, `DELETING` và tenant không tồn tại bị từ chối, với phản hồi không làm lộ sự tồn tại của tenant cho caller không có credential (I15). Bootstrap không nằm trên đường dữ liệu và **không** là nguồn tin cậy của cluster.
+2. **Listener cluster** chỉ chấp nhận Host thuộc allowlist hostname của cluster (chuẩn hóa: lowercase, bỏ port, bỏ dấu chấm cuối; trên TLS thì SNI == Host). Host lạ → 421. Không chấp nhận header client tự gửi như `X-Tailnet-ID`. Listener phải phục vụ hoặc từ chối rõ ràng `/ts2021` trên cổng 80 (client thử cổng 80 trước, `infra/lab/README.md`).
+3. **Gắn tenant cho phiên (I01):**
+   - register lấy `tailnet_id` từ credential đăng ký (pre-auth key, enrollment token, phê duyệt web);
+   - map/poll lấy `tailnet_id` từ bản ghi node khớp **đúng một** `(machine_key, node_key)`; không có hoặc nhiều hơn một bản ghi → fail closed;
+   - khi phiên Noise đã gắn một tailnet, mọi request sau trên phiên đó phải cùng tailnet;
+   - `tailnet_id` trong payload client chỉ để đối chiếu.
+4. **Quyền sở hữu và fencing:** trước khi phục vụ, runtime kiểm `owner_cluster_id` = cluster mình và lease cluster còn hiệu lực ở epoch của mình. Mọi mutation kiểm lại cả hai trong cùng transaction. Process không giữ lease (standby, hoặc active cũ) không phát MapResponse và không ghi.
+5. Khi đăng ký qua browser, trạng thái pending phải gắn tailnet, requester, hashed machine/node identity, nonce, time-bound claim và single-use approval.
+6. API admin yêu cầu mTLS service identity + credential scoped tailnet + operation + epoch (và idempotency key cho mutate). Quyền platform operator tách hoàn toàn khỏi token tenant.
 
-## 4. Data model / migration: fresh schema v0.1
+## 4. Data model / migration: fresh schema v0.1 trên PostgreSQL dùng chung
 
-v0.1 **không** thêm migration vào cuối chuỗi upstream. Fork mở **chuỗi migration mới** với schema có `tailnet_id` ngay từ đầu; không có đường nâng cấp từ DB Headscale. Chi tiết và phương án thay thế: [ADR 0002](design/adr/0002-v0.1-fresh-schema-and-global-ids.md).
+v0.1 **không** thêm migration vào cuối chuỗi upstream. Fork mở **chuỗi migration mới** (bắt đầu `202611220000-v0.1-init`) với schema có `tailnet_id` ngay từ đầu; không có đường nâng cấp từ DB Headscale. Storage production là **PostgreSQL dùng chung**; SQLite chỉ cho dev/unit test với cùng schema. Chi tiết: [ADR 0002](design/adr/0002-v0.1-fresh-schema-and-global-ids.md), ADR 0005, `evidence/source-inventory-P03b.md`.
 
-**Bảng dự kiến:** `tailnets(id, slug, status, policy_revision, config_revision, created_at, deleted_at)`, `tailnet_settings`, `tailnet_policies`, `tailnet_events` (revision/event log), `pending_registrations`, `key_inventory`, `audit_events`, và `users`, `nodes`, `credentials`, routes, SSH-related authority với `tailnet_id NOT NULL`. Tên thật chốt trong P03 sau khi audit `hscontrol/db/schema.sql` của snapshot.
+**Bảng dự kiến:**
+- Tenant: `tailnets(id, slug, status, owner_cluster_id, owner_epoch, policy_revision, config_revision, created_at, updated_at, deleted_at)`, `tailnet_settings`, `tailnet_policies`, `tailnet_events` (revision log), `tailnet_keys` (key inventory), `pending_registrations`, `audit_events`, và `users`, `nodes`, `credentials`, routes, SSH-related authority. Mọi bảng tenant có `tailnet_id NOT NULL`.
+- Nền tảng (không có `tailnet_id`; chỉ truy cập qua API platform operator hoặc lease client): `clusters(id, endpoint_url, class, state, noise_public_key, …)`, `cluster_leases(cluster_id, holder, epoch, expires_at)`.
+
+Tên thật chốt trong P03b/P10 sau khi audit `hscontrol/db/schema.sql`.
 
 **Invariants bắt buộc:**
 
-- `UNIQUE(tailnet_id, machine_key)` cho machine identity theo cách mã hóa lưu thực tế; thêm ràng buộc tương ứng cho node keys và preauth credentials. Không áp unique `machine_key` toàn shard vì cho phép profile A/B cùng thiết bị. Các unique index toàn cục của upstream (`users.name`, `provider_identifier` ở `schema.sql:37-39`; `credentials(kind, identifier)` ở `schema.sql:69`) phải được xem lại: unique theo `(tailnet_id, …)` hoặc ghi rõ lý do giữ toàn cục.
-- Mọi FK tenant-sensitive có composite FK `(tailnet_id, entity_id)` hoặc constraint tương đương. Không thể dùng `user_id` thuộc B từ Node A.
-- **NodeID và UserID duy nhất toàn cục** giữa các shard và không tái sử dụng sau khi xóa. Không dùng `AUTOINCREMENT` cục bộ của từng shard làm nguồn ID duy nhất. Cơ chế cấp phát đề xuất ở ADR 0002.
-- `CreateTailnet` ghi chính sách `{"grants":[]}`, settings và status `PENDING` **trong cùng transaction**. `Activate` chỉ được gọi sau khi verifier/engine policy nhận default-deny. Với tailnet tenant, policy nil/rỗng/`{}` đọc từ DB cũng phải ra **DENY**.
-- `key_inventory` theo tailnet (machine key, node key, Noise identity public key, checksum) và revision/event log theo tailnet là điều kiện cho P12b: shard đích phải kiểm được dữ liệu đã nhận đủ và đúng revision.
-- Runtime theo tailnet: NodeStore, event channel, mapper subscriber, node list, DNS, IPAM, route lookup và policy evaluator thuộc runtime của tailnet. Cấm cache toàn process keyed chỉ bởi name/IP/machine-key.
-- IP trùng nhau giữa các tailnet có thể hợp lệ; test overlap địa chỉ VPN và subnet route.
-- SQLite một writer process; bật WAL/busy timeout theo cấu hình được xác minh, không dùng cùng file trên NFS hoặc hai process. Shard DB **chỉ SQLite**; cấu hình PostgreSQL cho shard bị từ chối.
-- `versioncheck` từ chối DB Headscale cũ (có migration upstream, không có marker v0.1) với lỗi rõ ràng; không cố nâng cấp.
-- Migration của fork: sau khi đã commit thì không sửa, không reorder, chỉ thêm vào cuối chuỗi v0.1; không `AutoMigrate` trong migration, không disable FK, chạy trong transaction (`hscontrol/db/AGENTS.md`). Schema test: fresh DB, squibble digest khớp `schema.sql`, test từ chối DB upstream, và nâng cấp giữa các migration của fork khi đã có.
+- Mọi bảng tenant có `tailnet_id NOT NULL`; test introspection kiểm.
+- Unique theo `(tailnet_id, …)` thay cho unique toàn cục của upstream (`users.name`, `provider_identifier` ở `schema.sql:37-39`). `credentials(kind, identifier)` giữ unique toàn cục (identifier ngẫu nhiên; lookup luôn kiểm tailnet). Index `(tailnet_id, machine_key)`; có unique hay không do reviewer chốt (inventory P03b §5).
+- **Phân giải tenant theo node:** `(machine_key, node_key)` phải xác định **tối đa một** node trên toàn DB (unique, hoặc tra cứu fail-closed khi có nhiều hơn một; chốt ở P03b/P04). Đây là cơ sở của I01 khi nhiều tenant dùng chung ControlURL và Noise key.
+- Mọi FK tenant-sensitive là composite `(tailnet_id, entity_id)` hoặc có trigger tương đương (ví dụ `credentials.user_id` với `ON DELETE SET NULL`). Node A không thể dùng `user_id` thuộc B.
+- **NodeID và UserID** cấp từ sequence PostgreSQL: duy nhất toàn cục, không tái sử dụng, < 2^53. SQLite dev dùng cùng ràng buộc nhưng không dùng để chứng minh tính toàn cục.
+- `owner_cluster_id`, `owner_epoch` chỉ nằm trên `tailnets`, **không** trên từng dòng dữ liệu. `owner_epoch` tăng đơn điệu, không bao giờ giảm, kể cả sau restore (giữ high-water mark ngoài backup, P13).
+- Mọi mutation dữ liệu tenant kiểm, trong **cùng transaction**:
+  - `tailnets.owner_cluster_id` = cluster mình và `owner_epoch` = epoch mình biết;
+  - lease cluster: `holder` = process mình, `epoch` = epoch lease, `expires_at > now()`, đọc với khóa chia sẻ để takeover phải chờ các transaction đang chạy.
 
-**Ví dụ SQL định hướng, KHÔNG phải migration có thể áp dụng trực tiếp:**
+  Sai → rollback và process tự fence (I12).
+- `CreateTailnet` ghi `{"grants":[]}`, settings, status `PENDING` và owner ban đầu **trong cùng transaction**. `Activate` chỉ sau khi engine policy nhận default-deny.
+- Runtime theo tailnet: NodeStore, event channel, mapper subscriber, DNS, IPAM, route lookup và policy evaluator thuộc runtime của tailnet. Cấm cache toàn process keyed chỉ bởi name/IP/machine-key.
+- IP trùng nhau giữa các tailnet có thể hợp lệ; test overlap địa chỉ VPN và subnet route.
+- **SQL thô** (`Raw`, `Exec`, SQL trong migration) không qua plugin scope. Mỗi câu được review tay và ghi vào inventory; test/lint trong CI đánh dấu câu mới ngoài allowlist.
+- `versioncheck` từ chối DB Headscale cũ (có migration upstream, không có marker v0.1) với lỗi rõ ràng.
+- Migration của fork: đã commit thì không sửa, không reorder, chỉ thêm vào cuối; không `AutoMigrate` trong migration, không disable FK, chạy trong transaction (`hscontrol/db/AGENTS.md`). Schema test: fresh DB trên cả PostgreSQL và SQLite, schema hai bên tương đương, squibble digest (SQLite) khớp `schema.sql`, test từ chối DB upstream.
+
+**Ví dụ SQL định hướng (PostgreSQL), KHÔNG phải migration có thể áp dụng trực tiếp:**
 
 ```sql
+CREATE TABLE clusters (
+  id TEXT PRIMARY KEY,
+  endpoint_url TEXT NOT NULL UNIQUE,        -- https://cluster-2.cp.gta5web.online:8443
+  class TEXT NOT NULL CHECK (class IN ('shared','dedicated')),
+  state TEXT NOT NULL CHECK (state IN ('READY','DRAINING','MAINTENANCE','UNAVAILABLE'))
+);
+CREATE TABLE cluster_leases (
+  cluster_id TEXT PRIMARY KEY REFERENCES clusters(id),
+  holder TEXT NOT NULL,                     -- ID của process (instance)
+  epoch BIGINT NOT NULL CHECK (epoch >= 1),
+  expires_at TIMESTAMPTZ NOT NULL           -- so với now() của PostgreSQL
+);
 CREATE TABLE tailnets (
   id TEXT PRIMARY KEY,
   slug TEXT NOT NULL UNIQUE,
-  status TEXT NOT NULL CHECK(status IN ('PENDING','ACTIVE','SUSPENDED','MOVING','DELETING')),
-  policy_revision INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE tailnet_policies (
-  tailnet_id TEXT PRIMARY KEY REFERENCES tailnets(id),
-  policy_json TEXT NOT NULL DEFAULT '{"grants":[]}',
-  revision INTEGER NOT NULL DEFAULT 1
+  status TEXT NOT NULL CHECK (status IN ('PENDING','ACTIVE','SUSPENDED','MOVING','DELETING')),
+  owner_cluster_id TEXT NOT NULL REFERENCES clusters(id),
+  owner_epoch BIGINT NOT NULL CHECK (owner_epoch >= 1),
+  policy_revision BIGINT NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE users (
-  id INTEGER PRIMARY KEY,            -- cấp từ allocator toàn cục, không AUTOINCREMENT
+  id BIGINT PRIMARY KEY DEFAULT nextval('user_id_seq'),
   tailnet_id TEXT NOT NULL REFERENCES tailnets(id),
   name TEXT,
-  UNIQUE (tailnet_id, id)
+  UNIQUE (tailnet_id, id),
+  UNIQUE (tailnet_id, name)
 );
 CREATE TABLE nodes (
-  id INTEGER PRIMARY KEY,            -- NodeID toàn cục; StableNodeID = id
+  id BIGINT PRIMARY KEY DEFAULT nextval('node_id_seq'),  -- StableNodeID = id
   tailnet_id TEXT NOT NULL REFERENCES tailnets(id),
-  user_id INTEGER,
+  user_id BIGINT,
   machine_key TEXT NOT NULL,
+  node_key TEXT NOT NULL,
   FOREIGN KEY (tailnet_id, user_id) REFERENCES users(tailnet_id, id)
 );
-CREATE UNIQUE INDEX idx_nodes_tailnet_machine_key ON nodes(tailnet_id, machine_key);
+CREATE INDEX idx_nodes_tailnet_machine_key ON nodes(tailnet_id, machine_key);
+-- Standby lấy lease: chỉ thành công khi lease đã hết hạn theo đồng hồ của DB.
+-- UPDATE cluster_leases SET holder=$me, epoch=epoch+1, expires_at=now()+$ttl
+--  WHERE cluster_id=$c AND expires_at < now() RETURNING epoch;
 ```
 
-## 5. Luồng `CreateTailnet` fail-closed
+## 5. Luồng `CreateTailnet` fail-closed trên PostgreSQL dùng chung
 
 ```mermaid
 sequenceDiagram
-  participant U as Admin API
-  participant R as Registry
-  participant S as Shard
-  participant DB as Shard SQLite
-  U->>R: Reserve placement (tailnet_id, shard_id, epoch)
-  R-->>U: PENDING + idempotency key
-  U->>S: CreateTailnet (scoped credentials + epoch)
-  S->>DB: BEGIN IMMEDIATE
-  S->>DB: Insert tailnet status=PENDING
-  S->>DB: Insert policy grants=[] + default settings
-  S->>DB: COMMIT
-  S-->>U: created + policy checksum
-  U->>R: Mark ACTIVE only if shard confirms + CAS epoch
-  U->>S: ActivateTailnet (epoch + revision)
-  S-->>U: ACTIVE
+  participant U as Operator API (mesh-placement)
+  participant PG as PostgreSQL dùng chung
+  participant C as Cluster đích (active)
+  participant B as Bootstrap
+  U->>PG: BEGIN
+  U->>PG: chọn cluster (class, quota): đọc clusters + đếm thiết bị
+  U->>PG: INSERT tailnets(status=PENDING, owner_cluster_id=c, owner_epoch=1)
+  U->>PG: INSERT tailnet_policies {"grants":[]} + tailnet_settings mặc định
+  U->>PG: INSERT tailnet_events(revision=1) + audit
+  U->>PG: COMMIT
+  U->>C: ActivateTailnet(tailnet_id, owner_epoch=1, policy revision) qua mTLS
+  C->>PG: BEGIN; kiểm lease cluster (holder, epoch, expires_at>now()) + owner_cluster_id/owner_epoch
+  C->>PG: kiểm policy deny hợp lệ; UPDATE status=ACTIVE WHERE status='PENDING' AND owner_epoch=1
+  C->>PG: COMMIT
+  C->>C: dựng runtime của tailnet
+  C-->>U: ACTIVE + policy checksum
+  Note over B,PG: Từ đây bootstrap mới trả URL của cluster c cho tenant
 ```
 
-Nếu bất kỳ bước nào lỗi: giữ ở `PENDING`, không phát enrollment key/MapResponse với rule allow-all, retry idempotent; reconciler thu hồi việc chưa hoàn thành. Registry và SQLite **không có distributed transaction**; phải dùng saga/reconcile, không coi hai commit là nguyên tử toàn hệ thống.
+Metadata, policy deny, settings và owner nằm **cùng một transaction trên cùng một DB**, nên không còn khoảng hở giữa registry và DB của shard như bản 1.1. Nếu bước Activate lỗi: tailnet giữ `PENDING`, bootstrap từ chối, không phát enrollment key hay MapResponse; retry idempotent; reconciler xử lý tailnet kẹt ở `PENDING` quá hạn. Không có fallback allow-all.
 
 ## 6. Trình tự triển khai qua PR (critical path)
 
-| ID | Công việc | Phụ thuộc | Bằng chứng merge |
-|---|---|---|---|
-| P00 | Rebaseline snapshot v0.1, provenance, sửa lệch docs, CI baseline | — | commit hash, `PROVENANCE.md`, `make build`, `go test ./...` trên Linux |
-| P00b | Benchmark single-process 1k/5k/10k node (RSS, thời gian tính peer, map p95, reconnect storm) | P00 | report + artifacts; `TestScale` với `HEADSCALE_STRESS_NODES`, `batcher_scale_bench_test.go` |
-| P01 | Repo rename / module boundaries / typed TailnetID (`internal/tailnet`) | P00 | build+tests pass, import graph và license |
-| P02 | POC Noise key/hostname/client profile, reject host spoof | P01 | 2 host→1 process client thật; protocol traces |
-| P03 | Fresh schema v0.1 (`tailnet_id NOT NULL`, composite FK, unique `(tailnet_id, …)`, ID toàn cục, `key_inventory`, revision log), `versioncheck` từ chối DB Headscale, `CreateTailnet` default-deny atomic | P02 | fresh DB/FK/unique negative tests, concurrency tests |
-| P04 | Auth, enrollment, session/approval scoped | P03 | replay/cross-tailnet tests |
-| P05 | Runtime theo tailnet: State/NodeStore/DB scoped; IP allocator | P04 | peers/IP/machine-key collision tests |
-| P06 | Policy/ACL, DNS, routes, exit-node isolation | P05 | policy wildcard, DNS/route leak tests |
-| P07 | Mapper, event, MapResponse deltas scoped | P06 | E2E no cross-peer keys/netmap & reconnect |
-| P08 | API/admin/metrics/debug/queue limits/DERP | P07 | authZ, DoS, endpoint audit |
-| P09 | **Gate N1**: real-client 2+ tailnet/1 process | P08 + lab giai đoạn 2 | toàn bộ S01–S18 + client compatibility |
-| P10 | Placement DB + epoch CAS + shard discovery + shard class | P09 + P00b | owner uniqueness tests |
-| P11 | Edge route manifest, long-lived sessions, mTLS | P10 | spoof/invalidation/stale-epoch tests |
-| P12 | Second shard, fresh placement + reconcile | P11 | 3 tailnet/2 shards, restart tests |
-| P12b | Tenant move: fenced move (cold) + rolling drain | P12 | move với client thật, không owner kép, NodeID giữ nguyên, rollback |
-| P13 | Backup/restore, upgrade/canary/shard operations | P12b | recover + checksum + config compatibility |
-| P14 | Performance, reconnect storm, quotas theo shard class | P13 | benchmark report & agreed SLO |
-| P15 | **Gate N2–N4**: sharding E2E, failure injection | P14 | signed audit record + all gates pass |
-| P16 (sau MVP) | Live relocation zero-staleness (pre-copy, read-replica trong lúc drain) | P15 + số đo P12b + ADR | không netmap cũ, no dual owner, rollback |
+| ID | Công việc | Trạng thái | Phụ thuộc | Bằng chứng merge |
+|---|---|---|---|---|
+| P00 | Rebaseline snapshot v0.1, provenance, sửa lệch docs, CI baseline | **Đã merge** (`Implemented`, xem ticket) | — | commit hash, `PROVENANCE.md`, baseline Linux |
+| P00b | Benchmark single-process 1k/5k/10k node | **Đã merge**, `Verified` (chưa `Reviewed`) | P00 | `evidence/P00b-capacity-baseline.md` |
+| P01 | Module rename, typed TailnetID (`internal/tailnet`) | **Đã merge** | P00 | `evidence/source-inventory-P01.md` |
+| P02 | POC Noise key theo tenant + front door theo Host | **Đã merge** (POC `Verified`). **Thiết kế đã bị thay** bởi ADR 0005; giữ làm hồ sơ | P01 | `evidence/source-inventory-P02.md` |
+| P03a | Policy tenant rỗng/thiếu = DENY | **Đã merge**, `Verified` | P01 | `evidence/source-inventory-P03a.md` |
+| P00c | Tối ưu full rebuild (`BuildPeerMap` có index, NodeStore rebuild không chờ batch timeout) + harness server-only `tools/capload`; đo **server-only** với client ngoài process | **Đang làm** (`feat/P00c-peermap-perf`) | P00b | số đo before/after server-only, cùng ma trận P00b |
+| P03b | Schema v0.1 trên **PostgreSQL dùng chung** (SQLite dev/unit cùng schema): `tailnet_id NOT NULL`, composite FK, unique `(tailnet_id, …)`, sequence ID, cột `owner_cluster_id/owner_epoch`, plugin GORM fail-closed, lint SQL thô, `versioncheck` | **Đang làm** (`feat/P03-tenant-schema`) | P01, P03a | FK/unique âm tính, plugin tests, schema PG ≡ SQLite (`tickets/P03.md`) |
+| P00d | Netmap tăng dần + biện pháp bảo vệ, **công tắc mặc định OFF** | Planned | P00c, P03a | M01–M05 (unit/property), M06 với client thật (`tickets/P00d.md`) |
+| P04 | Auth, enrollment, phê duyệt scoped; **gắn tenant cho phiên** qua credential/bản ghi node (I01) | Planned | P03b | replay/cross-tailnet tests, S10, S11 |
+| P05 | Runtime theo tailnet trên PostgreSQL dùng chung; Noise key cluster dùng chung; IPAM; thay `serve-tailnets` | Planned | P04 | peers/IP/machine-key collision tests, S05, S06 |
+| P06 | Policy/ACL, DNS, routes, exit-node isolation | Planned | P05 | policy wildcard, DNS/route leak tests |
+| P07 | Mapper, event, MapResponse deltas scoped; chạy lại M01/M03 với nhiều tenant | Planned | P06, P00d | E2E no cross-peer keys/netmap & reconnect |
+| P08 | API/admin/metrics/debug/queue limits/DERP | Planned | P07 | authZ, DoS, endpoint audit |
+| P09 | **Gate N1**: real-client 2+ tailnet/1 process, công tắc netmap tăng dần OFF và ON | Planned | P08 + lab giai đoạn 2 | S01–S18 + M06 + client compatibility |
+| P10 | Registry + placement trên PostgreSQL dùng chung (`internal/placement`, `cmd/mesh-placement`): `clusters`, owner/epoch, shard class, quota, mTLS API nội bộ; **fencing owner+epoch trong mọi mutation** | Planned | P09, P00c | owner uniqueness, stale epoch, quota (`tickets/P10.md`) |
+| P11 | **Bootstrap service** (`internal/bootstrap`, `cmd/mesh-bootstrap`): tenant → URL cluster. Thay ticket "edge route manifest" của bản 1.1 | Planned | P10 | F06, F07, client thật đi qua bootstrap (`tickets/P11.md`) |
+| P11b | **Lease cluster + failover active/standby tự động** (`internal/lease`) | Planned | P10 | F01–F05, client không đăng nhập lại (`tickets/P11b.md`) |
+| P12 | Cluster thứ hai, placement mới + reconcile, bootstrap trả đúng cluster | Planned | P11, P11b | 3 tailnet/2 cluster, restart/failover trên cả hai |
+| P12b | Tenant move giữa cluster: owner/epoch + thông báo + re-bootstrap + đổi ControlURL + đăng nhập lại | Planned | P12 | không owner kép, đo thời gian đăng nhập lại (`tickets/P12b.md`) |
+| P13 | HA PostgreSQL (failover), backup/restore không lùi epoch, upgrade/canary theo cluster, xoay Noise key cluster | Planned | P12b | F05, F08, runbook đã diễn tập |
+| P14 | Performance, reconnect storm, failover storm, quotas theo lớp shard, kết nối PG | Planned | P13 | benchmark report & agreed SLO |
+| P15 | **Gate N2–N4**: cluster E2E, failure injection | Planned | P14 | signed audit record + all gates pass |
+| P16 (sau MVP) | Chuyển tenant không đăng nhập lại / zero-staleness | Not started | P15 + số đo P12b + ADR mới | không netmap cũ, no dual owner, rollback |
 
-**Lab giai đoạn 2** (shards, edge, placement, DERP, clients, mạng underlay tách biệt) phải xong **trước P09**. Giai đoạn 1 hiện có `mc-ci` (VMID 7701). Xem `04-proxmox-lab.md`.
+**Ghi chú thứ tự:**
+- P00c và P03b chạy song song (khác vùng code, khác nhánh). P00d chỉ bắt đầu sau khi P00c merge, vì full rebuild đã tối ưu là chuẩn so sánh của nó.
+- P00d có thể merge trước P04–P07 vì công tắc mặc định OFF. P07 bắt buộc chạy lại M01/M03 trên runtime nhiều tenant. Chỉ bật mặc định ON sau P09 và review bảo mật.
+- P11 và P11b cùng phụ thuộc P10, không phụ thuộc nhau; vẫn làm tuần tự (một PR một lúc) theo thứ tự trong bảng.
+- Ticket P11 cũ ("Edge route manifest, long-lived sessions, mTLS") bị thay bởi P11 bootstrap. mTLS cho API nội bộ chuyển vào P10. Việc giữ long-lived session ở đúng cluster được bảo đảm vì client kết nối thẳng tới cluster.
 
-Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/negative tests, (c) migration notes, (d) evidence command/exit code, (e) rollback-safe behavior, (f) điều kiện dừng. Tickets chi tiết ở [`tickets/`](tickets/) (hiện có P00, P00b, P01, P02, P03, P12b).
+**Lab giai đoạn 2** (PostgreSQL primary + replica, bootstrap, hai cluster active/standby, DERP, clients, mạng underlay tách biệt) phải xong **trước P09**. Giai đoạn 1 hiện có `mc-ci` (7701), `mc-cp` (7702, endpoint public), `mc-bench` (7703). Xem §9 và `04-proxmox-lab.md`.
+
+Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/negative tests, (c) migration notes, (d) evidence command/exit code, (e) rollback-safe behavior, (f) điều kiện dừng. Tickets chi tiết ở [`tickets/`](tickets/) (hiện có P00, P00b, P00d, P01, P02, P03, P10, P11, P11b, P12b).
 
 ## 7. Gates: agent không được nhảy cóc
 
-**N0 — Upstream Verified:** commit snapshot, `PROVENANCE.md` và nhật ký cherry-pick bản vá bảo mật verified; baseline build, unit tests, integration smoke pass trên Linux; P00b có số đo baseline; test lab không chứa production secrets.
+**N0 — Upstream Verified:** commit snapshot, `PROVENANCE.md` và nhật ký cherry-pick verified; baseline build, unit tests, integration smoke pass trên Linux; P00b có số đo baseline (đã có); P00c có số đo server-only; test lab không chứa production secrets.
 
-**N1 — Tailnet Isolation:** 2 tailnet chung process, runtime riêng; ngăn cross-tailnet registration, map, policy, DNS, routes, API và metrics; grants=[] atomic; policy nil/rỗng của tailnet tenant = deny; machine key trùng khác tailnet hợp lệ; Noise POC được chấp nhận bởi reviewer.
+**N1 — Tailnet Isolation:**
+- 2 tailnet chung process và chung Noise key cluster, runtime riêng;
+- ngăn cross-tailnet registration, map, policy, DNS, routes, API và metrics;
+- phiên gắn đúng một tenant qua credential/bản ghi node;
+- grants=[] atomic; policy nil/rỗng của tailnet tenant = deny;
+- machine key trùng khác tailnet hợp lệ;
+- plugin scope fail-closed và lint SQL thô xanh;
+- netmap tăng dần qua M01–M06 (nếu bật);
+- reviewer bảo mật chấp nhận mô hình một key cho mỗi cluster.
 
-**N2 — Placement & Fencing:** 2 shard, unique owner/epoch, request stale bị chặn; tenant không bị split; edge fail-closed khi binding không rõ; reconnect sau shard restart hoạt động; fenced move + rolling drain (P12b) không có owner kép và giữ nguyên NodeID.
+**N2 — Placement, Fencing & Failover:**
+- 2 cluster trên PostgreSQL dùng chung; owner/epoch duy nhất; request stale bị chặn;
+- bootstrap trả đúng cluster và từ chối `MOVING`/`SUSPENDED`;
+- cluster từ chối tenant không thuộc mình, kể cả khi client đến nhầm;
+- failover active → standby tự động trong TTL, client không đăng nhập lại, active cũ sống lại không ghi được (F01–F04);
+- tenant move P12b không có owner kép.
 
-**N3 — Operational:** backup/restore mới, upgrade shard có canary tại **cấp shard** chứ không phải tenant, phù hợp schema; DERP/STUN verified; queue limit/rate limit và monitoring. **Xoay Noise key của cluster** (ADR 0005): có runbook, đã diễn tập trên lab, ghi rõ **phạm vi ảnh hưởng = mọi tenant và mọi client trên cluster đó** (mọi client phải reconnect và có thể phải đăng nhập lại; đo thời gian và tỉ lệ khôi phục). Có quy trình khẩn cấp khi lộ key: thu hồi, xoay, thông báo admin của mọi tenant bị ảnh hưởng. HA PostgreSQL (failover đã kiểm thử).
+**N3 — Operational:**
+- HA PostgreSQL (primary + replica, failover đã diễn tập, F05);
+- backup/restore không làm lùi `owner_epoch` hay epoch lease (F08);
+- upgrade có canary tại **cấp cluster** (nâng standby trước);
+- DERP/STUN verified; queue/rate limit, giới hạn kết nối PG theo cluster và monitoring;
+- **Xoay Noise key của cluster** (ADR 0005): runbook đã diễn tập trên lab; phạm vi ảnh hưởng = **mọi tenant và mọi client trên cluster** (reconnect, có thể phải đăng nhập lại; đo thời gian và tỉ lệ khôi phục); quy trình khẩn cấp khi lộ key: thu hồi, xoay, thông báo admin của mọi tenant bị ảnh hưởng.
 
-**N4 — Capacity:** SLO do người phụ trách xác nhận dựa trên benchmark; không gọi 'unlimited'. Kiểm thử nhiều tailnet nhỏ, một tailnet lớn (tới 10k thiết bị trên dedicated shard), burst registration, reconnect storm, policy changes, relay saturation, quota 5.000/tenant trên shared shard.
+**N4 — Capacity:** SLO do người phụ trách xác nhận dựa trên benchmark; không gọi 'unlimited'. Kiểm thử nhiều tailnet nhỏ, một tailnet lớn (tới 10k trên dedicated, nếu P00c/P14 cho thấy khả thi), burst registration, reconnect storm, failover storm, policy changes, relay saturation, quota 5.000/tenant trên shared.
 
 **N5 — Release Review (ngoài MVP):** independent security review, CVE/dependency audit, license, DR drill, vận hành thực tế; các block risk chưa xử lý -> NO-GO.
 
 ## 8. Test Plan tối thiểu tại mỗi gate
 
-- Integration harness upstream: `go run ./cmd/hi doctor`, `go run ./cmd/hi run "TestPingAllByIP"` (sau khi đọc `cmd/hi/README.md`). Các bài test multi-tailnet mới phải được thêm vào harness, không đánh đồng scenario nhiều user với nhiều tailnet. Ưu tiên `hscontrol/servertest` khi không cần Docker (`integration/AGENTS.md`).
+- Integration harness upstream: `go run ./cmd/hi doctor`, `go run ./cmd/hi run "TestPingAllByIP"` (sau khi đọc `cmd/hi/README.md`). Test multi-tailnet mới được thêm vào harness, không đánh đồng nhiều user với nhiều tailnet. Ưu tiên `hscontrol/servertest` khi không cần Docker (`integration/AGENTS.md`). Integration chạy với PostgreSQL (`--postgres`) là đường chính; SQLite chỉ cho unit.
 - Race: `CGO_ENABLED=1 go test -race ./...` trong toolchain hỗ trợ.
-- Snapshot/model fuzz: cùng machine key, cùng node name, cùng IP, cùng route, cùng tag/ACL wildcard, cùng OIDC subject; kiểm thử stale cache và cập nhật đồng thời.
-- Auth/Noise: key endpoint đúng tenant, Host/SNI mismatch, replay token, thử thay tenant binding giữa hai frame map của một stream.
+- Snapshot/model fuzz: cùng machine key, cùng node name, cùng IP, cùng route, cùng tag/ACL wildcard, cùng OIDC subject; stale cache và cập nhật đồng thời.
+- Scope DB: mọi model có `tailnet_id` + context thiếu scope → `ErrNoScope`; scope A không đọc/ghi được dòng của B; SQL thô ngoài allowlist → CI fail.
+- Auth/Noise (key chung cluster): register bằng credential A trên một phiên rồi map bằng node key B trên cùng phiên → từ chối; `(machine_key, node_key)` không phân giải được hoặc ra hai node → từ chối; Host lạ/SNI mismatch → 421; replay token.
 - Service auth: mTLS client identity sai, token tenant A gọi tenant B, expired/stale epoch, restore backup đảo epoch.
-- Fencing: hai shard cùng nhận ownership: **chỉ một** được phép thực hiện mutation/enroll/serve map cho một tailnet; trong lúc move, shard nguồn đã bị fence không phát MapResponse mới.
-- DERP: verify fail-closed, node unknown/revoked, relay saturation; STUN là dịch vụ khám phá NAT, không làm phép ACL.
+- Fencing & failover (F01–F05): hai process cùng giành lease → **chỉ một** thắng; kill/treo active → standby lấy lease trong TTL, client reconnect không đăng nhập lại; active cũ sống lại không ghi và không phát MapResponse; owner sai → không serve map/enroll.
+- Bootstrap (F06–F07): trả đúng cluster; `MOVING`/`SUSPENDED`/không tồn tại bị từ chối mà không lộ tồn tại; client tới nhầm cluster bị từ chối.
+- Netmap tăng dần: M01–M06 (`06-tests-benchmarks.md` §1c).
+- DERP: verify fail-closed, node unknown/revoked, relay saturation; STUN là khám phá NAT, không làm phép ACL.
 - Security observability: không cho Internet đọc `/debug/*`, metrics không trả public node IDs/IPs.
 
 ## 9. Hạ tầng lab Proxmox (tự tạo, không tự phá)
 
-**Cấu hình tham khảo, phải đối chiếu tài nguyên host thực** (tên VM theo `04-proxmox-lab.md` §4):
+**Cấu hình tham khảo, phải đối chiếu tài nguyên host thực** (chi tiết `04-proxmox-lab.md` §4):
 
 | VM | CPU / RAM | Nhiệm vụ |
 |---|---|---|
-| `mc-ci` | 8 vCPU / 16–32 GB | Git/Go build, container test, OpenTofu runner. **Đã tạo** (VMID 7701, 192.168.1.240) |
-| `mc-placement` | 2 vCPU / 4 GB | Placement API + PostgreSQL (lab) |
-| `mc-edge` | 2 vCPU / 2 GB | Caddy/Nginx, TLS, route manifests |
-| `mc-shard-01` | 4 vCPU / 8 GB | Multi-tailnet process + SQLite DB 01 |
-| `mc-shard-02` | 4 vCPU / 8 GB | Multi-tailnet process + SQLite DB 02 |
+| `mc-ci` | 8 vCPU / 16–32 GB | Git/Go build, container test, OpenTofu runner. **Đã tạo** (VMID 7701) |
+| `mc-cp` | 8 vCPU / 24 GB | Endpoint public lab (`serve-tailnets` P02, deprecated). **Đã tạo** (VMID 7702) |
+| `mc-bench` | 8 vCPU / 24 GB | Benchmark P00b/P00c. **Đã tạo** (VMID 7703) |
+| `mc-pg-01` | 4 vCPU / 8 GB | PostgreSQL primary dùng chung |
+| `mc-pg-02` | 4 vCPU / 8 GB | PostgreSQL replica (streaming), đích của failover PG |
+| `mc-bootstrap` | 2 vCPU / 2 GB | `mesh-bootstrap` + `mesh-placement` (operator API) |
+| `mc-c1-a`, `mc-c1-b` | 4 vCPU / 8 GB mỗi VM | Cluster 1: active / standby (cùng Noise key) |
+| `mc-c2-a`, `mc-c2-b` | 4 vCPU / 8 GB mỗi VM | Cluster 2: active / standby |
 | `mc-relay` | 2 vCPU / 2 GB | DERP + STUN + scoped verify |
-| `mc-client-a1/a2` | 1 vCPU / 1–2 GB mỗi VM | Tailscale clients thuộc A |
-| `mc-client-b1/b2` | 1 vCPU / 1–2 GB mỗi VM | Tailscale clients thuộc B |
+| `mc-client-a1/a2`, `mc-client-b1/b2` | 1 vCPU / 1–2 GB mỗi VM | Tailscale clients thuộc A / B |
 
-**Giai đoạn:** giai đoạn 1 = `mc-ci` (đã có). Giai đoạn 2 = shards, edge, placement, DERP, clients và mạng underlay tách biệt; phải xong trước P09. P00b chạy trên `mc-ci`; nếu 10k node vượt tài nguyên `mc-ci`, ghi lại là kết quả và đề xuất VM benchmark riêng trong pool lab.
+**Bỏ VM edge định tuyến theo Host.** Mỗi process cluster tự terminate TLS với cert của hostname cluster (`cluster-N.cp.<domain>` hoặc `cluster-N.mesh.test`); active và standby dùng cùng cert và cùng Noise key. Endpoint của cluster chuyển theo lease (VIP keepalived hoặc L4 forwarder có health check, chốt trong P11b); đây không phải định tuyến theo Host nên không cần edge riêng. Forwarder TCP trên VPS chỉ phục vụ endpoint public của `mc-cp`.
 
-**Tối ưu lab nhỏ:** giảm VM cho client bằng Docker network namespaces trên `mc-ci` trong giai đoạn unit/POC, nhưng vẫn giữ ít nhất các VM khác host/network để test E2E và fault injection. Tổng bảng trên là **ước tính cấu hình dành riêng**, không phải giá trị bắt buộc hoặc capacity benchmark.
+**Giai đoạn:** giai đoạn 1 = `mc-ci`, `mc-cp`, `mc-bench` (đã có). Giai đoạn 2 = bảng trên + mạng underlay tách biệt; phải xong trước P09. IaC giai đoạn 2 hiện có (`infra/lab/stage2-*.tf`, mặc định tắt) vẫn theo topology bản 1.1 (`mc-placement`, `mc-edge`, `mc-shard-01/02`). Phải cập nhật nó trong một ticket LAB riêng trước khi bật, theo AGENTS rule 3–4.
 
-**Mạng đề xuất:** `10.77.10.0/24` (management), `10.77.20.0/24` (client A underlay), `10.77.30.0/24` (client B underlay), `10.77.40.0/24` (services); tách qua bridge/VLAN/ACL/firewall. **Không** cho underlay A↔B reachability trực tiếp khi test điều kiện “VPN isolation”. Router/DERP được mở đúng cổng thử nghiệm (HTTPS/TCP 443, STUN UDP 3478 theo server). TLS dùng CA lab, đảm bảo client tin certificate hợp lệ, không `-k` trong E2E.
+**Tối ưu lab nhỏ:** giảm VM client bằng Docker network namespaces trên `mc-ci` trong giai đoạn unit/POC, nhưng giữ ít nhất các VM khác host/network để test E2E, failover và fault injection. Bảng trên là **ước tính**, không phải giá trị bắt buộc hay capacity benchmark.
 
-**IaC:** OpenTofu/Terraform + provider `bpg/proxmox`; tạo Ubuntu cloud images, cloud-init, inventory Ansible, SSH keys test, mạng/firewall riêng, DNS lab và manifests; provision bằng `root@pam` (chủ lab cho phép ngày 2026-11-22), nhưng chỉ thao tác trong pool lab và dải VMID `7700–7799`. Quy trình chuẩn là `fmt → validate → plan -out → apply`. Agent tự apply khi plan chỉ create/update trong phạm vi lab; các trường hợp khác cần human approval. `destroy` luôn cần phê duyệt độc lập. Xem `04-proxmox-lab.md` §5–6.
+**Mạng đề xuất:** `10.77.10.0/24` (management), `10.77.20.0/24` (client A underlay), `10.77.30.0/24` (client B underlay), `10.77.40.0/24` (services: PG, bootstrap, cluster, relay); tách qua SDN/VLAN/firewall. **Không** cho underlay A↔B reachability trực tiếp khi test "VPN isolation". Chỉ mở cổng cần thiết: HTTPS của cluster và bootstrap, STUN UDP 3478, PostgreSQL 5432 chỉ từ VM cluster/bootstrap. TLS dùng CA lab, hoặc Let's Encrypt DNS-01 cho endpoint public; không `-k` trong E2E.
+
+**IaC:** OpenTofu + provider `bpg/proxmox`; cloud-init, Ansible, SSH keys test. Provision bằng `root@pam` (chủ lab cho phép ngày 2026-11-22), nhưng chỉ trong pool `meshcontrol-lab` và dải VMID `7700–7799`. Quy trình chuẩn `fmt → validate → plan -out → apply`. Agent tự apply khi plan chỉ create/update trong phạm vi lab; trường hợp khác cần human approval. `destroy` luôn cần phê duyệt độc lập. Xem `04-proxmox-lab.md` §5–6.
 
 ## 10. Tổ chức agent và control of change
 
 - `Architect agent`: chỉ chỉnh ADR, test contracts và ticket scope; không được approve chính công việc của mình.
 - `Coding agent`: một PR tại một thời điểm, phải đọc source checkout; chạy test phù hợp, kèm chứng cứ và diff.
 - `Infra agent`: `tofu plan` và sinh manifest. Được dùng `root@pam` và tự `apply` khi plan chỉ create/update trong pool + dải VMID lab. `destroy`, `replace` và mọi thay đổi ngoài phạm vi đó cần người vận hành duyệt.
-- `Reviewer`: xác minh security invariants; đặc biệt `P02` (Noise), `P03` (fresh schema + default-deny), `P05–P07` (map), `P12b` (fencing khi move). Test pass nhưng invariants sai => reject.
+- `Reviewer`: xác minh security invariants; đặc biệt `P03b` (schema + scope plugin + SQL thô), `P04` (gắn tenant cho phiên khi dùng key chung), `P00d`/`P05–P07` (map), `P10`/`P11b` (fencing, failover), `P12b` (move). Test pass nhưng invariants sai => reject.
 
-**Quy tắc đối với code chưa xác minh:** Source map mô tả nơi xem/sửa ban đầu, **không** cam kết các signature không được kiểm tra trên checkout. Mỗi ticket buộc agent tạo/cập nhật `evidence/source-inventory-Pxx.md` trước khi sửa (một tên file duy nhất cho inventory).
+**Quy tắc đối với code chưa xác minh:** Source map mô tả nơi xem/sửa ban đầu, **không** cam kết các signature không được kiểm tra trên checkout. Mỗi ticket buộc agent tạo/cập nhật `evidence/source-inventory-Pxx.md` trước khi sửa.
 
 ## 11. Ước lượng tương đối và các rủi ro đường găng
 
 Đội giả định 1–2 kỹ sư Go chuyên sâu networking, agent hỗ trợ và có Proxmox lab sẵn:
 
-- N0 (toolchain + lab + baseline + P00b): 1–2 tuần.
-- N1 (multi-tailnet auth/state/policy/map E2E): 6–12 tuần **hoặc hơn** nếu Noise POC đòi sửa giao thức.
-- N2 (registry, routing, 2 shard, P12b): thêm 4–8 tuần.
-- N3–N4 (ops + security + perf): thêm 4–8 tuần.
+- N0 (còn lại: P00c server-only): 1–2 tuần.
+- N1 (P03b, P00d, P04–P09: schema PG + scope, gắn tenant với key chung, runtime/policy/map E2E): 6–12 tuần. Rủi ro Noise POC đã hết (chủ dự án chọn key theo cluster), nhưng refactor runtime và mapper vẫn lớn.
+- N2 (P10–P12b: registry + fencing, bootstrap, failover active/standby, 2 cluster, move): 5–9 tuần.
+- N3–N4 (HA PostgreSQL, ops, security, perf): 4–8 tuần.
 
-Các mốc là **ước lượng lập kế hoạch**; không phải cam kết. Đường găng: Noise binding → fresh schema + runtime theo tailnet → scoped mapper → real client E2E → fencing → tenant move → failure recovery. Có thể chạy Proxmox lab setup song song với N0 nhưng không phát triển sharding trước khi N1 qua gate và P00b có số đo.
+Các mốc là **ước lượng lập kế hoạch**, không phải cam kết. Đường găng: schema PG + scope fail-closed → gắn tenant cho phiên (key chung) → runtime theo tailnet → scoped mapper (+ netmap tăng dần) → real client E2E → fencing owner/epoch → lease + failover → bootstrap + cluster thứ hai → tenant move → HA PostgreSQL và failure recovery. Lab giai đoạn 2 chạy song song với N1, nhưng không làm P10+ trước khi N1 qua gate và P00c có số đo.
+
+**Rủi ro chính:**
+- PostgreSQL dùng chung là điểm lỗi và điểm nghẽn chung của mọi cluster.
+- Cô lập chỉ ở tầng ứng dụng: không có lớp chặn ở DB.
+- Key cluster dùng chung: lộ key ảnh hưởng mọi tenant trên cluster.
+- Netmap tăng dần sai có thể lộ peer hoặc không thu hồi peer.
+- Năng lực một process hiện mới ≈1.5k–2.5k thiết bị với policy thực tế (P00b, client trong cùng process). Lớp *dedicated* 5k–10k chưa khả thi cho tới khi P00c/P14 đo được khác.
 
 ## 12. Deliverables cuối cùng agent phải bàn giao
 
-- Source, migration DDL, OpenAPI (Huma) + Go client `gen/client/v1|v2`, Docker images và reproducible build (`git SHA`, dependency lock, SBOM).
+- Source, migration DDL (PostgreSQL + SQLite dev), OpenAPI (Huma) + Go client `gen/client/v1|v2`, Docker images và reproducible build (`git SHA`, dependency lock, SBOM).
 - Proxmox IaC + Ansible + README thao tác; file tfvars.example, không chứa secrets; export VM inventory.
-- 2 tailnet/1 process và 3 tailnet/2 shard E2E scripts; logs/map snapshots đã redacted; traffic evidence.
-- `release-gates.md` có test IDs và link tới CI artifacts; security signoff, known limitations.
-- Runbook restart shard, drain connections, tenant move (fenced + rolling drain), restore SQLite, reconcile registry, revoke tenant và rotate keys.
+- E2E scripts cho 2 tailnet/1 process và 3 tailnet/2 cluster (active/standby); logs/map snapshots đã redact; traffic evidence.
+- `release-gates.md` có test IDs và link tới CI artifacts; security signoff, known limitations (gồm rủi ro còn lại của ADR 0005).
+- Runbook: failover cluster (tự động và thủ công), restart cluster, failover và restore PostgreSQL, tenant move (thông báo + re-bootstrap + đăng nhập lại), revoke tenant, xoay Noise key cluster.
 
-**Chỉ khi từng gate có bằng chứng mới nâng trạng thái từ “plan/POC” sang “implemented/verified”.**
+**Chỉ khi từng gate có bằng chứng mới nâng trạng thái từ "plan/POC" sang "implemented/verified".**

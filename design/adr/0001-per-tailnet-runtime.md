@@ -1,6 +1,6 @@
 # ADR 0001 — Runtime riêng cho mỗi tailnet
 
-- **Trạng thái:** Proposed
+- **Trạng thái:** Proposed. **Một phần đã bị thay** bởi [ADR 0005](0005-cluster-architecture-shared-postgres-bootstrap-incremental-netmap.md): Noise key thuộc cluster (dùng chung mọi runtime), không thuộc runtime theo tailnet; runtime được chọn theo credential/bản ghi node, không theo binding edge. Phần runtime riêng (NodeStore, PolicyManager, Batcher, IPAM, authCache) giữ nguyên.
 - **Ngày:** 2026-11-22
 - **Người quyết định:** chủ dự án (hướng đã chọn); chờ review bảo mật
 - **Liên quan:** PLAN §1, §4; tickets P02, P05, P00b

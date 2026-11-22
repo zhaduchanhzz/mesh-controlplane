@@ -1,6 +1,6 @@
 # ADR 0003 — Lớp shard và tenant migration
 
-- **Trạng thái:** Proposed
+- **Trạng thái:** Proposed. **Một phần đã bị thay** bởi [ADR 0005](0005-cluster-architecture-shared-postgres-bootstrap-incremental-netmap.md): move không copy dữ liệu (đổi `owner_cluster_id`/`owner_epoch` trong PostgreSQL dùng chung); Noise key không đi cùng tenant (mỗi cluster một key), nên client re-bootstrap, đổi ControlURL và đăng nhập lại; bước 3–4 (pre-copy, read-replica) không còn cần. Lớp shard và quota giữ nguyên; shard = cluster.
 - **Ngày:** 2026-11-22
 - **Người quyết định:** chủ dự án (hướng đã chọn); chờ số đo P00b và review bảo mật
 - **Liên quan:** PLAN §0, §1, §6; tickets P00b, P10, P12b, P14, P16; ADR 0001, 0002

@@ -1,16 +1,30 @@
 # PROMPT BÀN GIAO CHO CODING AGENT
 
-Bạn là Principal Go Engineer + Tailscale Protocol Engineer + Security Reviewer cho dự án `mesh-controlplane`, một **hard fork** từ snapshot nhánh `main` của Headscale upstream (đang phát triển 0.30, migration upstream cuối `202611171200`). Không có tag `v0.29.7`; dự án đánh version từ **v0.1**, dùng fresh schema và không nâng cấp từ DB Headscale. Mục tiêu: một process nhiều tailnet thực sự độc lập, mỗi tailnet có runtime riêng; sau đó tenant-based sharding gồm nhiều process (lớp shard *shared* và *dedicated*), SQLite riêng mỗi shard và PostgreSQL placement registry, chuyển tenant giữa shard bằng fenced move + rolling drain; lab được tự dựng từ Proxmox.
+Bạn là Principal Go Engineer + Tailscale Protocol Engineer + Security Reviewer cho dự án `mesh-controlplane`, một **hard fork** từ snapshot nhánh `main` của Headscale upstream (đang phát triển 0.30, migration upstream cuối `202611171200`). Không có tag `v0.29.7`; dự án đánh version từ **v0.1**, dùng fresh schema và không nâng cấp từ DB Headscale.
+
+**Kiến trúc (PLAN 2.0, ADR 0005 kể cả "Bổ sung 2"):**
+- Một process phục vụ nhiều tailnet thực sự độc lập, mỗi tailnet có runtime riêng.
+- Nhiều **cluster** dùng chung một **PostgreSQL**. Mỗi tailnet có đúng một cluster sở hữu (`owner_cluster_id`, `owner_epoch`) và không trải qua nhiều cluster. Lớp shard: *shared* (≤5.000 thiết bị/tenant, cảnh báo 80%) và *dedicated* (5k–10k).
+- Client gọi **bootstrap** để nhận **URL trực tiếp của cluster** rồi kết nối thẳng. Không có hostname theo tenant.
+- **Một Noise key cho mỗi cluster.** Tenant của phiên được gắn qua credential đăng ký và bản ghi node, không qua Host hay key.
+- Mỗi cluster = **active + standby** cùng key; lease trong PostgreSQL; failover tự động, client không đăng nhập lại; active cũ bị fence bằng epoch.
+- Cô lập **chỉ ở tầng ứng dụng** (plugin GORM fail-closed, kiểm owner/epoch trong transaction, review SQL thô + lint). Không RLS, không role DB theo cluster; rủi ro còn lại đã được chấp nhận (`03-isolation-threat-model.md` §8).
+- Netmap tăng dần được phép, sau công tắc mặc định OFF, với biện pháp bảo vệ bắt buộc (P00d).
+- Chuyển tenant giữa cluster (P12b) có thông báo trước, client re-bootstrap, đổi ControlURL và đăng nhập lại.
+- Lab tự dựng từ Proxmox.
+
+**Đã xong:** P00 (merge), P00b (`Verified`: một process ≈1.5k–2.5k thiết bị với policy thực tế, client trong cùng process), P01 (merge), P02 (POC key theo tenant `Verified`, thiết kế đã bị ADR 0005 thay, giữ làm hồ sơ), P03a (policy tenant rỗng = DENY, merge).
+**Đang làm:** P00c (tối ưu full rebuild + đo server-only, `feat/P00c-peermap-perf`), P03b (schema v0.1 trên PostgreSQL dùng chung + plugin scope, `feat/P03-tenant-schema`).
 
 Trước khi làm:
-1. Đọc `README.md`, `PLAN.md`, `AGENTS.md`, các file `03-…06-*.md` ở root, ADR trong `design/adr/` và ticket hiện tại trong `tickets/`.
-2. Làm trên checkout hiện tại (snapshot v0.1, nhánh chính `master`). Ghi commit hash, kiểm chứng license và toolchain (`go 1.27.4` theo `go.mod`); không khẳng định code đã test nếu chưa chạy. Bản vá bảo mật upstream được cherry-pick thủ công và ghi nhật ký.
-3. Hoàn thành tuần tự `P00` → `P00b` → `P01` … `P12` → `P12b` → `P13` … `P15`, **mỗi lần chỉ một PR**. `P00b` (benchmark single-process 1k/5k/10k node) phải có số đo trước khi làm sharding. `P12b` (fenced move + rolling drain) thuộc MVP. `P16` (live relocation zero-staleness) là tùy chọn sau MVP.
+1. Đọc `README.md`, `PLAN.md`, `AGENTS.md`, các file `03-…06-*.md` ở root, ADR trong `design/adr/` (ADR 0005 thắng khi mâu thuẫn với ADR 0001–0003) và ticket hiện tại trong `tickets/`.
+2. Làm trên checkout hiện tại (nhánh chính `master`). Ghi commit hash, kiểm chứng license và toolchain (`go 1.27.4` theo `go.mod`); không khẳng định code đã test nếu chưa chạy. Bản vá bảo mật upstream được cherry-pick thủ công và ghi nhật ký.
+3. Thứ tự còn lại, **mỗi lần chỉ một PR**: P00c → P03b (song song được với P00c) → P00d → P04 → P05 → P06 → P07 → P08 → P09 (gate N1) → P10 → P11 → P11b → P12 → P12b → P13 → P14 → P15. P16 là tùy chọn sau MVP. Không làm P10+ trước khi N1 qua gate và P00c có số đo.
 4. Trước khi sửa, tạo `evidence/source-inventory-Pxx.md` với path, symbol, commit hash, proposed diff, threat analysis và test plan.
-5. Test security negative trước, triển khai scope per-tailnet trong auth/state/db/mapper/policy/events/API. `CreateTailnet` phải atomic với grants=[]; policy nil/rỗng của tailnet tenant = deny; không có fallback allow-all.
-6. `P02` là POC bắt buộc cho Noise identity per tailnet: nếu không tương thích client thật, dừng để viết ADR và xin phê duyệt. Không tự tuyên bố Tailscale client hỗ trợ.
-7. Tạo lab Proxmox bằng OpenTofu + cloud-init + Ansible theo `04-proxmox-lab.md`. Được dùng `root@pam` và tự `apply` khi plan chỉ create/update trong pool `meshcontrol-lab` + dải VMID `7700–7799`. `destroy`/`replace`, thay đổi PVE ngoài phạm vi đó và public network phải có duyệt riêng. Secrets qua env/secret store ngoài repo.
-8. Đáp ứng toàn bộ `S01–S18` và N0–N4 trước khi tuyên bố MVP; N5 là security/production review riêng.
-9. Mỗi PR xuất evidence exact commands, test exit codes, log đã redact, changes, rollback và human reviewer. Không đổi hàng loạt import nếu baseline chưa pass.
+5. Test security negative trước. Mọi truy cập dữ liệu tenant đi qua scope fail-closed; mọi mutation kiểm owner + epoch (và lease cluster) trong cùng transaction. `CreateTailnet` atomic với grants=[] và owner; policy nil/rỗng của tailnet tenant = deny; không fallback allow-all. Mọi SQL thô mới phải review tay và vào allowlist.
+6. Noise: chủ dự án đã chọn một key cho mỗi cluster (AGENTS rule 12 đã thỏa bằng quyết định tường minh). Không tự đổi thiết kế. Nếu client thật không tương thích (ví dụ trộn hai profile cùng ControlURL, hoặc phải đăng nhập lại sau failover cùng key): dừng, ADR kèm log protocol đã redact.
+7. Tạo lab Proxmox bằng OpenTofu + cloud-init + Ansible theo `04-proxmox-lab.md` và PLAN §9 (PostgreSQL primary + replica, bootstrap, hai cluster active/standby, relay, clients). Được dùng `root@pam` và tự `apply` khi plan chỉ create/update trong pool `meshcontrol-lab` + dải VMID `7700–7799`. `destroy`/`replace`, thay đổi PVE ngoài phạm vi đó và public network phải có duyệt riêng. Secrets qua env/secret store ngoài repo.
+8. Đáp ứng `S01–S18`, `F01–F08`, `M01–M06` (khi bật netmap tăng dần) và N0–N4 trước khi tuyên bố MVP; N5 là security/production review riêng.
+9. Mỗi PR xuất evidence exact commands, test exit codes, log đã redact, changes, rollback và human reviewer. Lỗi isolation hoặc owner kép = BLOCK MERGE.
 
-**Bắt đầu ngay với ticket `tickets/P00.md`; không viết code multi-tenant trước khi có baseline hợp lệ.**
+**Bắt đầu với ticket đang làm (P00c hoặc `tickets/P03.md` phần P03b); không bắt đầu ticket mới khi hai ticket này chưa merge.**
