@@ -25,35 +25,13 @@ var (
 	// ACTIVE (PENDING, SUSPENDED or DELETING): no runtime may serve it.
 	ErrTailnetNotActive = errors.New("tailnet is not active")
 
-	errDuplicateNodeKeys = errors.New("nodes share a (machine_key, node_key) pair")
-	errEmptyClusterID    = errors.New("empty cluster id")
+	errEmptyClusterID = errors.New("empty cluster id")
 )
 
 // v01InitMigration marks a database created from the v0.1 schema files. The
 // upstream Headscale migration chain is not carried: v0.1 does not upgrade
 // Headscale databases (tickets/P03.md).
 const v01InitMigration = "202611220000-v0.1-init"
-
-// nodesMachineNodeKeyMigration adds the global unique index on
-// (machine_key, node_key) that resolves a Noise session to one tailnet
-// (ADR 0007 §2).
-const (
-	nodesMachineNodeKeyMigration = "202611230000-nodes-unique-machine-node-key"
-	idxNodesMachineNodeKey       = "idx_nodes_machine_key_node_key"
-)
-
-// zeroMachineKey and zeroNodeKey are how the text serialiser stores the zero
-// keys of a node created without keys. Such rows can never be resolved (the
-// platform refuses zero keys), so they stay outside the unique index.
-var (
-	zeroMachineKey = key.MachinePublic{}.String()
-	zeroNodeKey    = key.NodePublic{}.String()
-)
-
-// nodesMachineNodeKeyPredicate selects the rows the unique index covers. It
-// must stay byte-identical to schema.sql and schema_postgres.sql (squibble
-// compares the stored SQL).
-var nodesMachineNodeKeyPredicate = "machine_key <> '" + zeroMachineKey + "' AND node_key <> '" + zeroNodeKey + "'"
 
 // v01Migrations is the v0.1 migration chain. New migrations are appended,
 // each in tx.Transaction with explicit DDL for SQLite and PostgreSQL
@@ -68,37 +46,7 @@ func v01Migrations() []*gormigrate.Migration {
 			Migrate:  func(*gorm.DB) error { return nil },
 			Rollback: func(*gorm.DB) error { return nil },
 		},
-		{
-			ID: nodesMachineNodeKeyMigration,
-			Migrate: func(db *gorm.DB) error {
-				return db.Transaction(func(tx *gorm.DB) error {
-					// Refuse with a clear error, not a driver message, and
-					// leave the database unchanged: an operator must
-					// resolve the duplicates (they make a Noise session
-					// ambiguous).
-					var dups int64
-
-					err := tx.Raw(`SELECT count(*) FROM (SELECT machine_key, node_key FROM nodes WHERE ` +
-						nodesMachineNodeKeyPredicate +
-						` GROUP BY machine_key, node_key HAVING count(*) > 1) d`).Scan(&dups).Error
-					if err != nil {
-						return fmt.Errorf("checking duplicate node keys: %w", err)
-					}
-
-					if dups > 0 {
-						return fmt.Errorf("%w: %d pairs; remove the duplicates before upgrading", errDuplicateNodeKeys, dups)
-					}
-
-					// Identical DDL on SQLite and PostgreSQL (partial
-					// unique indexes exist on both).
-					return tx.Exec(`CREATE UNIQUE INDEX ` + idxNodesMachineNodeKey +
-						` ON nodes(machine_key, node_key) WHERE ` + nodesMachineNodeKeyPredicate).Error
-				})
-			},
-			Rollback: func(db *gorm.DB) error {
-				return db.Exec(`DROP INDEX IF EXISTS ` + idxNodesMachineNodeKey).Error
-			},
-		},
+		nodeKeyPairMigration(),
 	}
 }
 
@@ -262,8 +210,11 @@ func (p *Platform) TailnetForAuthKey(authKey string) (tailnet.ID, error) {
 }
 
 // TailnetForNode returns the tailnet of the node with machine key mk (from
-// the Noise handshake) and node key nk. The pair is globally unique; zero
-// keys never resolve.
+// the Noise handshake) and node key nk. Several rows of one tailnet may carry
+// the pair (upstream re-login as another user keeps the old node), but the
+// schema refuses the pair in a second tailnet (trg_nodes_key_pair_tailnet*);
+// a pair seen in more than one tailnet is still refused here. Zero keys
+// never resolve.
 func (p *Platform) TailnetForNode(mk key.MachinePublic, nk key.NodePublic) (tailnet.ID, error) {
 	if mk.IsZero() || nk.IsZero() {
 		return tailnet.ID{}, ErrUnknownTenant
@@ -274,10 +225,10 @@ func (p *Platform) TailnetForNode(mk key.MachinePublic, nk key.NodePublic) (tail
 
 	var tns []string
 
-	// LIMIT 2: more than one row would be ambiguous; the unique index makes
-	// it impossible, and it is still refused.
+	// LIMIT 2: a second tailnet would be ambiguous; the trigger makes it
+	// impossible, and it is still refused.
 	err := p.db.WithContext(ctx).Raw(
-		`SELECT tailnet_id FROM nodes WHERE machine_key = ? AND node_key = ? LIMIT 2`,
+		`SELECT DISTINCT tailnet_id FROM nodes WHERE machine_key = ? AND node_key = ? LIMIT 2`,
 		mk.String(), nk.String(),
 	).Scan(&tns).Error
 	if err != nil {
