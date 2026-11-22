@@ -1,21 +1,28 @@
 # 05 — Database / API / Enrollment Contracts
 
-> Chỉ là đặc tả thiết kế. Các SQL ví dụ chưa được kiểm tra trực tiếp trên schema thực của snapshot baseline v0.1 (fresh schema, xem ADR 0002); **không áp dụng production/staging bằng cách copy nguyên mẫu**.
+> Chỉ là đặc tả thiết kế. Các SQL ví dụ chưa được kiểm tra trực tiếp trên schema thực của snapshot baseline v0.1 (fresh schema, xem ADR 0002); **không áp dụng production/staging bằng cách copy nguyên mẫu**. Cập nhật theo PLAN 2.0 và [ADR 0005](design/adr/0005-cluster-architecture-shared-postgres-bootstrap-incremental-netmap.md): PostgreSQL dùng chung, bootstrap, một Noise key cho mỗi cluster, lease active/standby, cô lập chỉ ở tầng ứng dụng.
 
 ## 1. Domain types
 
 ```go
 // Pseudocode; không phải API upstream.
 type TailnetID string
-type ShardID string
-type OwnershipEpoch uint64
+type ClusterID string
+type OwnerEpoch uint64   // tailnets.owner_epoch: đổi khi tenant chuyển cluster
+type LeaseEpoch uint64   // cluster_leases.epoch: đổi khi failover active/standby
+
+type FencingToken struct {
+    ClusterID  ClusterID
+    Holder     string     // ID của process
+    LeaseEpoch LeaseEpoch
+}
 
 type VerifiedScope struct {
-    TailnetID TailnetID
-    ShardID ShardID
-    Epoch OwnershipEpoch
+    TailnetID     TailnetID
+    ClusterID     ClusterID
+    OwnerEpoch    OwnerEpoch
     AuthPrincipal string
-    Source SourceKind // authenticated client session vs internal admin
+    Source        SourceKind // RegistrationCredential | NodeRecord | InternalAdmin
 }
 
 type TailnetSettings struct {
@@ -33,58 +40,80 @@ type TailnetSettings struct {
 }
 ```
 
-`VerifiedScope` không được tạo từ `X-Tenant-ID` do Internet client gửi. Hình thành từ edge route binding đã xác thực + Noise session, hoặc mTLS + signed service claims nội bộ. Không lưu scope trong global singleton.
+`VerifiedScope` không được tạo từ `X-Tenant-ID`, Host hay payload do Internet client gửi. Vì Noise key dùng chung cho cả cluster, scope của client được hình thành từ:
+- **credential đăng ký** đã xác minh (register), hoặc
+- **bản ghi node** khớp đúng một `(machine_key, node_key)` (map/poll), sau khi kiểm tenant thuộc cluster ở `OwnerEpoch` hiện tại.
 
-## 2. Shard SQLite ownership
+Với API nội bộ, scope đến từ mTLS + signed service claims. Không lưu scope trong global singleton.
+
+## 2. PostgreSQL dùng chung: bảng tenant
+
+Một PostgreSQL cho mọi cluster (ADR 0005). SQLite chỉ cho dev/unit test, cùng schema.
 
 | Table/concept | Scope bắt buộc | Constraint/Index bắt buộc |
 |---|---|---|
-| `tailnets` | Shard | Unique tailnet ID, status enum |
+| `tailnets` | Nền tảng (đọc bởi cluster sở hữu, bootstrap, placement) | Unique ID và slug, status enum, `owner_cluster_id` FK `clusters`, `owner_epoch` ≥ 1 đơn điệu |
 | `users`, memberships | Tailnet | `(tailnet_id, principal_id)` unique, composite FK |
-| `nodes` | Tailnet | `(tailnet_id, machine_key)` unique; node key binding scoped |
+| `nodes` | Tailnet | Index `(tailnet_id, machine_key)`; `(machine_key, node_key)` phân giải tối đa một node toàn DB (I01) |
 | `routes`, `exit_node_approvals` | Tailnet | composite FK node belongs to same tailnet |
 | `tailnet_policies` | Tailnet | `(tailnet_id, revision)` monotonic; immutable audit checksum |
-| `preauth`, `auth_requests`, `pending` | Tailnet | hash secrets, `nonce`, expiry, single-use, budget |
+| `credentials` (preauth, API key), `pending_registrations` | Tailnet | hash secrets, `nonce`, expiry, single-use, budget; `(kind, identifier)` unique toàn cục, lookup kiểm tailnet |
 | `tailnet_dns`, `tailnet_ipam` | Tailnet | per-tailnet prefixes and stable allocations |
-| `events`, `subscriptions` | Tailnet | tenant-scoped delivery keys and retention |
-| `audit_events` | Tailnet / shard | actor, action, revision, epoch, timestamp |
+| `tailnet_events`, subscriptions | Tailnet | tenant-scoped delivery keys and retention |
+| `audit_events` | Tailnet / nền tảng | actor, action, revision, owner_epoch, lease_epoch, timestamp |
 
-Use SQLite within a shard; registry PostgreSQL holds placements, not headscale node records. Multi-shard query requires privileged operator API; no union-of-all-shard datasets on tenant endpoint.
+**Cô lập chỉ ở tầng ứng dụng (ADR 0005 Bổ sung 2 §3):**
+- Mọi truy cập bảng tenant qua plugin GORM fail-closed: thiếu scope → `ErrNoScope`.
+- SQL thô (`Raw`, `Exec`, migration) chỉ nằm trong allowlist đã review tay; CI chặn câu mới.
+- **Không** row-level security, **không** role DB theo cluster. Mọi cluster dùng một role ứng dụng; role migration tách riêng.
+- Rủi ro còn lại: `03-isolation-threat-model.md` §8.
 
-## 3. Placement Registry PostgreSQL design (illustrative)
+Query xuyên tenant chỉ qua API platform operator có quyền riêng; không có union dữ liệu nhiều tenant trên endpoint tenant.
+
+## 3. Registry, lease và fencing (cùng PostgreSQL, minh họa)
 
 ```sql
-CREATE TABLE shards (
-  id UUID PRIMARY KEY,
-  endpoint TEXT NOT NULL UNIQUE,
+CREATE TABLE clusters (
+  id TEXT PRIMARY KEY,
+  endpoint_url TEXT NOT NULL UNIQUE,     -- https://cluster-2.cp.gta5web.online:8443
+  class TEXT NOT NULL CHECK (class IN ('shared','dedicated')),
   state TEXT NOT NULL CHECK (state IN ('READY','DRAINING','MAINTENANCE','UNAVAILABLE')),
+  noise_public_key TEXT NOT NULL,        -- chỉ public key, để đối chiếu
   software_version TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
-CREATE TABLE placements (
-  tailnet_id UUID PRIMARY KEY,
-  shard_id UUID NOT NULL REFERENCES shards(id),
-  epoch BIGINT NOT NULL CHECK(epoch >= 1),
-  status TEXT NOT NULL CHECK(status IN ('RESERVED','ACTIVE','MOVING','SUSPENDED','DELETING')),
-  lease_until TIMESTAMPTZ,
-  revision BIGINT NOT NULL DEFAULT 1,
-  updated_at TIMESTAMPTZ NOT NULL
+CREATE TABLE cluster_leases (
+  cluster_id TEXT PRIMARY KEY REFERENCES clusters(id),
+  holder TEXT NOT NULL,
+  epoch BIGINT NOT NULL CHECK (epoch >= 1),
+  expires_at TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX placements_by_shard ON placements(shard_id, status);
--- Real migration: use transactional CAS UPDATE WHERE epoch/revision matches.
+-- tailnets.owner_cluster_id / owner_epoch: xem PLAN §4.
+
+-- Mọi mutation tenant (helper fencing, P10 + P11b), trong CÙNG transaction:
+--   SELECT 1 FROM cluster_leases
+--    WHERE cluster_id=$c AND holder=$me AND epoch=$lease_epoch AND expires_at > now()
+--    FOR SHARE;
+--   SELECT 1 FROM tailnets
+--    WHERE id=$t AND owner_cluster_id=$c AND owner_epoch=$owner_epoch AND status='ACTIVE'
+--    FOR SHARE;
+--   … mutation …
+-- Không có dòng nào → ROLLBACK, runtime/process tự fence.
 ```
 
-`epoch` monotonic, không được giảm sau restore. Tạo ownership lease/fence qua CAS transaction. Cấp shard-bound service certificates và signed route manifest có revision + expiry, chống giả mạo.
+- `owner_epoch` và `cluster_leases.epoch` đơn điệu, không được giảm sau restore (giữ high-water mark ngoài backup, P13).
+- Takeover lease chỉ khi `expires_at < now()` theo đồng hồ của PostgreSQL. Không dùng đồng hồ process để quyết định lease ở DB.
+- Process tự fence theo deadline monotonic (PLAN §1 "Runtime HA", `tickets/P11b.md`).
 
-## 4. Required internal APIs
+## 4. Required APIs
 
-API dùng `/internal/v1` dưới mTLS; tên và schema sẽ được mã hóa thành OpenAPI/proto sau khi POC được duyệt.
+API nội bộ dùng `/internal/v1` dưới mTLS; API bootstrap là public HTTPS. Tên và schema sẽ được mã hóa thành OpenAPI qua Huma (AGENTS rule 10).
 
 | Operation | Mức quyền | Điều kiện an toàn |
 |---|---|---|
-| `CreateTailnet`, `ActivateTailnet`, `SuspendTailnet`, `DeleteTailnet` | platform operator | epoch+idempotency+audit; default-deny atomic |
+| `CreateTailnet`, `ActivateTailnet`, `SuspendTailnet`, `DeleteTailnet` | platform operator | owner_epoch + idempotency + audit; default-deny atomic |
 | `GetTailnet`, `UpdateTailnetSettings` | tenant operator | CAS config revision, whitelist fields |
-| `BeginEnrollment`, `AuthRegister`, `ApproveEnrollment`, `DenyEnrollment` | user/admin scoped | nonce TTL, binding machine key, single-use |
+| `BeginEnrollment`, `AuthRegister`, `ApproveEnrollment`, `DenyEnrollment` | user/admin scoped | nonce TTL, binding machine key, single-use; trang phê duyệt hiển thị tenant |
 | `CreatePreauthKey`, `ListKeys`, `RevokeKey` | tenant operator | secret hashed, scope, expires |
 | `ListNodes`, `GetNode`, `RenameNode`, `ExpireNode`, `DeleteNode` | tenant operator | node ownership validation |
 | `SetTags`, `ApproveRoute`, `DisableRoute`, `EnableExitNode` | tenant operator | policy validation + identity rules |
@@ -92,10 +121,12 @@ API dùng `/internal/v1` dưới mTLS; tên và schema sẽ được mã hóa th
 | `GetPolicy`, `PutPolicy`, `CheckPolicy` | tenant operator | dry-run no changes, scope, revision |
 | `GetDNS`, `SetDNS`, `GetRoutes` | tenant operator | prevent cross-tailnet names/routes |
 | `SubscribeEvents` | scoped consumer | resume token, bounded queues, no cross-tenant topics |
-| `GetTailnetHealth`, `GetShardHealth` | tenant/operator | redaction per role |
-| `GetShardStatus`, `UpdateShardState`, `ReservePlacement` | platform operator | mTLS, epoch CAS, audit |
+| `GetTailnetHealth`, `GetClusterHealth` | tenant/operator | redaction per role |
+| `ListClusters`, `UpdateClusterState` | platform operator | mTLS, audit; không giảm epoch |
+| `BeginMove`, `AbortMove`, `GetMoveStatus` | platform operator | owner_epoch CAS, thông báo trước (P12b) |
+| `Bootstrap` (public) | caller có credential gắn tenant (mặc định; xem §8) | chỉ `ACTIVE`; phản hồi từ chối đồng nhất; rate limit |
 
-**Identity and enrollment MVP:** tối thiểu dùng pre-auth token hoặc web-auth approval scoped. OIDC upstream global không bật tùy tiện trong shard; xác minh `oidc.go` và chọn mô hình theo ADR sau khi N1 đã hoạt động.
+**Identity and enrollment MVP:** tối thiểu dùng pre-auth token hoặc web-auth approval scoped. OIDC upstream global không bật tùy tiện trong cluster; xác minh `oidc.go` và chọn mô hình theo ADR sau khi N1 đã hoạt động.
 
 ## 5. Credential format / verification
 
@@ -104,10 +135,10 @@ Không cho client tự set tenant bằng header. API credentials là short-lived
 ```json
 {
   "iss": "mesh-placement",
-  "aud": "shard:shard-01",
+  "aud": "cluster:cluster-2",
   "sub": "service:control-api",
   "tailnet_id": "TAILNET_UUID",
-  "epoch": 12,
+  "owner_epoch": 12,
   "actions": ["node.list", "policy.update"],
   "iat": 1234567890,
   "exp": 1234567950,
@@ -115,30 +146,55 @@ Không cho client tự set tenant bằng header. API credentials là short-lived
 }
 ```
 
-- Ký bởi key được quản lý/rotate; shard verify `iss/aud/exp/jti/actions/epoch`, channel mTLS đúng workload identity.
+- Ký bởi key được quản lý/rotate; cluster verify `iss/aud/exp/jti/actions/owner_epoch`, channel mTLS đúng workload identity, rồi **vẫn** kiểm owner + lease trong transaction.
 - Mutation có idempotency key và revision/ETag; replay `jti` bị chặn cho operation nhạy cảm, bằng bounded replay cache hoặc one-time tokens.
 - Không đưa secret vào JSON logs; audit chỉ fingerprint/hash.
 - Token tenant A không thể chuyển sang tailnet B khi thay path/query/payload.
+- Credential đăng ký (pre-auth key, enrollment token) là nguồn scope của register (I01); credential của tenant không thuộc cluster → từ chối.
 
 ## 6. Session và policy revision
 
-- Map stream mang bound immutable `tailnet_id`, `node_id`, `policy_revision`, `epoch`; session refresh không được tự nhảy tenant.
-- Event và stream cursor có tenant, revision và shard identity; unsubscribe/cancel khi delete/suspend.
-- `policy` update invalid phải reject atomic, không reset policy thành allow-all.
+- Map stream mang bound immutable `tailnet_id`, `node_id`, `policy_revision`, `owner_epoch`, `lease_epoch`; session refresh không được tự nhảy tenant.
+- Một phiên Noise gắn đúng một tailnet sau request đầu tiên đã xác thực; request sau khác tailnet → từ chối.
+- Event và stream cursor có tenant, revision và cluster identity; unsubscribe/cancel khi delete/suspend/move, và khi process mất lease.
+- `policy` update invalid phải reject atomic, không reset policy thành allow-all. Đổi policy luôn full rebuild netmap (P00d).
 - `CheckPolicy` dry-run chỉ dùng data node tenant hiện tại; `wildcard` giới hạn trong tailnet.
 
 ## 7. Configuration split
 
-**Shard-global config:** listener, TLS/proxy trust, DB path, host resource limits, own shard ID, internal auth, metrics listen, DERP default profile. File YAML chỉ cho infra.
+**Cluster-global config:** listener, TLS cert của hostname cluster, allowlist hostname, DSN PostgreSQL (credential qua env/secret store), giới hạn kết nối, `cluster_id`, `instance_id` (holder), đường dẫn Noise key của cluster (file/secret store, giống nhau trên active và standby), TTL/chu kỳ lease và biên tự fence, metrics listen, DERP default profile, công tắc netmap tăng dần (mặc định OFF). File YAML chỉ cho infra.
 
-**Tailnet-dynamic config persisted:** domain/MagicDNS, custom nameservers, extra DNS records, IP pools, device expiry, ACL/grants, route approvals, DERP profile, max node/registration/streams, member login settings. Update qua transactional API, validate rồi publish to per-tailnet state/event. Không bắt restart shard khi đổi DNS A hoặc policy A.
+**Tailnet-dynamic config persisted:** domain/MagicDNS, custom nameservers, extra DNS records, IP pools, device expiry, ACL/grants, route approvals, DERP profile, max node/registration/streams, member login settings. Update qua transactional API, validate rồi publish to per-tailnet state/event. Không bắt restart cluster khi đổi DNS A hoặc policy A.
 
-## 8. Internal service discovery and edge
+## 8. Bootstrap (thay "edge route manifest" của bản 1.1)
 
-- Registry emits versioned signed route manifest (`hostname`, `tailnet_id`, `shard_id`, `epoch`, `expiry`, `revision`). Agent dùng Caddy config API hoặc file reload **được xác minh bằng POC**, không trông chờ Caddy tự tra SQL.
-- Long-lived connection upgrade phải giữ shard pin. Registry đổi placement không cho proxy silently rebind stream cũ.
-- Nếu manifest expired/unrecognized hostname/SNI mismatch: return error, không route về shard mặc định.
+Không còn edge định tuyến theo Host, không còn route manifest ký. Client hỏi bootstrap một lần (và lại khi tenant chuyển cluster), rồi kết nối thẳng cluster.
+
+**Phác thảo API (chốt trong P11):**
+
+```http
+POST /v1/bootstrap
+Content-Type: application/json
+
+{"tenant": "acme", "credential": "<enrollment token hoặc preauth key>"}
+```
+
+```json
+200 OK
+{"control_url": "https://cluster-2.cp.gta5web.online:8443", "issued_at": "2026-11-22T10:00:00Z"}
+```
+
+| Trạng thái tenant | Có credential hợp lệ của tenant | Không có / sai credential |
+|---|---|---|
+| `ACTIVE` | 200 + `control_url` | 404 đồng nhất |
+| `MOVING` | 503 + `Retry-After` | 404 đồng nhất |
+| `SUSPENDED`, `PENDING`, `DELETING`, không tồn tại | 404 đồng nhất | 404 đồng nhất |
+
+- Phản hồi 404 giống nhau về status, body và thời gian (trong ngưỡng đo) để không lộ tenant tồn tại (I15). Có cho phép tra ẩn danh theo slug hay không là câu hỏi mở của P11.
+- Bootstrap chỉ đọc PostgreSQL; không ghi; không giữ state phiên.
+- Bootstrap **không** là nguồn tin cậy: cluster tự kiểm owner/epoch/lease ở mọi request (F07).
+- Long-lived connection: client nối thẳng cluster nên không có proxy nào có thể "rebind" stream sang cluster khác. Endpoint của cluster (VIP/L4) chỉ chọn giữa active và standby của **cùng** cluster; process không giữ lease từ chối.
 
 ## 9. Nghiệm thu source-level
 
-Mỗi API cần integration test cho success + token wrong tenant + stale epoch + missing scope + forbidden role + replay, lưu audit consistent. Mỗi schema change có FK negative test, unique collision test, fresh DB test và migration/upstream regression.
+Mỗi API cần integration test cho success + token wrong tenant + stale `owner_epoch` + stale `lease_epoch` + missing scope + forbidden role + replay, lưu audit consistent. Mỗi schema change có FK negative test, unique collision test, fresh DB test trên PostgreSQL và SQLite, test plugin scope và kiểm allowlist SQL thô.
