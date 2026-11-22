@@ -126,9 +126,11 @@ start)
 			sleep 1
 		done' _ "$pid" "$dir/samples.csv" >/dev/null 2>&1 &
 	echo $! >"$dir/sampler.pid"
-	for _ in $(seq 1 60); do
+	# Startup includes the first full peer-map build.
+	t0=$(date +%s.%N)
+	for _ in $(seq 1 1200); do
 		if curl -fsS "http://$addr/health" >/dev/null 2>&1; then
-			echo "server up pid=$pid"
+			echo "server up pid=$pid startup_s=$(echo "$(date +%s.%N) - $t0" | bc)"
 			exit 0
 		fi
 		sleep 0.5
