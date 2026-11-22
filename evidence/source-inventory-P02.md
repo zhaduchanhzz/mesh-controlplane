@@ -1,6 +1,6 @@
 # Source Inventory — P02 (POC Noise key per tailnet, chọn tailnet theo Host)
 
-- **Trạng thái:** `Implemented` (POC), chờ E2E client thật (`infra/lab/e2e/p02/run.sh`). Chưa `Reviewed` bởi reviewer bảo mật là người.
+- **Trạng thái:** `Verified` (POC, E2E với client thật v1.84.3 và v1.104.7). Gate P02 theo AGENTS rule 12 đạt: client tương thích với mỗi tailnet một Noise key, nên **không cần ADR thay thế**. Chưa `Reviewed` bởi reviewer bảo mật là người.
 - **Nhánh:** `feat/P02-noise-per-tailnet-poc` từ `master` @ `c783425`
 - **Ticket:** `tickets/P02.md`. Đầu vào: `evidence/P02-noise-client-research.md`, `evidence/P02-e2e-red-baseline.md`
 
@@ -52,3 +52,40 @@ client ──TLS──▶ front door :8443 (1 process)
 - Chưa áp quota hay rate limit theo tailnet tại front door (P08).
 - Mỗi instance có một bộ worker riêng, nên chi phí theo tailnet cao hơn so với runtime chung. Benchmark P00b và ADR 0001 sẽ quyết định cách gộp.
 - Cổng 80 của lab thuộc HAProxy MeshGuard; edge thật ở P10 phải phục vụ hoặc từ chối `/ts2021` trên cổng 80.
+
+## 6. Kết quả
+
+### Unit và race
+- `go test ./hscontrol/frontdoor/` trước khi viết code: build fail (RED). Sau khi viết: 7/7 pass.
+- Trên `mc-ci` (Linux): `CGO_ENABLED=1 go test -race ./hscontrol/frontdoor/ ./internal/tailnet/` cả hai ok.
+
+### Triển khai trên `mc-cp` (endpoint public, chủ lab đã duyệt)
+- Sao lưu DB và Noise key cũ: `/var/backups/mesh-cp-20261122T112224`.
+- `headscale-tailnets.service`: một process, 3 runtime (`hs` 127.0.0.1:18440 giữ DB và key cũ; `a` :18441; `b` :18442), front door TLS :8443. Metrics bind 127.0.0.1:9090–9092. `headscale.service` cũ đã disable.
+- Smoke test qua Internet: `/key` cho ra 3 key khác nhau (`hs` giữ nguyên `8218b05e…`). Host lạ → 421. SNI A + Host B → 421. Hai client cũ `vps-ext` và `home-ci1` vẫn kết nối direct, ping 3/3.
+
+### E2E client thật (`infra/lab/e2e/p02/run.sh`, artifacts `artifacts/80c02af/P02/`, gitignored)
+
+| Test | Baseline (RED) | POC P02 |
+|---|---|---|
+| K01 `/key` A ≠ B | FAIL | **PASS** |
+| K02/K03 host lạ, IP thô | FAIL | **PASS** (421) |
+| K04 chuẩn hóa `Host:port` | SKIP | **PASS** |
+| K05 SNI ≠ Host trên `/key` | FAIL | **PASS** |
+| K06/K07/K08 `/ts2021` (SNI≠Host, host lạ, IP, WebSocket) | FAIL (101) | **PASS** (421 trước upgrade) |
+| K09 | SKIP | **PASS** |
+| K10 bắt tay Noise A và B (đối chứng) | PASS | PASS |
+| R01 netmap A và B tách biệt | FAIL | **PASS** |
+| R02 profile A→B→A cùng machine key: 2 node, quay lại A sau switch và restart (v1.84.3 và v1.104.7) | FAIL | **PASS** |
+| R03 key của A bị từ chối ở B | FAIL | **PASS** |
+| N8 xóa node A không ảnh hưởng node B | SKIP | **PASS** |
+| K10m, K11, N5, N7, N10, S10w | SKIP | SKIP (lý do như baseline: cần Noise client tự viết, cổng 80 là HAProxy, không có OIDC) |
+
+- **Lần chạy 1** (`20261122T112349Z`): 2 FAIL ở R02. Nguyên nhân là **lỗi trong script** do agent chính thêm vào (`n['id']` nằm trong chuỗi bash bọc nháy đơn → `KeyError`). Lỗi này làm hỏng cả bước dọn node: 6 node `p02-*` bị sót, đã xóa bằng tay sau khi kiểm tra.
+- **Lần chạy 2** (`ONLY="R02 N8"`): exit 0. R02 PASS cho cả hai phiên bản. N8 PASS. 0 traceback. Script tự dọn sạch.
+
+### Giới hạn còn lại
+- Lúc khởi động, front door nhận kết nối trước khi runtime nghe xong, gây vài lỗi 502 ngắn. Cần chờ runtime sẵn sàng trước khi mở front door.
+- Cổng 80 vẫn là HAProxy MeshGuard (N10).
+- Chưa có quota hay rate limit theo tailnet (P08). Chưa có DERP verify theo tailnet (S15, P08).
+- Mỗi tailnet là một runtime đầy đủ: cô lập tốt, nhưng chi phí theo tailnet cao. P03 sẽ chuyển sang runtime theo tailnet trên một DB của shard (ADR 0001/0002).
