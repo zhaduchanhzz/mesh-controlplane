@@ -85,7 +85,7 @@ Môi trường: `mc-ci` (Linux), Go 1.27.4, PostgreSQL 16 (`/usr/lib/postgresql/
 | GREEN placement + API | `go test -race -count=1 -v ./internal/placement/...` | 0 | 16 test PASS; 11 subtest `postgres` PASS, không SKIP |
 | Hồi quy DB | `go test -race -count=1 ./hscontrol/db/...` | 0 | `hscontrol/db` 163.6 s, `sqliteconfig`, `tenantscope` ok |
 | Hồi quy servertest cluster (tag) | `go test -race -count=1 -tags p05cluster -run Cluster ./hscontrol/servertest/` | 0 | `ok` 78.1 s (seed đổi owner nay tăng epoch) |
-| Lặp lại đồng thời | `go test -race -count=10 -run "Concurrent|Idempotency" ./internal/placement/` | 0 | 10 lần × (SQLite + PG) ổn định, 53.8 s |
+| Lặp lại đồng thời | `go test -race -count=10 -run "Concurrent\|Idempotency" ./internal/placement/` | 0 | 10 lần × (SQLite + PG) ổn định, 53.8 s |
 
 Ánh xạ RED test của ticket:
 
