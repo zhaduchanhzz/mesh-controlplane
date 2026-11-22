@@ -1,6 +1,7 @@
 package hscontrol
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -119,4 +120,35 @@ func (ns *noiseServer) refuseRoute(w http.ResponseWriter, err error) {
 	log.Error().Err(err).Str(zf.MachineKey, ns.machineKey.ShortString()).Msg("resolving tailnet of noise request")
 	w.Header().Set("Retry-After", "10")
 	http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+}
+
+// registerRefusal maps a tenant-resolution failure of a registration to the
+// RegisterResponse.Error the client shows, for permanent refusals only. The
+// message is the same for an unknown key and for a key of a foreign or
+// inactive tailnet, so it reveals nothing about other tenants.
+func registerRefusal(req tailcfg.RegisterRequest, err error) (string, bool) {
+	if errors.Is(err, ErrSessionTenantSwitch) {
+		return "", false // closes the session instead
+	}
+
+	if !errors.Is(err, db.ErrUnknownTenant) && !errors.Is(err, db.ErrTailnetNotActive) &&
+		!errors.Is(err, db.ErrTailnetNotOwned) && !errors.Is(err, errSessionUnbound) {
+		return "", false // lookup failure: 503, the client retries
+	}
+
+	if req.Auth != nil && req.Auth.AuthKey != "" {
+		return "invalid pre auth key", true
+	}
+
+	return "this server only registers nodes with an auth key", true
+}
+
+func writeRegisterResponse(w http.ResponseWriter, status int, resp *tailcfg.RegisterResponse) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+
+	err := json.NewEncoder(w).Encode(resp)
+	if err != nil {
+		log.Error().Caller().Err(err).Msg("writing RegisterResponse")
+	}
 }

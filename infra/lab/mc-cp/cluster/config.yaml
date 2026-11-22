@@ -1,0 +1,50 @@
+# P05 cluster process on mc-cp (ADR 0005, ADR 0007): one Noise key and one
+# listener for every tailnet the cluster owns; the tailnet of a session comes
+# from its credential, not from the hostname. Used by infra/lab/e2e/p05.
+#
+# Public path: VPS 116.118.3.46:8443 -> WireGuard wg-mesh -> mc-cp:8443 (the
+# port the P02 POC normally holds; the E2E stops the POC while it runs).
+server_url: https://c1.cp.gta5web.online:8443
+listen_addr: 0.0.0.0:8443
+# Not served by the cluster listener (AGENTS rule 9); loopback only.
+metrics_listen_addr: 127.0.0.1:9095
+unix_socket: /var/run/headscale-cluster/cluster.sock
+unix_socket_permission: "0770"
+disable_check_updates: true
+
+tls:
+  cert_path: /etc/headscale/tls/fullchain.pem
+  key_path: /etc/headscale/tls/privkey.pem
+
+noise:
+  private_key_path: /var/lib/headscale/cluster/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+# Each tailnet keeps its own policy in the database; a file would apply to all.
+policy:
+  mode: database
+
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  auto_update_enabled: true
+
+# E2E data only: the harness recreates this file on every run.
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/cluster-e2e/db.sqlite
+
+dns:
+  magic_dns: true
+  base_domain: c1.tailnet.internal
+  override_local_dns: false
+
+log:
+  level: info

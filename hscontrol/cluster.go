@@ -33,7 +33,7 @@ var (
 		"cluster mode needs policy.mode=database: a policy file would apply to every tailnet",
 	)
 	errClusterTLSUnsupported = errors.New(
-		"cluster mode supports tls_cert_path/tls_key_path or plain HTTP behind the front door, not ACME",
+		"cluster mode supports tls.cert_path/tls.key_path or plain HTTP behind the front door, not ACME",
 	)
 )
 

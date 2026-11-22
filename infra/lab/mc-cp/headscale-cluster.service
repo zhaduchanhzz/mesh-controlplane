@@ -1,0 +1,36 @@
+[Unit]
+Description=mesh-controlplane P05 cluster process: many tailnets, one Noise key (mc-cp)
+After=network-online.target wg-quick@wg-mesh.service
+Wants=network-online.target
+# Holds :8443 like the P02 POC; only one of them runs at a time.
+Conflicts=headscale-tailnets.service
+
+[Service]
+Type=simple
+User=headscale
+Group=headscale
+ExecStart=/usr/local/bin/headscale-cluster -c /etc/headscale/cluster/config.yaml cluster serve --cluster-id mc-cp-c1
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+RuntimeDirectory=headscale-cluster
+RuntimeDirectoryMode=0770
+StateDirectory=headscale headscale/cluster headscale/cluster-e2e
+StateDirectoryMode=0750
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/headscale /var/run/headscale-cluster
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
