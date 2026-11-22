@@ -85,10 +85,18 @@ func TestClusterEpochBumpReloadsRuntime(t *testing.T) {
 		return ok && rt != old
 	}, clusterWait, 50*time.Millisecond, "a new runtime is loaded at the new epoch")
 
-	// A second client joins the reloaded runtime; the first one reconnects
-	// on its own (same node, no new login) and sees it.
+	// The retired runtime closed a1's map stream; tailscaled reconnects by
+	// itself (Direct does not, so the test does it), keeps its node and
+	// reaches the reloaded runtime.
+	require.Eventually(t, a1.PollEnded, clusterWait, 50*time.Millisecond,
+		"the server closes the map stream of a retired runtime")
+
+	nk1 := selfKey(t, a1)
+	a1.Reconnect(t)
+
 	a2 := servertest.NewClusterClient(t, tc.Tenant(t, tenantA), "epoch-a2", servertest.ClusterClientOptions{AuthKey: keyA})
 	waitPeersExactly(t, a1, selfKey(t, a2))
+	assert.Equal(t, nk1, selfKey(t, a1), "same node key after the reload: no new login")
 	waitPeersExactly(t, a2, selfKey(t, a1))
 
 	rows := tc.NodeRows(t)

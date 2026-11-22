@@ -116,3 +116,19 @@ func (tc *TestCluster) SetPolicyViaDB(tb testing.TB, slug, pol string) {
 		tb.Fatalf("servertest: bump policy revision of %q: %v", slug, err)
 	}
 }
+
+// PollEnded reports whether the client's current map stream has ended (the
+// server closed it). [controlclient.Direct] does not reconnect by itself;
+// tailscaled's auto client does, which tests mimic with Reconnect.
+func (c *TestClient) PollEnded() bool {
+	if c.pollDone == nil {
+		return false
+	}
+
+	select {
+	case <-c.pollDone:
+		return true
+	default:
+		return false
+	}
+}
