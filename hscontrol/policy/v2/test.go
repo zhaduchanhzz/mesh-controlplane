@@ -329,10 +329,19 @@ func (pm *PolicyManager) RunTests() error {
 	return wrapTestResult(errPolicyTestsFailed, results.AllPassed, results)
 }
 
-// evaluateTests runs the `tests` block against a fresh compilation of pol.
+// evaluateTests is [evaluateTestsFor] with the upstream semantics.
+func evaluateTests(pol *Policy, users []types.User, nodes views.Slice[types.NodeView]) error {
+	return evaluateTestsFor(pol, users, nodes, false)
+}
+
+// evaluateTestsFor runs the `tests` block against a fresh compilation of pol.
 // It is the user-write sandbox: the live [PolicyManager] state is left
 // untouched, so a failing test rejects the write without side effects.
-func evaluateTests(pol *Policy, users []types.User, nodes views.Slice[types.NodeView]) error {
+//
+// emptyDenies is the [WithEmptyPolicyDenies] switch of the manager the
+// policy is written to: with it, a policy without access rules is tested
+// against the deny-all filter it will compile to.
+func evaluateTestsFor(pol *Policy, users []types.User, nodes views.Slice[types.NodeView], emptyDenies bool) error {
 	if pol == nil || len(pol.Tests) == 0 {
 		return nil
 	}
@@ -341,9 +350,13 @@ func evaluateTests(pol *Policy, users []types.User, nodes views.Slice[types.Node
 	grants := pol.compileGrants(users, nodes)
 
 	var filter []tailcfg.FilterRule
-	if pol.ACLs == nil && pol.Grants == nil {
+
+	switch {
+	case emptyDenies && hasNoAccessRules(pol):
+		filter = nil
+	case pol.ACLs == nil && pol.Grants == nil:
 		filter = noRulesFilter(users, nodes)
-	} else {
+	default:
 		filter = globalFilterRules(grants)
 	}
 

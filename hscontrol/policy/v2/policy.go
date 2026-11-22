@@ -365,10 +365,21 @@ func (pm *PolicyManager) updateLocked() (bool, error) {
 	pm.viaTargetTags = collectViaTargetTags(pm.compiledGrants)
 	pm.relayTargetIPs = relayTargetIPs
 
+	// denyAll is a pure function of pm.pol and the construction-time
+	// switch, and pm.pol is hashed below, so a change of it is a filter
+	// change. The tenant check comes first: there no access rules never
+	// reach noRulesFilter, whatever acls/grants decoded to (nil or []).
+	denyAll := pm.emptyDenies && hasNoAccessRules(pm.pol)
+	pm.denyAll = denyAll
+
 	var filter []tailcfg.FilterRule
-	if pm.pol == nil || (pm.pol.ACLs == nil && pm.pol.Grants == nil) {
+
+	switch {
+	case denyAll:
+		filter = nil
+	case pm.pol == nil || (pm.pol.ACLs == nil && pm.pol.Grants == nil):
 		filter = noRulesFilter(pm.users, pm.nodes)
-	} else {
+	default:
 		filter = globalFilterRules(pm.compiledGrants)
 	}
 
@@ -552,6 +563,12 @@ func (pm *PolicyManager) SSHPolicy(baseURL string, node types.NodeView) (*tailcf
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
+	// Deny all withholds SSH even when the policy has an ssh block: the
+	// empty, non-nil policy revokes any rules the client still holds.
+	if pm.denyAll {
+		return sshPolicyForNode(nil, node), nil
+	}
+
 	if sshPol, ok := pm.sshPolicyMap.Load(node.ID()); ok {
 		return sshPol, nil
 	}
@@ -606,7 +623,7 @@ func (pm *PolicyManager) SSHCheckParams(
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
-	if pm.pol == nil || len(pm.pol.SSHs) == 0 {
+	if pm.denyAll || pm.pol == nil || len(pm.pol.SSHs) == 0 {
 		return 0, false
 	}
 
@@ -730,8 +747,16 @@ func (pm *PolicyManager) sshRuleAllowsUser(rule SSH, srcNode types.NodeView, loc
 }
 
 func (pm *PolicyManager) SetPolicy(polB []byte) (bool, error) {
+	// With [WithEmptyPolicyDenies] an empty policy (e.g. a policy file
+	// emptied before a reload) installs deny-all, as "{}" does there,
+	// instead of keeping whatever was there. Policy writes still refuse
+	// empty input in [ValidatePolicy].
 	if len(polB) == 0 {
-		return false, ErrPolicyEmpty
+		if !pm.emptyDenies {
+			return false, ErrPolicyEmpty
+		}
+
+		polB = []byte("{}")
 	}
 
 	pol, err := unmarshalPolicy(polB)
@@ -762,7 +787,7 @@ func (pm *PolicyManager) SetPolicy(polB []byte) (bool, error) {
 	// see both classes in a single response instead of having to
 	// fix-and-retry to discover the second one.
 	testErr := multierr.New(
-		evaluateTests(pol, users, nodes),
+		evaluateTestsFor(pol, users, nodes, pm.emptyDenies),
 		evaluateSSHTests(pol, users, nodes),
 	)
 	if testErr != nil {
@@ -863,6 +888,12 @@ func (pm *PolicyManager) BuildPeerMap(nodes views.Slice[types.NodeView]) map[typ
 
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
+
+	// Deny all: no node is anyone's peer. This also drops the same-user
+	// adjacency [sameUser] would otherwise add regardless of the rules.
+	if pm.denyAll {
+		return make(map[types.NodeID][]types.NodeID)
+	}
 
 	// Precompute each node's route ranges and exit-node status once; the
 	// O(n^2) pair scans below would otherwise recompute them for every pair.
@@ -1056,6 +1087,13 @@ func matcherReachesDestination(
 ) bool {
 	return m.DestsContainsIP(ips...) || (len(routes) > 0 && m.DestsOverlapsRanges(routes)) ||
 		(isExit && m.DestsIsTheInternet())
+}
+
+// hasNoAccessRules reports whether pol has no acls and no grants, decoded
+// as nil (absent) or as an empty list alike. Under [WithEmptyPolicyDenies]
+// such a policy denies everything.
+func hasNoAccessRules(pol *Policy) bool {
+	return pol == nil || (len(pol.ACLs) == 0 && len(pol.Grants) == 0)
 }
 
 // sameUser reports whether two nodes belong to one user. A user's own devices
