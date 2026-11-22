@@ -109,8 +109,17 @@ Sau khi tạo tailnet phải **không** có peer traffic cho đến khi policy �
 | L6 | 1000 concurrent reconnects / 2 cluster | handshake, error, PG connections, PG lock wait |
 | L7 | DERP fallback forced, increasing bandwidth | relay saturation, CPU, drop, latencies |
 | L8 | Kill active / treo active / partition PostgreSQL / failover PostgreSQL | thời gian tới khi standby giữ lease, tới MapResponse đầu tiên, tỉ lệ client phải đăng nhập lại, split brain prevention |
+| L9 (B1) | Nhiều tenant trong **một process**: 20 / 50 / 100 tenant × 200 thiết bị; so (a) runtime/NodeStore riêng mỗi tenant (ADR 0001) với (b) một NodeStore chung lọc theo tenant | CPU, RSS, thời gian dựng peer map, độ trễ map p50/p95/p99 (ticket P05) |
+| L10 (B2) | Tải **PostgreSQL dùng chung** khi tăng số cluster process (1→16) và tenant; có và không có PgBouncer | reads/s, writes/s, p50/p95/p99 các câu chính, kích thước index, số kết nối, `cl_waiting` của PgBouncer, CPU PostgreSQL, WAL (ticket P14) |
+| L11 (B3) | **Chuyển tenant** 5.000 thiết bị: CAS một dòng `tailnets` (owner_cluster_id/owner_epoch) so với ghi lại cột `cluster_id` trên mọi dòng của tenant (thiết kế blog, mô phỏng trên bản sao schema) | thời gian transaction, WAL, lock giữ, thời gian writer khác bị chặn (ticket P12b) |
 
-Số lượng là **tập mục tiêu thử nghiệm theo cấp độ**, không phải năng lực chắc chắn đạt. Baseline hiện có: P00b đo một process ≈1.5k–2.5k thiết bị với policy thực tế, client chạy trong cùng process (`evidence/P00b-capacity-baseline.md` §7); P00c đo server-only. Ngưỡng SLO phải được định nghĩa cùng nhóm vận hành sau baseline, trước signoff. Report bắt buộc lưu workload config, Git SHA, host vCPU/RAM/storage, test duration, Tailscale version, trạng thái công tắc netmap tăng dần, p50/p95/p99, RSS, CPU, PostgreSQL (kết nối, lock wait, WAL), backlog, error and replay counts.
+**L9–L11 chi tiết:**
+- **L9 / B1** — `Planned` (P05 chưa có code). Thiết kế harness ở `tickets/P05.md` §B1. Phải dùng cùng policy và ma trận P00b/P00c để so được. Biến thể (b) chỉ để đo, không phải hướng triển khai (ADR 0001 đã loại).
+- **L10 / B2** — harness `cmd/bench-db` (build tag `benchdb`), chạy lần đầu trên `mc-bench`: `evidence/P14-db-benchmarks.md`. Mỗi cluster process là một OS process riêng, mở DB bằng `NewHeadscaleDatabase` thật, ghi/đọc bằng hàm `HSDatabase` thật. Mỗi cluster kèm một standby pool 2. Fencing owner+epoch (P10) được **mô phỏng** bằng `SELECT … FOR SHARE` trong mọi transaction ghi.
+- **L11 / B3** — cùng harness (`bench-db b3`). Câu CAS là **mô phỏng** câu P12b (chưa có code). Thiết kế blog mô phỏng bằng schema `blogsim` (bản sao bảng tenant + cột `cluster_id NOT NULL` + index).
+- Ba bài đều phải ghi: commit, phần cứng, tải khác trên VM lúc đo, phiên bản PostgreSQL/PgBouncer, cấu hình pool, và nhãn **đo** / **ngoại suy** cho từng con số.
+
+Số lượng là **tập mục tiêu thử nghiệm theo cấp độ**, không phải năng lực chắc chắn đạt. Baseline hiện có: P00b đo một process ≈1.5k–2.5k thiết bị với policy thực tế, client chạy trong cùng process (`evidence/P00b-capacity-baseline.md` §7); P00c đo server-only. Ngưỡng SLO phải được định nghĩa cùng nhóm vận hành sau baseline, trước signoff. Report bắt buộc lưu workload config, Git SHA, host vCPU/RAM/storage, test duration, Tailscale version, trạng thái công tắc netmap tăng dần, p50/p95/p99, RSS, CPU, PostgreSQL (kết nối, lock wait, WAL), PgBouncer (chế độ pool, `default_pool_size`, `max_prepared_statements`, `cl_waiting`, `maxwait`), backlog, error and replay counts.
 
 ## 5. Artifacts + redaction
 

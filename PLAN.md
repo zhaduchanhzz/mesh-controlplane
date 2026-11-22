@@ -57,6 +57,7 @@
 | Multi-tailnet | `TailnetID` là boundary bảo mật; `UserID` chỉ scoped bên trong tailnet | Test lộ node/policy/API/DNS/routes |
 | Runtime theo tailnet | Mỗi tailnet có NodeStore, PolicyManager, Batcher, IPAM, authCache, cấu hình DERP/DNS riêng. Dùng chung trong process: pool DB (qua repo đã scoped), listeners, **Noise key của cluster**, lease client. Chi phí peer map lý thuyết Σnᵢ² thay vì (Σn)² ([ADR 0001](design/adr/0001-per-tailnet-runtime.md); phần Noise key đã bị ADR 0005 thay) | Không còn state toàn process keyed theo node/IP/key; benchmark P00c + L1–L4 |
 | Storage | **Một PostgreSQL dùng chung cho mọi cluster** (ADR 0005). Fresh schema v0.1: `tailnet_id NOT NULL` trên mọi bảng tenant, composite FK, unique `(tailnet_id, …)`. SQLite chỉ cho dev/unit test, cùng schema. `versioncheck` từ chối DB Headscale cũ. HA PostgreSQL là yêu cầu N3 | Test transaction, FK/unique âm tính, schema SQLite ≡ PostgreSQL, failover PG |
+| Connection pooling | **PgBouncer bắt buộc** trước PostgreSQL dùng chung ([ADR 0006](design/adr/0006-pgbouncer-connection-pooling.md)). Mọi process cluster (active và standby) kết nối qua PgBouncer; standby giữ pool tối thiểu 1–2. Đề xuất chế độ **transaction**, PgBouncer **≥ 1.21** với `max_prepared_statements > 0` (pgx của code hiện tại dùng prepared statement có tên; `= 0` thì lỗi ngay khi mở DB, đã đo). Cấm trạng thái phiên: chỉ `SET LOCAL`, chỉ `pg_advisory_xact_lock`, không `LISTEN/NOTIFY`, không bảng tạm. Lease và fencing chỉ dùng CAS/`FOR SHARE` trong transaction, qua **pool PgBouncer riêng** để không xếp hàng sau traffic dữ liệu (B2: lease poll p99 tới 651 ms qua pool dữ liệu bão hòa). Migration và giám sát đi đường trực tiếp. HA PgBouncer là yêu cầu N3 (P13) | B2 có/không PgBouncer (`evidence/P14-db-benchmarks.md`), negative test `max_prepared_statements=0`, kill PgBouncer khi đang tải (P13) |
 | Cô lập dữ liệu | **Chỉ ở tầng ứng dụng:** plugin GORM fail-closed (thiếu scope → lỗi); kiểm owner + epoch trong cùng transaction; review tay mọi SQL thô; test/lint chặn SQL thô mới ngoài allowlist. **Không** RLS, **không** role DB theo cluster. Rủi ro còn lại được chấp nhận: lỗi app bỏ qua scope không có lớp chặn ở DB (ADR 0005 Bổ sung 2 §3) | Plugin tests (thiếu scope → `ErrNoScope`), lint SQL thô trong CI, test isolation âm tính |
 | ID | NodeID và UserID **duy nhất toàn cục**, cấp bởi **sequence của PostgreSQL**, không tái sử dụng (StableNodeID = NodeID, `hscontrol/types/node.go:92`), giới hạn < 2^53. Thay cơ chế cấp khối ID của [ADR 0002](design/adr/0002-v0.1-fresh-schema-and-global-ids.md) mục 4 | Hai cluster ghi đồng thời không trùng ID; ID đã xóa không tái dùng |
 | Registry | **Nằm trong cùng PostgreSQL dùng chung**: bảng `clusters`, `cluster_leases`, và cột `owner_cluster_id`, `owner_epoch` trên `tailnets`. Package `internal/placement`; API operator `cmd/mesh-placement` | CAS, fencing, stale-epoch tests (P10) |
@@ -135,13 +136,14 @@ flowchart TB
   EP2 -.->|"chỉ khi giữ lease"| S2["Cluster 2 STANDBY (cùng Noise key)"]
   EP1["Endpoint cluster 1"] --> A1["Cluster 1 ACTIVE"]
   EP1 -.-> S1["Cluster 1 STANDBY"]
-  A1 & S1 & A2 & S2 -->|"lease CAS + owner/epoch trong mọi transaction"| PG[("PostgreSQL dùng chung (primary + replica): tailnets, nodes, …, clusters, cluster_leases")]
+  A1 & S1 & A2 & S2 -->|"lease CAS + owner/epoch trong mọi transaction"| PGB["PgBouncer (transaction mode, ≥ 2 instance / VIP)"]
+  PGB --> PG[("PostgreSQL dùng chung (primary + replica): tailnets, nodes, …, clusters, cluster_leases")]
   P["mesh-placement (operator API)"] -->|"tạo tailnet, đặt cluster, move"| PG
   A1 & A2 --> REL["DERP relay + STUN (verify scoped, fail closed)"]
   OP["Operator"] -->|"mTLS + scoped token + epoch"| P
 ```
 
-Bên trong mỗi process active, listener nhận request, kiểm Host thuộc cluster, rồi chọn **runtime của đúng tailnet** theo scope đã xác thực (credential đăng ký hoặc bản ghi node). Các runtime không chia sẻ NodeStore, PolicyManager, Batcher hay cache. Chúng chỉ dùng chung Noise key của cluster, listener và pool PostgreSQL.
+Bên trong mỗi process active, listener nhận request, kiểm Host thuộc cluster, rồi chọn **runtime của đúng tailnet** theo scope đã xác thực (credential đăng ký hoặc bản ghi node). Các runtime không chia sẻ NodeStore, PolicyManager, Batcher hay cache. Chúng chỉ dùng chung Noise key của cluster, listener và pool PostgreSQL. Pool của process nối tới **PgBouncer**, không nối thẳng tới primary (ADR 0006); `mesh-placement` và migration dùng kết nối trực tiếp hoặc pool `session` riêng.
 
 ### Quy tắc định tuyến và xác thực
 
@@ -269,7 +271,7 @@ Metadata, policy deny, settings và owner nằm **cùng một transaction trên 
 | P03b | Schema v0.1 trên **PostgreSQL dùng chung** (SQLite dev/unit cùng schema): `tailnet_id NOT NULL`, composite FK, unique `(tailnet_id, …)`, sequence ID, cột `owner_cluster_id/owner_epoch`, plugin GORM fail-closed, lint SQL thô, `versioncheck` | **Đang làm** (`feat/P03-tenant-schema`) | P01, P03a | FK/unique âm tính, plugin tests, schema PG ≡ SQLite (`tickets/P03.md`) |
 | P00d | Netmap tăng dần + biện pháp bảo vệ, **công tắc mặc định OFF** | Planned | P00c, P03a | M01–M05 (unit/property), M06 với client thật (`tickets/P00d.md`) |
 | P04 | Auth, enrollment, phê duyệt scoped; **gắn tenant cho phiên** qua credential/bản ghi node (I01) | Planned | P03b | replay/cross-tailnet tests, S10, S11 |
-| P05 | Runtime theo tailnet trên PostgreSQL dùng chung; Noise key cluster dùng chung; IPAM; thay `serve-tailnets` | Planned | P04 | peers/IP/machine-key collision tests, S05, S06 |
+| P05 | Runtime theo tailnet trên PostgreSQL dùng chung; Noise key cluster dùng chung; IPAM; thay `serve-tailnets` | Planned | P04 | peers/IP/machine-key collision tests, S05, S06; benchmark **B1/L9** (nhiều tenant một process, `tickets/P05.md`) |
 | P06 | Policy/ACL, DNS, routes, exit-node isolation | Planned | P05 | policy wildcard, DNS/route leak tests |
 | P07 | Mapper, event, MapResponse deltas scoped; chạy lại M01/M03 với nhiều tenant | Planned | P06, P00d | E2E no cross-peer keys/netmap & reconnect |
 | P08 | API/admin/metrics/debug/queue limits/DERP | Planned | P07 | authZ, DoS, endpoint audit |
@@ -278,9 +280,9 @@ Metadata, policy deny, settings và owner nằm **cùng một transaction trên 
 | P11 | **Bootstrap service** (`internal/bootstrap`, `cmd/mesh-bootstrap`): tenant → URL cluster. Thay ticket "edge route manifest" của bản 1.1 | Planned | P10 | F06, F07, client thật đi qua bootstrap (`tickets/P11.md`) |
 | P11b | **Lease cluster + failover active/standby tự động** (`internal/lease`) | Planned | P10 | F01–F05, client không đăng nhập lại (`tickets/P11b.md`) |
 | P12 | Cluster thứ hai, placement mới + reconcile, bootstrap trả đúng cluster | Planned | P11, P11b | 3 tailnet/2 cluster, restart/failover trên cả hai |
-| P12b | Tenant move giữa cluster: owner/epoch + thông báo + re-bootstrap + đổi ControlURL + đăng nhập lại | Planned | P12 | không owner kép, đo thời gian đăng nhập lại (`tickets/P12b.md`) |
-| P13 | HA PostgreSQL (failover), backup/restore không lùi epoch, upgrade/canary theo cluster, xoay Noise key cluster | Planned | P12b | F05, F08, runbook đã diễn tập |
-| P14 | Performance, reconnect storm, failover storm, quotas theo lớp shard, kết nối PG | Planned | P13 | benchmark report & agreed SLO |
+| P12b | Tenant move giữa cluster: owner/epoch + thông báo + re-bootstrap + đổi ControlURL + đăng nhập lại | Planned | P12 | không owner kép, đo thời gian đăng nhập lại (`tickets/P12b.md`); benchmark **B3/L11** (CAS một dòng vs ghi lại mọi dòng; lần đo đầu đã có trong `evidence/P14-db-benchmarks.md`) |
+| P13 | HA PostgreSQL (failover), **HA PgBouncer** (≥ 2 instance, VIP hoặc multi-host, trỏ đúng primary sau F05), self-check cấu hình pooler khi khởi động, backup/restore không lùi epoch, upgrade/canary theo cluster, xoay Noise key cluster | Planned | P12b | F05, F08, kill PgBouncer khi đang tải, runbook đã diễn tập |
+| P14 | Performance, reconnect storm, failover storm, quotas theo lớp shard, kết nối PG qua PgBouncer; benchmark **B2/L10** (`tickets/P14.md`) | Planned (B2 lần đầu: `Verified` trên `mc-bench`, chưa `Reviewed`) | P13 | benchmark report & agreed SLO |
 | P15 | **Gate N2–N4**: cluster E2E, failure injection | Planned | P14 | signed audit record + all gates pass |
 | P16 (sau MVP) | Chuyển tenant không đăng nhập lại / zero-staleness | Not started | P15 + số đo P12b + ADR mới | không netmap cũ, no dual owner, rollback |
 
@@ -292,7 +294,7 @@ Metadata, policy deny, settings và owner nằm **cùng một transaction trên 
 
 **Lab giai đoạn 2** (PostgreSQL primary + replica, bootstrap, hai cluster active/standby, DERP, clients, mạng underlay tách biệt) phải xong **trước P09**. Giai đoạn 1 hiện có `mc-ci` (7701), `mc-cp` (7702, endpoint public), `mc-bench` (7703). Xem §9 và `04-proxmox-lab.md`.
 
-Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/negative tests, (c) migration notes, (d) evidence command/exit code, (e) rollback-safe behavior, (f) điều kiện dừng. Tickets chi tiết ở [`tickets/`](tickets/) (hiện có P00, P00b, P00d, P01, P02, P03, P10, P11, P11b, P12b).
+Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/negative tests, (c) migration notes, (d) evidence command/exit code, (e) rollback-safe behavior, (f) điều kiện dừng. Tickets chi tiết ở [`tickets/`](tickets/) (hiện có P00, P00b, P00d, P01, P02, P03, P05 (mới có mục B1), P10, P11, P11b, P12b, P14 (mới có mục B2)).
 
 ## 7. Gates: agent không được nhảy cóc
 
@@ -317,6 +319,7 @@ Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/ne
 
 **N3 — Operational:**
 - HA PostgreSQL (primary + replica, failover đã diễn tập, F05);
+- HA PgBouncer (ADR 0006 §5): ít nhất 2 instance, kill một instance khi đang tải thì cluster tự nối lại, không owner kép, lease không lùi; sau failover PostgreSQL, PgBouncer chỉ gửi ghi tới primary mới;
 - backup/restore không làm lùi `owner_epoch` hay epoch lease (F08);
 - upgrade có canary tại **cấp cluster** (nâng standby trước);
 - DERP/STUN verified; queue/rate limit, giới hạn kết nối PG theo cluster và monitoring;
@@ -351,6 +354,7 @@ Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/ne
 | `mc-bench` | 8 vCPU / 24 GB | Benchmark P00b/P00c. **Đã tạo** (VMID 7703) |
 | `mc-pg-01` | 4 vCPU / 8 GB | PostgreSQL primary dùng chung |
 | `mc-pg-02` | 4 vCPU / 8 GB | PostgreSQL replica (streaming), đích của failover PG |
+| PgBouncer | (trên `mc-pg-01`/`mc-pg-02`) | Giai đoạn 2: một PgBouncer trên **mỗi** VM PostgreSQL (container, cổng 6432), client cluster dùng VIP/multi-host. Nếu P14 cho thấy PgBouncer tranh CPU với PostgreSQL thì tách VM riêng `mc-pgb-01/02` (2 vCPU / 2 GB). Xem ADR 0006 |
 | `mc-bootstrap` | 2 vCPU / 2 GB | `mesh-bootstrap` + `mesh-placement` (operator API) |
 | `mc-c1-a`, `mc-c1-b` | 4 vCPU / 8 GB mỗi VM | Cluster 1: active / standby (cùng Noise key) |
 | `mc-c2-a`, `mc-c2-b` | 4 vCPU / 8 GB mỗi VM | Cluster 2: active / standby |
@@ -363,7 +367,7 @@ Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/ne
 
 **Tối ưu lab nhỏ:** giảm VM client bằng Docker network namespaces trên `mc-ci` trong giai đoạn unit/POC, nhưng giữ ít nhất các VM khác host/network để test E2E, failover và fault injection. Bảng trên là **ước tính**, không phải giá trị bắt buộc hay capacity benchmark.
 
-**Mạng đề xuất:** `10.77.10.0/24` (management), `10.77.20.0/24` (client A underlay), `10.77.30.0/24` (client B underlay), `10.77.40.0/24` (services: PG, bootstrap, cluster, relay); tách qua SDN/VLAN/firewall. **Không** cho underlay A↔B reachability trực tiếp khi test "VPN isolation". Chỉ mở cổng cần thiết: HTTPS của cluster và bootstrap, STUN UDP 3478, PostgreSQL 5432 chỉ từ VM cluster/bootstrap. TLS dùng CA lab, hoặc Let's Encrypt DNS-01 cho endpoint public; không `-k` trong E2E.
+**Mạng đề xuất:** `10.77.10.0/24` (management), `10.77.20.0/24` (client A underlay), `10.77.30.0/24` (client B underlay), `10.77.40.0/24` (services: PG, bootstrap, cluster, relay); tách qua SDN/VLAN/firewall. **Không** cho underlay A↔B reachability trực tiếp khi test "VPN isolation". Chỉ mở cổng cần thiết: HTTPS của cluster và bootstrap, STUN UDP 3478, PgBouncer 6432 chỉ từ VM cluster; PostgreSQL 5432 chỉ từ PgBouncer, bootstrap/placement và replica. TLS dùng CA lab, hoặc Let's Encrypt DNS-01 cho endpoint public; không `-k` trong E2E.
 
 **IaC:** OpenTofu + provider `bpg/proxmox`; cloud-init, Ansible, SSH keys test. Provision bằng `root@pam` (chủ lab cho phép ngày 2026-11-22), nhưng chỉ trong pool `meshcontrol-lab` và dải VMID `7700–7799`. Quy trình chuẩn `fmt → validate → plan -out → apply`. Agent tự apply khi plan chỉ create/update trong phạm vi lab; trường hợp khác cần human approval. `destroy` luôn cần phê duyệt độc lập. Xem `04-proxmox-lab.md` §5–6.
 
@@ -388,7 +392,7 @@ Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/ne
 Các mốc là **ước lượng lập kế hoạch**, không phải cam kết. Đường găng: schema PG + scope fail-closed → gắn tenant cho phiên (key chung) → runtime theo tailnet → scoped mapper (+ netmap tăng dần) → real client E2E → fencing owner/epoch → lease + failover → bootstrap + cluster thứ hai → tenant move → HA PostgreSQL và failure recovery. Lab giai đoạn 2 chạy song song với N1, nhưng không làm P10+ trước khi N1 qua gate và P00c có số đo.
 
 **Rủi ro chính:**
-- PostgreSQL dùng chung là điểm lỗi và điểm nghẽn chung của mọi cluster.
+- PostgreSQL dùng chung (và PgBouncer trước nó) là điểm lỗi và điểm nghẽn chung của mọi cluster. Số đo B2 đầu tiên: `evidence/P14-db-benchmarks.md`.
 - Cô lập chỉ ở tầng ứng dụng: không có lớp chặn ở DB.
 - Key cluster dùng chung: lộ key ảnh hưởng mọi tenant trên cluster.
 - Netmap tăng dần sai có thể lộ peer hoặc không thu hồi peer.
