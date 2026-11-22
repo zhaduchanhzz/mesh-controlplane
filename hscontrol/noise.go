@@ -1105,7 +1105,16 @@ func (ns *noiseServer) RegistrationHandler(
 		}
 
 		if err != nil {
+			if refusal, ok := registerRefusal(registerRequest, err); ok {
+				// Permanent: answer as upstream does for a bad key, in a
+				// 200 the client surfaces instead of retrying. One message
+				// for unknown, foreign and inactive tenants alike.
+				writeRegisterResponse(writer, http.StatusOK, &tailcfg.RegisterResponse{Error: refusal})
+				return
+			}
+
 			ns.refuseRoute(writer, err)
+
 			return
 		}
 	}
