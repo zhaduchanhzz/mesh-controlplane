@@ -82,6 +82,8 @@ dns:
   override_local_dns: false
 logtail:
   enabled: false
+cli:
+  timeout: 300s
 EOF
 	ulimit -n 200000
 	GOMAXPROCS=${GOMAXPROCS:-8} nohup "$HS" -c "$dir/config.yaml" serve >"$dir/server.log" 2>&1 &
