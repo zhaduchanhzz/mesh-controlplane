@@ -231,7 +231,7 @@ func runB2(args []string) error {
 
 	cg0 := readCgroups(*cgroups)
 
-	var bdb *gorm.DB
+	var bdb *sql.DB
 
 	var bstat0 map[string]float64
 
@@ -239,7 +239,7 @@ func runB2(args []string) error {
 		bt := admin
 		bt.Port, bt.DB = *bouncerPort, "pgbouncer"
 
-		bdb, err = openAdmin(bt, true)
+		bdb, err = openBouncerAdmin(bt)
 		if err == nil {
 			bstat0, err = bouncerStatsRow(bdb, admin.DB)
 		}
@@ -537,7 +537,7 @@ func diffStats(adb *gorm.DB, a, b dbStats, wall float64) pgDelta {
 	return d
 }
 
-func sampleLoop(adb, bdb *gorm.DB, dbName string, res *b2Result, stop <-chan struct{}) {
+func sampleLoop(adb *gorm.DB, bdb *sql.DB, dbName string, res *b2Result, stop <-chan struct{}) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 
@@ -592,8 +592,8 @@ func sampleLoop(adb, bdb *gorm.DB, dbName string, res *b2Result, stop <-chan str
 
 // showRow runs a PgBouncer admin SHOW command and returns the numeric
 // columns of the row whose "database" is db.
-func showRow(bdb *gorm.DB, cmd, db string) (map[string]float64, error) {
-	rows, err := bdb.Raw(cmd).Rows()
+func showRow(bdb *sql.DB, cmd, db string) (map[string]float64, error) {
+	rows, err := bdb.Query(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -637,7 +637,7 @@ func showRow(bdb *gorm.DB, cmd, db string) (map[string]float64, error) {
 	return nil, fmt.Errorf("%s: no row for %s", cmd, db)
 }
 
-func bouncerStatsRow(bdb *gorm.DB, db string) (map[string]float64, error) {
+func bouncerStatsRow(bdb *sql.DB, db string) (map[string]float64, error) {
 	return showRow(bdb, "SHOW STATS", db)
 }
 
@@ -771,4 +771,31 @@ func printB2(r b2Result) {
 	}
 
 	fmt.Printf("   rows=%v db=%.1fMB\n", r.Rows, float64(r.DBBytes)/1e6)
+}
+
+// openBouncerAdmin connects to PgBouncer's admin console, which only speaks
+// the simple query protocol (pgx driver registered by gorm's postgres driver).
+func openBouncerAdmin(t pgTarget) (*sql.DB, error) {
+	dsn, err := t.dsn()
+	if err != nil {
+		return nil, err
+	}
+
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+
+	db, err := sql.Open("pgx", dsn+sep+"default_query_exec_mode=simple_protocol")
+	if err != nil {
+		return nil, err
+	}
+
+	db.SetMaxOpenConns(1)
+
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("pgbouncer admin console: %w", err)
+	}
+
+	return db, nil
 }
