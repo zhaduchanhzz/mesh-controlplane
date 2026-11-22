@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -37,6 +38,13 @@ var (
 	)
 )
 
+// reconcileInterval is how often a cluster compares the tailnets it serves
+// with the ones it owns (P10): new ACTIVE tailnets are loaded, runtimes whose
+// tailnet moved, changed epoch or left ACTIVE are retired. Writes are fenced
+// in the database regardless; this bounds how long a retired owner keeps
+// answering map requests from memory.
+const reconcileInterval = 2 * time.Second
+
 // Cluster is one cluster process (ADR 0005, ADR 0007): one Noise key, one
 // listener and one database pool, serving every ACTIVE tailnet the cluster
 // owns. Each tailnet has its own runtime (a [Headscale] with its own State,
@@ -53,8 +61,24 @@ type Cluster struct {
 	front *Headscale
 
 	mu       sync.RWMutex
-	runtimes map[tailnet.ID]*Headscale
+	runtimes map[tailnet.ID]*tenantRuntime
 	order    []tailnet.ID
+
+	// Set by Serve: runtimes loaded later are started under them.
+	serveCtx   context.Context //nolint:containedctx // lifetime of Serve
+	serveGroup *errgroup.Group
+}
+
+// tenantRuntime is one loaded tailnet: its runtime, the ownership epoch it
+// was loaded at, and how to stop it.
+type tenantRuntime struct {
+	id    tailnet.ID
+	slug  string
+	epoch uint64
+	h     *Headscale
+
+	cancel context.CancelFunc // stops its scheduled tasks
+	stop   func()             // from startRuntime
 }
 
 // NewCluster opens the platform database and builds a runtime for every
@@ -90,10 +114,19 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		platform: platform,
 		noiseKey: noiseKey,
 		front:    &Headscale{cfg: cfg, noisePrivateKey: noiseKey},
-		runtimes: make(map[tailnet.ID]*Headscale),
+		runtimes: make(map[tailnet.ID]*tenantRuntime),
 	}
 
-	err = c.loadOwnedTailnets()
+	tns, err := platform.OwnedTailnets(platform.ClusterID())
+	if err == nil {
+		for _, tn := range tns {
+			err = c.load(tn)
+			if err != nil {
+				break
+			}
+		}
+	}
+
 	if err != nil {
 		c.closeRuntimes()
 		_ = platform.Close()
@@ -121,39 +154,50 @@ func validateClusterConfig(cfg *types.Config) error {
 	return nil
 }
 
-func (c *Cluster) loadOwnedTailnets() error {
-	tns, err := c.platform.OwnedTailnets(c.platform.ClusterID())
+// load builds the runtime of tn (not started) and registers it.
+func (c *Cluster) load(tn types.Tailnet) error {
+	id, err := tailnet.ParseID(tn.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("tailnet %q: %w", tn.ID, err)
 	}
 
-	for _, tn := range tns {
-		id, err := tailnet.ParseID(tn.ID)
-		if err != nil {
-			return fmt.Errorf("tailnet %q: %w", tn.ID, err)
-		}
-
-		tdb, err := c.platform.TenantDB(id)
-		if err != nil {
-			return fmt.Errorf("tailnet %s: %w", id, err)
-		}
-
-		rt, err := newHeadscale(c.cfg, c.noiseKey, "", func() (*state.State, error) {
-			return state.NewStateWithDB(c.cfg, tdb)
-		})
-		if err != nil {
-			_ = tdb.Close()
-
-			return fmt.Errorf("tailnet %s runtime: %w", id, err)
-		}
-
-		c.runtimes[id] = rt
-		c.order = append(c.order, id)
-
-		log.Info().Str("tailnet", id.String()).Str("slug", tn.Slug).Msg("loaded tailnet runtime")
+	// TenantDB re-reads the row: owner, ACTIVE and the epoch the handle is
+	// fenced on come from the same read.
+	tdb, err := c.platform.TenantDB(id)
+	if err != nil {
+		return fmt.Errorf("tailnet %s: %w", id, err)
 	}
+
+	h, err := newHeadscale(c.cfg, c.noiseKey, "", func() (*state.State, error) {
+		return state.NewStateWithDB(c.cfg, tdb)
+	})
+	if err != nil {
+		_ = tdb.Close()
+
+		return fmt.Errorf("tailnet %s runtime: %w", id, err)
+	}
+
+	rt := &tenantRuntime{id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h}
+
+	c.mu.Lock()
+	c.runtimes[id] = rt
+	c.order = append(c.order, id)
+	c.mu.Unlock()
+
+	log.Info().Str("tailnet", id.String()).Str("slug", tn.Slug).Uint64("epoch", rt.epoch).Msg("loaded tailnet runtime")
 
 	return nil
+}
+
+// start runs rt's background work under the serve context.
+func (c *Cluster) start(rt *tenantRuntime) error {
+	ctx, cancel := context.WithCancel(c.serveCtx)
+	rt.cancel = cancel
+
+	stop, err := rt.h.startRuntime(ctx, c.serveGroup)
+	rt.stop = stop
+
+	return err
 }
 
 // Runtime returns the runtime of tailnet id, if this process serves it.
@@ -162,8 +206,142 @@ func (c *Cluster) Runtime(id tailnet.ID) (*Headscale, bool) {
 	defer c.mu.RUnlock()
 
 	rt, ok := c.runtimes[id]
+	if !ok {
+		return nil, false
+	}
 
-	return rt, ok
+	return rt.h, true
+}
+
+// reconcile loads the ACTIVE tailnets this cluster owns and does not serve
+// yet, and retires runtimes whose tailnet is no longer owned by this cluster
+// at the epoch they were loaded with (moved, epoch bumped, not ACTIVE,
+// deleted). A failed listing changes nothing.
+func (c *Cluster) reconcile() {
+	owned, err := c.platform.OwnedTailnets(c.platform.ClusterID())
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: listing owned tailnets")
+
+		return
+	}
+
+	want := make(map[string]types.Tailnet, len(owned))
+	for _, tn := range owned {
+		want[tn.ID] = tn
+	}
+
+	c.mu.RLock()
+	var stale []*tenantRuntime
+	loaded := make(map[string]bool, len(c.runtimes))
+	for id, rt := range c.runtimes {
+		loaded[id.String()] = true
+		if tn, ok := want[id.String()]; !ok || tn.OwnerEpoch != rt.epoch {
+			stale = append(stale, rt)
+		}
+	}
+	c.mu.RUnlock()
+
+	for _, rt := range stale {
+		c.retire(rt, "no longer owned by this cluster at the loaded epoch")
+	}
+
+	for _, tn := range owned {
+		if loaded[tn.ID] && !containsRuntime(stale, tn.ID) {
+			continue
+		}
+
+		err := c.load(tn)
+		if err != nil {
+			log.Error().Err(err).Str("tailnet", tn.ID).Msg("reconcile: loading tailnet")
+
+			continue
+		}
+
+		id, _ := tailnet.ParseID(tn.ID)
+
+		c.mu.RLock()
+		rt := c.runtimes[id]
+		c.mu.RUnlock()
+
+		if err := c.start(rt); err != nil { //nolint:noinlineerr
+			log.Error().Err(err).Str("tailnet", tn.ID).Msg("reconcile: starting tailnet")
+			c.retire(rt, "failed to start")
+		}
+	}
+}
+
+func containsRuntime(rts []*tenantRuntime, id string) bool {
+	for _, rt := range rts {
+		if rt.id.String() == id {
+			return true
+		}
+	}
+
+	return false
+}
+
+// retire stops serving rt: it is removed from routing first (new sessions
+// for its tailnet are refused), its bound Noise sessions are closed, its map
+// streams end, and its background work stops. Its writes are already fenced
+// in the database once ownership changed.
+func (c *Cluster) retire(rt *tenantRuntime, reason string) {
+	c.mu.Lock()
+	if cur, ok := c.runtimes[rt.id]; !ok || cur != rt {
+		c.mu.Unlock()
+
+		return
+	}
+
+	delete(c.runtimes, rt.id)
+	c.order = removeID(c.order, rt.id)
+	c.mu.Unlock()
+
+	log.Warn().Str("tailnet", rt.id.String()).Str("slug", rt.slug).Uint64("epoch", rt.epoch).
+		Str("reason", reason).Msg("retiring tailnet runtime")
+
+	c.stopRuntime(rt)
+}
+
+func (c *Cluster) stopRuntime(rt *tenantRuntime) {
+	h := rt.h
+	h.retired.Store(true)
+	h.closeSessions()
+
+	if rt.cancel != nil {
+		rt.cancel()
+	}
+
+	h.ephemeralGC.Close()
+
+	if h.challenges != nil {
+		h.challenges.Close()
+	}
+
+	if h.mapBatcher != nil {
+		h.mapBatcher.Close()
+	}
+
+	h.clientStreamsOpen.Wait()
+
+	if rt.stop != nil {
+		rt.stop()
+	}
+
+	err := h.state.Close()
+	if err != nil {
+		log.Error().Err(err).Str("tailnet", rt.id.String()).Msg("closing tailnet state")
+	}
+}
+
+func removeID(ids []tailnet.ID, id tailnet.ID) []tailnet.ID {
+	out := ids[:0]
+	for _, x := range ids {
+		if x != id {
+			out = append(out, x)
+		}
+	}
+
+	return out
 }
 
 // NoisePublicKey is the cluster's Noise key, shared by every tailnet.
@@ -211,6 +389,18 @@ func (c *Cluster) runtimesSnapshot() []*Headscale {
 	defer c.mu.RUnlock()
 
 	out := make([]*Headscale, 0, len(c.order))
+	for _, id := range c.order {
+		out = append(out, c.runtimes[id].h)
+	}
+
+	return out
+}
+
+func (c *Cluster) tenantSnapshot() []*tenantRuntime {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make([]*tenantRuntime, 0, len(c.order))
 	for _, id := range c.order {
 		out = append(out, c.runtimes[id])
 	}
@@ -306,26 +496,20 @@ func (c *Cluster) HTTPHandler() http.Handler {
 	return r
 }
 
-// Serve starts every runtime and the cluster listener, and stops all of them
-// when ctx is cancelled or a component fails.
+// Serve starts every runtime and the cluster listener, keeps the served
+// tailnets in line with ownership, and stops everything when ctx is
+// cancelled or a component fails.
 func (c *Cluster) Serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	errorGroup, ctx := errgroup.WithContext(ctx)
+	c.serveCtx, c.serveGroup = ctx, errorGroup
 
-	var stops []func()
+	defer c.shutdownRuntimes()
 
-	defer func() {
-		for i := len(stops) - 1; i >= 0; i-- {
-			stops[i]()
-		}
-	}()
-
-	for _, rt := range c.runtimesSnapshot() {
-		stop, err := rt.startRuntime(ctx, errorGroup)
-		stops = append(stops, stop)
-
+	for _, rt := range c.tenantSnapshot() {
+		err := c.start(rt)
 		if err != nil {
 			return fmt.Errorf("starting tailnet runtime: %w", err)
 		}
@@ -358,10 +542,28 @@ func (c *Cluster) Serve(ctx context.Context) error {
 
 	errorGroup.Go(serveHTTP(srv, ln))
 
+	c.mu.RLock()
+	n := len(c.order)
+	c.mu.RUnlock()
+
 	log.Info().
 		Str("cluster", c.platform.ClusterID()).
-		Int("tailnets", len(c.order)).
+		Int("tailnets", n).
 		Msgf("cluster listening on %s", ln.Addr())
+
+	errorGroup.Go(func() error {
+		t := time.NewTicker(reconcileInterval)
+		defer t.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-t.C:
+				c.reconcile()
+			}
+		}
+	})
 
 	errorGroup.Go(func() error {
 		<-ctx.Done()
@@ -377,32 +579,27 @@ func (c *Cluster) Serve(ctx context.Context) error {
 			tlsBundle.Stop()
 		}
 
-		c.shutdownRuntimes()
-
 		return nil
 	})
 
 	return errorGroup.Wait()
 }
 
-// shutdownRuntimes stops every runtime's background work and waits for its
-// map streams, then closes the states and the shared pool.
+// shutdownRuntimes stops every runtime, then closes the shared pool.
 func (c *Cluster) shutdownRuntimes() {
-	for _, rt := range c.runtimesSnapshot() {
-		rt.ephemeralGC.Close()
-
-		if rt.challenges != nil {
-			rt.challenges.Close()
-		}
-
-		if rt.mapBatcher != nil {
-			rt.mapBatcher.Close()
-		}
-
-		rt.clientStreamsOpen.Wait()
+	c.mu.Lock()
+	rts := make([]*tenantRuntime, 0, len(c.order))
+	for _, id := range c.order {
+		rts = append(rts, c.runtimes[id])
 	}
 
-	c.closeRuntimes()
+	c.runtimes = make(map[tailnet.ID]*tenantRuntime)
+	c.order = nil
+	c.mu.Unlock()
+
+	for _, rt := range rts {
+		c.stopRuntime(rt)
+	}
 
 	err := c.platform.Close()
 	if err != nil {
@@ -410,6 +607,7 @@ func (c *Cluster) shutdownRuntimes() {
 	}
 }
 
+// closeRuntimes closes the states of runtimes that never started.
 func (c *Cluster) closeRuntimes() {
 	for _, rt := range c.runtimesSnapshot() {
 		err := rt.state.Close()

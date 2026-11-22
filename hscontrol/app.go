@@ -111,6 +111,12 @@ type Headscale struct {
 	// One per long-poll session, held through its Disconnect cleanup, so
 	// shutdown can close state after waiting on it.
 	clientStreamsOpen sync.WaitGroup
+
+	// Cluster runtimes only (P10): retired is set when the cluster stops
+	// serving this tailnet (ownership moved); sessions are the Noise sessions
+	// bound to it, closed on retirement.
+	retired  atomic.Bool
+	sessions sync.Map // *noiseServer -> struct{}
 }
 
 var (

@@ -226,6 +226,8 @@ func serveNoiseSession(
 	// Serve returns once the listener is drained; the connection outlives it.
 	_ = newNoiseHTTPServer(r, types.HTTPTimeout).
 		Serve(netutil.NewOneConnListener(noiseConn, nil))
+
+	ns.unbind()
 }
 
 // newNoiseHTTPServer builds the server for one Noise tunnel. The hijack drops
