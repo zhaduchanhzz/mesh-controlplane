@@ -510,7 +510,10 @@ func (s *NodeStore) processWrite() {
 		select {
 		case w := <-s.writeQueue:
 			batch = append(batch, w)
-			if len(batch) >= s.batchSize {
+			// A peer-map rebuild is applied at once, with the writes queued
+			// before it, in order: its caller (a user or policy change)
+			// waits for it and gains nothing from the batch wait.
+			if len(batch) >= s.batchSize || w.op == rebuildPeerMaps {
 				s.applyBatch(batch)
 				batch = batch[:0]
 
