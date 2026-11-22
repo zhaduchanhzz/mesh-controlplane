@@ -158,8 +158,10 @@ setup)
 	;;
 stop)
 	curl -fsS http://127.0.0.1:9090/metrics 2>/dev/null | grep -E '^(headscale_|go_memstats_heap|go_gc|process_)' >"$dir/metrics.txt" || true
-	kill "$(cat "$dir/server.pid")" 2>/dev/null || true
-	sleep 2
+	pid=$(cat "$dir/server.pid")
+	kill "$pid" 2>/dev/null || true
+	for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+	kill -9 "$pid" 2>/dev/null || true
 	kill "$(cat "$dir/sampler.pid")" 2>/dev/null || true
 	rm -f "$dir/keys.txt"
 	;;
