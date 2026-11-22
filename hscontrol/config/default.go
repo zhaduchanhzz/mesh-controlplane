@@ -52,6 +52,7 @@ func Default() types.Config {
 				MaxOpenConnections:  10,
 				MaxIdleConnections:  10,
 				ConnMaxIdleTimeSecs: 3600,
+				QueryExecMode:       types.PostgresQueryExecCacheStatement,
 			},
 		},
 		DNSConfig: types.DNSConfig{

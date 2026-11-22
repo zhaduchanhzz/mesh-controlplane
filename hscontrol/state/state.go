@@ -347,6 +347,18 @@ func (s *State) lockRegistration(machineKey key.MachinePublic) func() {
 // NewState creates and initializes a new [State] instance, setting up the database,
 // IP allocator, DERP map, policy manager, and loading existing users and nodes.
 func NewState(cfg *types.Config) (*State, error) {
+	db, err := hsdb.NewHeadscaleDatabase(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("initializing database: %w", err)
+	}
+
+	return NewStateWithDB(cfg, db)
+}
+
+// NewStateWithDB builds a [State] on an existing tailnet-scoped database
+// handle. A cluster process (ADR 0007) gives every tailnet runtime its own
+// scoped handle on one shared connection pool.
+func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 	defaults := config.Default().Tuning
 
 	cacheExpiration := cmp.Or(cfg.Tuning.RegisterCacheExpiration, defaults.RegisterCacheExpiration)
@@ -354,11 +366,6 @@ func NewState(cfg *types.Config) (*State, error) {
 	cacheMaxEntries := defaults.RegisterCacheMaxEntries
 	if cfg.Tuning.RegisterCacheMaxEntries > 0 {
 		cacheMaxEntries = cfg.Tuning.RegisterCacheMaxEntries
-	}
-
-	db, err := hsdb.NewHeadscaleDatabase(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("initializing database: %w", err)
 	}
 
 	ipAlloc, err := hsdb.NewIPAllocator(db, cfg.Prefixes.V4, cfg.Prefixes.V6, cfg.Prefixes.Allocation)

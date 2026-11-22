@@ -111,6 +111,22 @@ CREATE TABLE nodes(
 CREATE INDEX idx_nodes_auth_key_id ON nodes(auth_key_id);
 CREATE INDEX idx_nodes_tailnet_machine_key ON nodes(tailnet_id, machine_key);
 CREATE INDEX idx_nodes_tailnet_node_key ON nodes(tailnet_id, node_key);
+-- One tailnet per (machine_key, node_key) pair (ADR 0007 §2); see schema.sql.
+CREATE INDEX idx_nodes_machine_key_node_key ON nodes(machine_key, node_key);
+CREATE FUNCTION nodes_key_pair_tailnet_check() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.machine_key <> 'mkey:0000000000000000000000000000000000000000000000000000000000000000' AND NEW.node_key <> 'nodekey:0000000000000000000000000000000000000000000000000000000000000000' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended(NEW.machine_key || '/' || NEW.node_key, 0));
+    IF EXISTS (SELECT 1 FROM nodes WHERE machine_key = NEW.machine_key AND node_key = NEW.node_key
+               AND tailnet_id <> NEW.tailnet_id AND id <> NEW.id) THEN
+      RAISE EXCEPTION 'node key pair belongs to another tailnet' USING ERRCODE = 'unique_violation';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_nodes_key_pair_tailnet BEFORE INSERT OR UPDATE OF machine_key, node_key, tailnet_id ON nodes
+  FOR EACH ROW EXECUTE FUNCTION nodes_key_pair_tailnet_check();
 
 CREATE TABLE policies(
   id bigserial PRIMARY KEY,

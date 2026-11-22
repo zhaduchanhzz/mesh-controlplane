@@ -56,8 +56,8 @@ variable "mc_ci" {
     vm_id     = 7701
     ipv4      = "192.168.1.240"
     mac       = "BC:24:11:77:02:40"
-    cores     = 8
-    memory_mb = 24576
+    cores     = 16
+    memory_mb = 40960
     disk_gb   = 120
   }
 

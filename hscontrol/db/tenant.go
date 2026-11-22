@@ -11,7 +11,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
@@ -22,6 +21,10 @@ var (
 	ErrNotV01Database = errors.New("database was not created by mesh-controlplane v0.1; Headscale databases cannot be upgraded")
 	// ErrTailnetNotOwned reports a tailnet owned by another cluster.
 	ErrTailnetNotOwned = errors.New("tailnet is owned by another cluster")
+	// ErrDatabaseUnavailable reports a query that failed while checking the
+	// database (connection, pooler or permission problem), as opposed to a
+	// database refused for its content.
+	ErrDatabaseUnavailable = errors.New("database query failed")
 	// ErrAmbiguousTailnet reports a database with several tailnets and no
 	// tailnet chosen for the runtime.
 	ErrAmbiguousTailnet = errors.New("database holds several tailnets; the runtime must name one")
@@ -43,7 +46,12 @@ func createSchema(tx *gorm.DB) error {
 	// A previous start may have committed the schema and then died before
 	// gormigrate recorded it. The schema is created in one transaction, so a
 	// present tailnets table means it is complete; it is validated afterwards.
-	if tx.Migrator().HasTable("tailnets") {
+	present, err := tableExists(tx, "tailnets")
+	if err != nil {
+		return err
+	}
+
+	if present {
 		return nil
 	}
 
@@ -56,12 +64,17 @@ func createSchema(tx *gorm.DB) error {
 	// runs; the schema files still declare them (schema.sql is the squibble
 	// source of truth), so their CREATE TABLE is skipped when present.
 	for _, table := range preCreatedTables {
-		if tx.Migrator().HasTable(table) {
+		present, err := tableExists(tx, table)
+		if err != nil {
+			return err
+		}
+
+		if present {
 			script = regexp.MustCompile(`(?s)CREATE TABLE `+table+`\(.*?\);`).ReplaceAllString(script, "")
 		}
 	}
 
-	err := tx.Exec(script).Error
+	err = tx.Exec(script).Error
 	if err != nil {
 		return fmt.Errorf("creating v0.1 schema: %w", err)
 	}
@@ -69,21 +82,59 @@ func createSchema(tx *gorm.DB) error {
 	return nil
 }
 
+// tableExists reports whether table exists in the connection's schema. Unlike
+// gorm's Migrator().HasTable, which reads a failed query as "no table", a
+// query error is returned (wrapping ErrDatabaseUnavailable): a broken
+// connection, e.g. PgBouncer in transaction mode without prepared statement
+// support, must not look like a fresh or foreign database.
+func tableExists(db *gorm.DB, table string) (bool, error) {
+	var q string
+
+	switch db.Name() {
+	case "postgres":
+		q = `SELECT count(*) FROM information_schema.tables
+			WHERE table_schema = current_schema() AND table_name = ? AND table_type = 'BASE TABLE'`
+	case "sqlite":
+		q = `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`
+	default:
+		return false, fmt.Errorf("%w: %s", errDatabaseNotSupported, db.Name())
+	}
+
+	var n int64
+
+	err := db.Raw(q, table).Scan(&n).Error
+	if err != nil {
+		return false, fmt.Errorf("%w: checking table %s: %w", ErrDatabaseUnavailable, table, err)
+	}
+
+	return n > 0, nil
+}
+
 // checkV01Database refuses any non-fresh database that is not a v0.1
 // database: one without the tailnets table, or with migration IDs this
-// binary does not know (Headscale's chain or a newer release).
+// binary does not know (Headscale's chain or a newer release). A failed
+// query is a database error, never a verdict on the database.
 func checkV01Database(db *gorm.DB) error {
-	m := db.Migrator()
+	has := map[string]bool{}
 
-	if !m.HasTable("migrations") {
-		if m.HasTable("users") || m.HasTable("nodes") {
+	for _, table := range []string{"migrations", "users", "nodes", "tailnets"} {
+		present, err := tableExists(db, table)
+		if err != nil {
+			return err
+		}
+
+		has[table] = present
+	}
+
+	if !has["migrations"] {
+		if has["users"] || has["nodes"] {
 			return fmt.Errorf("%w: tables exist but no migration record", ErrNotV01Database)
 		}
 
 		return nil // fresh database
 	}
 
-	if !m.HasTable("tailnets") {
+	if !has["tailnets"] {
 		return fmt.Errorf("%w: no tailnets table", ErrNotV01Database)
 	}
 
@@ -91,10 +142,14 @@ func checkV01Database(db *gorm.DB) error {
 
 	err := db.Table("migrations").Pluck("id", &ids).Error
 	if err != nil {
-		return fmt.Errorf("reading migrations: %w", err)
+		return fmt.Errorf("%w: reading migrations: %w", ErrDatabaseUnavailable, err)
 	}
 
-	known := map[string]bool{schemaInitMigration: true, v01InitMigration: true}
+	known := map[string]bool{schemaInitMigration: true}
+	for _, m := range v01Migrations() {
+		known[m.ID] = true
+	}
+
 	for _, id := range ids {
 		if !known[id] {
 			return fmt.Errorf("%w: unknown migration %q", ErrNotV01Database, id)
@@ -104,41 +159,54 @@ func checkV01Database(db *gorm.DB) error {
 	return nil
 }
 
-// bindRuntimeTailnet registers the tenantscope plugin on raw and returns a
-// handle whose statements are confined to the runtime's tailnet, together
-// with that tailnet. The tailnet must be owned by this process's cluster.
-func bindRuntimeTailnet(raw *gorm.DB, cfg *types.Config) (*gorm.DB, types.Tailnet, error) {
-	err := tenantscope.Register(raw)
-	if err != nil {
-		return nil, types.Tailnet{}, fmt.Errorf("registering tenantscope: %w", err)
+// clusterIDOf returns the cluster this process serves for; empty means
+// "local" (single-node development and tests).
+func clusterIDOf(cfg *types.Config) string {
+	if cfg.ClusterID == "" {
+		return defaultClusterID
 	}
 
-	cluster := cfg.ClusterID
-	if cluster == "" {
-		cluster = defaultClusterID
-	}
+	return cfg.ClusterID
+}
+
+// bindRuntimeTailnet returns a handle on raw (tenantscope already registered)
+// whose statements are confined to the runtime's tailnet, together with that
+// tailnet. The tailnet must be owned by this process's cluster.
+func bindRuntimeTailnet(raw *gorm.DB, cfg *types.Config) (*gorm.DB, types.Tailnet, error) {
+	cluster := clusterIDOf(cfg)
 
 	tn, err := resolveRuntimeTailnet(raw, cfg.TailnetID, cluster)
 	if err != nil {
 		return nil, types.Tailnet{}, err
 	}
 
+	scoped, err := scopeTo(raw, tn, cluster)
+	if err != nil {
+		return nil, types.Tailnet{}, err
+	}
+
+	return scoped, tn, nil
+}
+
+// scopeTo binds raw to tn with the verified scope of this cluster's runtime.
+// The returned handle shares raw's connection pool.
+func scopeTo(raw *gorm.DB, tn types.Tailnet, cluster string) (*gorm.DB, error) {
 	id, err := tailnet.ParseID(tn.ID)
 	if err != nil {
-		return nil, types.Tailnet{}, fmt.Errorf("tailnet %q: %w", tn.ID, err)
+		return nil, fmt.Errorf("tailnet %q: %w", tn.ID, err)
 	}
 
 	scope, err := tailnet.NewScope(id, tailnet.SourceInternalService, "runtime@"+cluster, tailnet.Epoch(tn.OwnerEpoch))
 	if err != nil {
-		return nil, types.Tailnet{}, err
+		return nil, err
 	}
 
 	ctx, err := tailnet.WithScope(context.Background(), scope)
 	if err != nil {
-		return nil, types.Tailnet{}, err
+		return nil, err
 	}
 
-	return raw.WithContext(ctx), tn, nil
+	return raw.WithContext(ctx), nil
 }
 
 func resolveRuntimeTailnet(raw *gorm.DB, want, cluster string) (types.Tailnet, error) {

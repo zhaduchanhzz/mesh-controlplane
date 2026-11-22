@@ -153,6 +153,22 @@ func NewHeadscale(cfg *types.Config) (*Headscale, error) {
 		return nil, fmt.Errorf("reading or creating Noise protocol private key: %w", err)
 	}
 
+	return newHeadscale(cfg, noisePrivateKey, oidcClientSecret, func() (*state.State, error) {
+		return state.NewState(cfg)
+	})
+}
+
+// newHeadscale builds the per-tailnet runtime around a Noise key and a state
+// constructor. NewHeadscale (single tailnet) opens its own database; a
+// Cluster (ADR 0007) passes the cluster key and a state on a shared pool.
+func newHeadscale(
+	cfg *types.Config,
+	noisePrivateKey *key.MachinePrivate,
+	oidcClientSecret string,
+	newState func() (*state.State, error),
+) (*Headscale, error) {
+	var err error
+
 	provider := cfg.DNSConfig.Challenge.Provider
 	if provider == nil && cfg.DNSConfig.Challenge.ProviderName() != "" {
 		provider, err = cfg.DNSConfig.Challenge.NewProvider(types.ResolveSecret)
@@ -175,7 +191,7 @@ func NewHeadscale(cfg *types.Config) (*Headscale, error) {
 
 	cfg.StartDNS(provider)
 
-	s, err := state.NewState(cfg)
+	s, err := newState()
 	if err != nil {
 		return nil, fmt.Errorf("init state: %w", err)
 	}
@@ -625,76 +641,11 @@ func (h *Headscale) Serve(ctx context.Context) error {
 
 	errorGroup, ctx := errgroup.WithContext(ctx)
 
-	h.mapBatcher = mapper.NewBatcherAndMapper(h.cfg, h.state)
-
-	h.mapBatcher.Start()
-	defer h.mapBatcher.Close()
-
-	if h.cfg.DERP.Server.Enabled {
-		// When embedded DERP is enabled we always need a STUN server
-		if h.cfg.DERP.Server.STUNAddr == "" {
-			return errSTUNAddressNotSet
-		}
-
-		stunServer, err := h.DERPServer.ListenSTUN(ctx)
-		if err != nil {
-			return err
-		}
-
-		errorGroup.Go(stunServer.Serve)
+	stopRuntime, err := h.startRuntime(ctx, errorGroup)
+	defer stopRuntime() // also releases a partially started runtime
+	if err != nil {
+		return err
 	}
-
-	// Start on the sources that loaded; only a map with no region at all,
-	// after the embedded region and the policy's derpMap, is fatal.
-	derpMap, derpErr := derp.GetDERPMap(h.cfg.DERP, h.cfg.DERPShuffleSeed()) //nolint:contextcheck // startup fetch, bounded by its HTTP client
-	if derpErr != nil {
-		log.Warn().Err(derpErr).Msg("skipping DERP map sources that failed to load")
-	}
-
-	if h.cfg.DERP.Server.Enabled && h.cfg.DERP.Server.AutomaticallyAddEmbeddedDerpRegion {
-		region, err := h.DERPServer.GenerateRegion() //nolint:contextcheck // only a debug DNS lookup uses a context
-		if err != nil {
-			return fmt.Errorf("generating embedded DERP region: %w", err)
-		}
-
-		derpMap.Regions[region.RegionID] = &region
-	}
-
-	h.state.SetDERPMap(derpMap)
-
-	if h.state.DERPMap().Regions().Len() == 0 {
-		return errors.Join(errEmptyInitialDERPMap, derpErr)
-	}
-
-	// Start ephemeral node garbage collector and schedule all nodes
-	// that are already in the database and ephemeral. If they are still
-	// around between restarts, they will reconnect and the GC will
-	// be cancelled.
-	go h.ephemeralGC.Start()
-
-	ephmNodes := h.state.ListEphemeralNodes()
-	for _, node := range ephmNodes.All() {
-		h.ephemeralGC.Schedule(node.ID(), h.cfg.Node.Ephemeral.InactivityTimeout)
-	}
-
-	if h.cfg.DNSConfig.ExtraRecordsPath != "" {
-		h.extraRecordMan, err = dns.NewExtraRecordsManager(h.cfg.DNSConfig.ExtraRecordsPath)
-		if err != nil {
-			return fmt.Errorf("setting up extrarecord manager: %w", err)
-		}
-
-		h.cfg.SetExtraRecords(h.extraRecordMan.Records())
-
-		go h.extraRecordMan.Run() //nolint:contextcheck // stopped by Close
-		defer h.extraRecordMan.Close()
-	}
-
-	// Covers the records from the config too.
-	h.state.WarnNodesHoldingExtraRecords()
-
-	// Start all scheduled tasks, e.g. expiring nodes, derp updates and
-	// records updates
-	go h.scheduledTasks(ctx)
 
 	//
 	//
@@ -1522,4 +1473,91 @@ func (e *zerologLogEntry) Panic(
 		Interface("panic", v).
 		Bytes("stack", stack).
 		Msg("http handler panic")
+}
+
+// startRuntime starts the per-tailnet runtime: map batcher, DERP map,
+// ephemeral GC, extra DNS records and scheduled tasks. It opens no listener,
+// so a Cluster (ADR 0007) can run several runtimes behind one listener.
+// The returned stop releases what was started, also on error.
+func (h *Headscale) startRuntime(ctx context.Context, errorGroup *errgroup.Group) (stop func(), err error) {
+	var cleanups []func()
+
+	stop = func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+
+	h.mapBatcher = mapper.NewBatcherAndMapper(h.cfg, h.state)
+
+	h.mapBatcher.Start()
+	cleanups = append(cleanups, h.mapBatcher.Close)
+
+	if h.cfg.DERP.Server.Enabled {
+		// When embedded DERP is enabled we always need a STUN server
+		if h.cfg.DERP.Server.STUNAddr == "" {
+			return stop, errSTUNAddressNotSet
+		}
+
+		stunServer, err := h.DERPServer.ListenSTUN(ctx)
+		if err != nil {
+			return stop, err
+		}
+
+		errorGroup.Go(stunServer.Serve)
+	}
+
+	// Start on the sources that loaded; only a map with no region at all,
+	// after the embedded region and the policy's derpMap, is fatal.
+	derpMap, derpErr := derp.GetDERPMap(h.cfg.DERP, h.cfg.DERPShuffleSeed()) //nolint:contextcheck // startup fetch, bounded by its HTTP client
+	if derpErr != nil {
+		log.Warn().Err(derpErr).Msg("skipping DERP map sources that failed to load")
+	}
+
+	if h.cfg.DERP.Server.Enabled && h.cfg.DERP.Server.AutomaticallyAddEmbeddedDerpRegion {
+		region, err := h.DERPServer.GenerateRegion() //nolint:contextcheck // only a debug DNS lookup uses a context
+		if err != nil {
+			return stop, fmt.Errorf("generating embedded DERP region: %w", err)
+		}
+
+		derpMap.Regions[region.RegionID] = &region
+	}
+
+	h.state.SetDERPMap(derpMap)
+
+	if h.state.DERPMap().Regions().Len() == 0 {
+		return stop, errors.Join(errEmptyInitialDERPMap, derpErr)
+	}
+
+	// Start ephemeral node garbage collector and schedule all nodes
+	// that are already in the database and ephemeral. If they are still
+	// around between restarts, they will reconnect and the GC will
+	// be cancelled.
+	go h.ephemeralGC.Start()
+
+	ephmNodes := h.state.ListEphemeralNodes()
+	for _, node := range ephmNodes.All() {
+		h.ephemeralGC.Schedule(node.ID(), h.cfg.Node.Ephemeral.InactivityTimeout)
+	}
+
+	if h.cfg.DNSConfig.ExtraRecordsPath != "" {
+		h.extraRecordMan, err = dns.NewExtraRecordsManager(h.cfg.DNSConfig.ExtraRecordsPath)
+		if err != nil {
+			return stop, fmt.Errorf("setting up extrarecord manager: %w", err)
+		}
+
+		h.cfg.SetExtraRecords(h.extraRecordMan.Records())
+
+		go h.extraRecordMan.Run() //nolint:contextcheck // stopped by Close
+		cleanups = append(cleanups, h.extraRecordMan.Close)
+	}
+
+	// Covers the records from the config too.
+	h.state.WarnNodesHoldingExtraRecords()
+
+	// Start all scheduled tasks, e.g. expiring nodes, derp updates and
+	// records updates
+	go h.scheduledTasks(ctx)
+
+	return stop, nil
 }

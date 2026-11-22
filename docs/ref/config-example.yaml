@@ -241,6 +241,12 @@ database:
     max_idle_conns: 10
     # How long, in seconds, a connection may stay idle before it is closed.
     conn_max_idle_time_secs: 3600
+    # How the driver (pgx) sends queries, passed as its
+    # `default_query_exec_mode`. Behind PgBouncer in transaction mode without
+    # `max_prepared_statements`, use `simple_protocol`.
+    # One of: `cache_statement`, `cache_describe`, `describe_exec`, `exec`,
+    # `simple_protocol`.
+    query_exec_mode: cache_statement
 
 # The DNS configuration sent to clients, MagicDNS included, and TLS certificates
 # for nodes. Clients apply it only with `--accept-dns`, their default. See
