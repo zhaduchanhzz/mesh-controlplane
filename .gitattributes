@@ -8,3 +8,10 @@ hscontrol/types/config_docs_generated.go linguist-generated
 nix/options.generated.nix linguist-generated
 docs/ref/configuration-options.md linguist-generated
 docs/ref/config-example.yaml linguist-generated
+
+# Files executed or parsed on Linux (lab VMs, WSL) must stay LF on Windows checkouts.
+*.sh text eol=lf
+*.py text eol=lf
+*.tftpl text eol=lf
+*.service text eol=lf
+infra/lab/mc-cp/* text eol=lf
