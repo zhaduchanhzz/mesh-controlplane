@@ -2,7 +2,11 @@
 # Server half of the P00c server-only capacity harness (see README.md).
 # Runs on the server host (mc-bench). Subcommands:
 #
-#   server.sh start RUNDIR POLICY ADDR   start headscale + 1 s RSS/CPU sampler
+#   server.sh seed  SNAPDIR NODES ADDR   seeded snapshot via capseed: db.sqlite,
+#                                        nodes.keys, users.keys, db.sha256
+#   server.sh start RUNDIR POLICY ADDR [SNAPDIR]
+#                                        start headscale (from a copy of the
+#                                        snapshot's db) + 1 s RSS/CPU sampler
 #   server.sh setup RUNDIR USERS         create users + reusable keys -> RUNDIR/keys.txt (0600)
 #   server.sh stop  RUNDIR               scrape metrics, stop, summarise samples
 #
@@ -30,10 +34,8 @@ policy_json() {
 
 hs() { "$HS" -c "$dir/config.yaml" "$@"; }
 
-case $cmd in
-start)
-	policy=$3 addr=$4
-	rm -rf "$dir" && mkdir -p "$dir" && chmod 700 "$dir"
+write_config() { # dir policy addr
+	local dir=$1 policy=$2 addr=$3
 	policy_json "$policy" >"$dir/policy.json"
 	cat >"$dir/derp.yaml" <<'EOF'
 regions:
@@ -85,6 +87,24 @@ logtail:
 cli:
   timeout: 300s
 EOF
+}
+
+case $cmd in
+seed)
+	nodes=$3 addr=$4
+	rm -rf "$dir" && mkdir -p "$dir" && chmod 700 "$dir"
+	write_config "$dir" isolated "$addr"
+	"${CAPSEED:-$HOME/p00c/bin/capseed}" -config "$dir/config.yaml" -out "$dir" -nodes "$nodes" | tee "$dir/seed.txt"
+	sha256sum "$dir/db.sqlite" | tee "$dir/db.sha256"
+	if ls "$dir"/db.sqlite-* >/dev/null 2>&1; then echo "unexpected WAL left behind" >&2; exit 1; fi
+	;;
+start)
+	policy=$3 addr=$4 snap=${5:-}
+	rm -rf "$dir" && mkdir -p "$dir" && chmod 700 "$dir"
+	write_config "$dir" "$policy" "$addr"
+	if [ -n "$snap" ]; then
+		cp "$snap/db.sqlite" "$dir/db.sqlite"
+	fi
 	ulimit -n 200000
 	GOMAXPROCS=${GOMAXPROCS:-8} nohup "$HS" -c "$dir/config.yaml" serve >"$dir/server.log" 2>&1 &
 	pid=$!
