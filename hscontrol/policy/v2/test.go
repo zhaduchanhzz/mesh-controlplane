@@ -329,10 +329,19 @@ func (pm *PolicyManager) RunTests() error {
 	return wrapTestResult(errPolicyTestsFailed, results.AllPassed, results)
 }
 
-// evaluateTests runs the `tests` block against a fresh compilation of pol.
+// evaluateTests is [evaluateTestsFor] with the upstream semantics.
+func evaluateTests(pol *Policy, users []types.User, nodes views.Slice[types.NodeView]) error {
+	return evaluateTestsFor(pol, users, nodes, false)
+}
+
+// evaluateTestsFor runs the `tests` block against a fresh compilation of pol.
 // It is the user-write sandbox: the live [PolicyManager] state is left
 // untouched, so a failing test rejects the write without side effects.
-func evaluateTests(pol *Policy, users []types.User, nodes views.Slice[types.NodeView]) error {
+//
+// emptyDenies is the [WithEmptyPolicyDenies] switch of the manager the
+// policy is written to: with it, a policy without access rules is tested
+// against the deny-all filter it will compile to.
+func evaluateTestsFor(pol *Policy, users []types.User, nodes views.Slice[types.NodeView], emptyDenies bool) error {
 	if pol == nil || len(pol.Tests) == 0 {
 		return nil
 	}
@@ -341,9 +350,13 @@ func evaluateTests(pol *Policy, users []types.User, nodes views.Slice[types.Node
 	grants := pol.compileGrants(users, nodes)
 
 	var filter []tailcfg.FilterRule
-	if pol.ACLs == nil && pol.Grants == nil {
+
+	switch {
+	case emptyDenies && hasNoAccessRules(pol):
+		filter = nil
+	case pol.ACLs == nil && pol.Grants == nil:
 		filter = noRulesFilter(users, nodes)
-	} else {
+	default:
 		filter = globalFilterRules(grants)
 	}
 
@@ -806,8 +819,16 @@ func CheckPolicy(b []byte) error {
 // ValidatePolicy reports whether a policy write of b would be accepted
 // against users and nodes. It runs the [PolicyManager.SetPolicy] write
 // boundary, `tests` and `sshTests` included, on a throwaway manager.
-func ValidatePolicy(b []byte, users types.Users, nodes views.Slice[types.NodeView]) error {
-	pm, err := NewPolicyManager(nil, users, nodes)
+//
+// An empty b is refused in both modes: it is not a policy write. With
+// [WithEmptyPolicyDenies] in opts, `tests` are evaluated against the
+// deny-all filter a policy without access rules compiles to there.
+func ValidatePolicy(b []byte, users types.Users, nodes views.Slice[types.NodeView], opts ...Option) error {
+	if len(b) == 0 {
+		return ErrPolicyEmpty
+	}
+
+	pm, err := NewPolicyManager(nil, users, nodes, opts...)
 	if err != nil {
 		return fmt.Errorf("creating policy manager: %w", err)
 	}

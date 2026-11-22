@@ -427,7 +427,7 @@ func NewState(cfg *types.Config) (*State, error) {
 		return nil, fmt.Errorf("loading policy: %w", err)
 	}
 
-	polMan, err := policy.NewPolicyManager(pol, users, nodes.ViewSlice())
+	polMan, err := policy.NewPolicyManager(pol, users, nodes.ViewSlice(), policyOptions(cfg)...)
 	if err != nil {
 		return nil, fmt.Errorf("initializing policy manager: %w", err)
 	}
@@ -489,6 +489,13 @@ func NewState(cfg *types.Config) (*State, error) {
 // It runs on the NodeStore writer goroutine and takes the policy
 // manager's lock, which is safe only while the policy manager never
 // waits on a NodeStore write while holding it.
+// policyOptions are the [policy.PolicyManager] options cfg asks for. The
+// live manager and every write validation use the same ones, so a policy
+// is validated under the semantics it will be installed with.
+func policyOptions(cfg *types.Config) []policy.Option {
+	return []policy.Option{policy.WithEmptyPolicyDenies(cfg.PolicyEmptyDenies)}
+}
+
 func policyPeersFunc(pm policy.PolicyManager) PeersFunc {
 	return func(nodes []types.NodeView) map[types.NodeID][]types.NodeID {
 		slice := views.SliceOf(nodes)
@@ -1930,7 +1937,7 @@ func (s *State) ValidatePolicy(pol []byte) error {
 		return fmt.Errorf("loading users: %w", err)
 	}
 
-	err = policy.ValidatePolicy(pol, users, s.ListNodes())
+	err = policy.ValidatePolicy(pol, users, s.ListNodes(), policyOptions(s.cfg)...)
 	if err != nil {
 		return invalidPolicyError{err}
 	}

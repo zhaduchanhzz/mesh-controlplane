@@ -59,6 +59,7 @@ type serverConfig struct {
 	dnsResolvers          []string
 	certProvider          hsdns.Provider
 	prefixV4              netip.Prefix
+	policyEmptyDenies     bool
 }
 
 func defaultServerConfig() *serverConfig {
@@ -150,6 +151,13 @@ func WithLogTailEnabled() ServerOption {
 	return func(c *serverConfig) { c.logTailEnabled = true }
 }
 
+// WithPolicyEmptyDenies sets [types.Config.PolicyEmptyDenies]: a policy
+// without access rules, or no policy, denies everything, as for a tenant
+// tailnet started by serve-tailnets.
+func WithPolicyEmptyDenies() ServerOption {
+	return func(c *serverConfig) { c.policyEmptyDenies = true }
+}
+
 // NewServer creates and starts a Headscale test server.
 // The server is fully functional and accepts real Tailscale control
 // protocol connections over Noise.
@@ -181,6 +189,7 @@ func NewServer(tb testing.TB, opts ...ServerOption) *TestServer {
 	cfg.Tuning.BatchChangeDelay = sc.batchDelay
 	cfg.Tuning.BatcherWorkers = sc.batcherWorkers
 	cfg.Tuning.NodeMapSessionBufferedChanSize = sc.bufferedChanSize
+	cfg.PolicyEmptyDenies = sc.policyEmptyDenies
 
 	if sc.nodeStoreBatchTimeout > 0 {
 		cfg.Tuning.NodeStoreBatchTimeout = sc.nodeStoreBatchTimeout

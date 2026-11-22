@@ -275,6 +275,13 @@ type Config struct { //nolint:recvcheck // MarshalJSON reads a value, so a Confi
 	// one. Set by the loader or from Go; it cannot be set from a file.
 	ConfigDir string `json:"-" koanf:"-"`
 
+	// PolicyEmptyDenies makes a policy without access rules (none, empty,
+	// "{}", {"acls":[]}, {"grants":[]}) deny everything instead of allowing
+	// everything, as a tenant tailnet requires. Set from Go only (the
+	// serve-tailnets runtimes set it); it cannot be set from a file, and
+	// off it keeps the upstream semantics.
+	PolicyEmptyDenies bool `json:"-" koanf:"-"`
+
 	// dns is nil until [Config.StartDNS].
 	dns *liveDNS
 }
