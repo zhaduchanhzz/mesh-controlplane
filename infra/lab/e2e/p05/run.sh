@@ -71,8 +71,10 @@ cleanup() {
   ci_ "docker ps -aq --filter label=$LABEL | xargs -r docker rm -f >/dev/null; \
        docker volume ls -q --filter label=$LABEL | xargs -r docker volume rm >/dev/null; \
        test -z \"\$(docker ps -aq --filter label=$LABEL)\"" || CLEAN_OK=0
-  cp_ "sudo systemctl stop headscale-cluster; sudo rm -f /var/lib/headscale/cluster-e2e/db.sqlite*; \
-       sudo systemctl start headscale-tailnets" || CLEAN_OK=0
+  # The glob must expand as root: the mesh user cannot list the directory.
+  cp_ "sudo systemctl stop headscale-cluster; sudo sh -c 'rm -f /var/lib/headscale/cluster-e2e/db.sqlite*'; \
+       sudo sh -c '! ls /var/lib/headscale/cluster-e2e/db.sqlite* 2>/dev/null'; ok=\$?; \
+       sudo systemctl start headscale-tailnets; exit \$ok" || { log "E2E database not removed"; CLEAN_OK=0; }
   local i code=000
   for i in $(seq 1 30); do
     code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "https://$OTHER_HOST:$PORT/health" || true)
@@ -103,7 +105,8 @@ setup() {
     sudo systemctl daemon-reload
     sudo systemctl stop headscale-tailnets headscale-cluster
     sudo install -d -o headscale -g headscale -m 0750 /var/lib/headscale/cluster /var/lib/headscale/cluster-e2e
-    sudo rm -f /var/lib/headscale/cluster-e2e/db.sqlite*
+    sudo sh -c 'rm -f /var/lib/headscale/cluster-e2e/db.sqlite*'
+    sudo sh -c '! ls /var/lib/headscale/cluster-e2e/db.sqlite* 2>/dev/null'
     rm -f /tmp/$(basename "$bin") /tmp/config.yaml /tmp/headscale-cluster.service" || return 1
 
   log "seeding tailnets a, b (ACTIVE) and c (SUSPENDED) while the cluster is stopped"
