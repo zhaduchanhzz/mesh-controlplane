@@ -261,8 +261,11 @@ func (tc *TestCluster) seed(tb testing.TB, seeds []TailnetSeed) {
 
 		id := defaultID
 		if i == 0 {
+			// An owner change must raise owner_epoch (trigger
+			// trg_tailnets_owner_epoch_monotonic, P10).
 			err = raw.Model(&types.Tailnet{}).Where("id = ?", id).Updates(map[string]any{
-				"slug": s.Slug, "status": status, "owner_cluster_id": owner, "updated_at": now,
+				"slug": s.Slug, "status": status, "owner_cluster_id": owner,
+				"owner_epoch": gorm.Expr("owner_epoch + 1"), "updated_at": now,
 			}).Error
 		} else {
 			id = uuid.NewV4().String()
