@@ -1,6 +1,6 @@
 # ADR 0004 — Một database và một runtime cho mỗi tailnet trong process của shard
 
-- **Trạng thái:** Proposed (2026-11-22). Cần chủ dự án quyết định, vì thay đổi hướng "Storage" trong PLAN §1 và phạm vi P03–P07.
+- **Trạng thái:** **Rejected** (2026-11-22). Chủ dự án chọn **phương án A**: một SQLite cho mỗi shard, có `tailnet_id` + composite FK + ID toàn cục, theo PLAN §1 và ADR 0002. ADR này giữ lại làm hồ sơ và làm phương án dự phòng.
 - **Liên quan:** ADR 0001 (runtime theo tailnet), ADR 0002 (fresh schema + ID toàn cục), P02 POC (`serve-tailnets` + front door), ticket P03, P12b.
 
 ## Bối cảnh
@@ -60,3 +60,11 @@ Hệ quả nếu được chấp nhận:
 - Hạn mức tenant trên mỗi shard dùng chung, theo FD và RAM khi có tải. Chờ P00b.
 - Nạp lười (chỉ dựng runtime khi tenant có kết nối) có cần không, nếu 1000 tenant không tải chỉ tốn khoảng 1.7 GiB.
 - Gom việc nền dùng chung: DERP map, cập nhật DNS extra records, kiểm tra update.
+
+## Quyết định (2026-11-22)
+
+Chủ dự án chọn **A**. Hệ quả:
+
+- Ticket P03 và ADR 0002 giữ nguyên hướng: chuỗi migration v0.1, `tailnet_id NOT NULL`, composite FK, unique theo `(tailnet_id, …)`, ID toàn cục.
+- POC P02 (`serve-tailnets`: nhiều runtime, mỗi runtime một DB) **chỉ là POC** cho giao thức Noise và Host. Front door được giữ; phần lưu trữ sẽ chuyển sang một DB cho shard trong P03–P05.
+- Số đo chi phí runtime ở trên vẫn hữu ích cho ADR 0001: chi phí in-memory theo tailnet (NodeStore, batcher) khi gom về một DB.
