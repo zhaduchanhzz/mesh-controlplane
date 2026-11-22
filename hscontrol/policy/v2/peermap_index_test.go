@@ -193,16 +193,23 @@ func TestBuildPeerMapIndexedMatchesPairwise(t *testing.T) {
 	}
 
 	var cov struct {
-		runs, perNode, self, via, partial, full, empty, exitCap, routed, tagged int
+		runs, perNode, self, via, partial, full, empty, exitCap, routed, tagged, denyAll int
 	}
 
 	rapid.Check(t, func(rt *rapid.T) {
 		nodes := drawPeerMapNodes(rt)
 		polB := drawPeerMapPolicy(rt)
 
-		pm, err := NewPolicyManager(polB, scanUsers, nodes.ViewSlice())
+		// Tenant tailnets treat an empty policy as deny-all.
+		tenant := rapid.Bool().Draw(rt, "emptyDenies")
+
+		pm, err := NewPolicyManager(polB, scanUsers, nodes.ViewSlice(), WithEmptyPolicyDenies(tenant))
 		if err != nil {
 			rt.Skipf("policy rejected: %v", err)
+		}
+
+		if pm.denyAll {
+			cov.denyAll++
 		}
 
 		in := rapid.Permutation(nodes).Draw(rt, "order")
@@ -287,6 +294,7 @@ func TestBuildPeerMapIndexedMatchesPairwise(t *testing.T) {
 	require.Positive(t, cov.exitCap, "one-way exit capability entries")
 	require.Positive(t, cov.routed, "subnet routers with peers")
 	require.Positive(t, cov.tagged, "tagged nodes with peers")
+	require.Positive(t, cov.denyAll, "deny-all (empty tenant policy)")
 }
 
 // TestBuildPeerMapIndexedFallback pins the inputs the indexed build hands
