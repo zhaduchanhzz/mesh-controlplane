@@ -15,6 +15,9 @@
 # piped to `tailscale up --auth-key=file:/dev/stdin`, never printed. Logs in
 # the artifact dir are redacted.
 #
+# P10 scenarios (L01, F01-F03) change tailnets while the cluster runs: a live
+# tailnet, an owner_epoch bump, suspend/resume and a move to another cluster.
+#
 # Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
 # shellcheck disable=SC2029
 
@@ -171,6 +174,17 @@ for n in json.load(sys.stdin):
     if n['hostname']=='$2': print(n['$3'])"
 }
 save_logs() { ci_ "docker logs $1 2>&1" | redact >"$ART_DIR/logs/$1.tailscaled.log" 2>/dev/null || true; }
+# wait_peer NAME PEER TIMEOUT_S: NAME's netmap lists PEER
+wait_peer() {
+  local i
+  for i in $(seq 1 "$3"); do case " $(peers "$1") " in *" $2 "*) return 0 ;; esac; sleep 1; done
+  return 1
+}
+mint() { # SLUG USER KEYFILE
+  cp_ "$HSC tailnet authkey --slug $1 --user $2 --reusable --expiration 30m" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])' >"$3" && chmod 600 "$3" && [ -s "$3" ]
+}
+cluster_log_has() { cp_ "sudo journalctl -u headscale-cluster --since -${2}s --no-pager" 2>/dev/null | grep -q "$1"; }
 
 # --------------------------------------------------------------- tests ---
 t_http() {
@@ -278,6 +292,91 @@ t_refusals() {
   save_logs p05-x
 }
 
+# ------------------------------------------------------------------ P10 ---
+t_p10() {
+  local pf=/var/lib/headscale/cluster-e2e/policy.hujson i t0
+
+  # L01: a tailnet created and activated while the cluster runs is served
+  # without a restart; its policy, written by the operator, is reloaded live.
+  t0=$(date +%s)
+  if cp_ "$HSC tailnet create --slug d >/dev/null && $HSC tailnet status --slug d --set ACTIVE"; then
+    for i in $(seq 1 20); do mint d e2e-d "$TMPD/key-d" 2>/dev/null && break; sleep 1; done
+    start_ts p05-d1 && start_ts p05-d2
+    local r1=0 r2=0
+    ts_auth p05-d1 up "$TMPD/key-d" p05-d1 || r1=$?
+    ts_auth p05-d2 up "$TMPD/key-d" p05-d2 || r2=$?
+    local deny; deny=$(peers p05-d1)
+    printf '%s\n' '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}' \
+      | cp_ "sudo install -o headscale -g headscale -m 0640 /dev/stdin $pf && $HSC tailnet policy --slug d --file $pf; rc=\$?; sudo rm -f $pf; exit \$rc" \
+      || r1=97
+    if [ $r1 = 0 ] && [ $r2 = 0 ] && [ -z "$deny" ] && wait_peer p05-d1 p05-d2 20 && [ "$(peers p05-d1)" = p05-d2 ]; then
+      record L01 PASS "live tailnet served without restart: deny-all first, operator policy reloaded ($(( $(date +%s) - t0 ))s)"
+    else
+      record L01 FAIL "rc d1=$r1 d2=$r2, peers before policy=[$deny], after=[$(peers p05-d1)]"
+    fi
+  else
+    record L01 FAIL "could not create/activate tailnet d"
+  fi
+
+  # F01: owner_epoch bump for this cluster: the runtime is reloaded, the
+  # clients reconnect on their own (same node key, no new node) and see a
+  # node that joined after the reload.
+  local nk1 nodes_before nodes_after r=0
+  nk1=$(nodekey p05-a1); nodes_before=$(server_nodes a | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+  t0=$(date +%s)
+  if cp_ "$HSC tailnet reassign --slug a --to $CLUSTER_ID >/dev/null"; then
+    sleep 4
+    start_ts p05-a3 && ts_auth p05-a3 up "$TMPD/key-a" p05-a3 || r=$?
+    nodes_after=$(server_nodes a | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+    if [ $r = 0 ] && wait_peer p05-a1 p05-a3 45 && [ "$(nodekey p05-a1)" = "$nk1" ] \
+      && [ "$nodes_after" = $((nodes_before + 1)) ] && cluster_log_has 'retiring tailnet runtime' 120; then
+      record F01 PASS "epoch bump: runtime reloaded, a1 reconnected without re-login and sees a3 ($(( $(date +%s) - t0 ))s)"
+    else
+      record F01 FAIL "rc=$r a1 peers=[$(peers p05-a1)] node key same=$([ "$(nodekey p05-a1)" = "$nk1" ] && echo yes || echo no) nodes $nodes_before->$nodes_after"
+    fi
+  else
+    record F01 FAIL "reassign failed"
+  fi
+
+  # F02: suspend B: its keys stop registering; resume: b1 comes back by
+  # itself and sees a node that joined after the resume.
+  start_ts p05-y >/dev/null
+  local rs=0 rr=0
+  if cp_ "$HSC tailnet status --slug b --set SUSPENDED"; then
+    sleep 4
+    ts_auth p05-y up "$TMPD/key-b" p05-y-susp || rs=$?
+    local refused=no; [ $rs != 0 ] && grep -q 'invalid pre auth key' "$TMPD/last.out" && refused=yes
+    cp_ "$HSC tailnet status --slug b --set ACTIVE"
+    sleep 4
+    start_ts p05-b2 && ts_auth p05-b2 up "$TMPD/key-b" p05-b2 || rr=$?
+    if [ $refused = yes ] && [ $rr = 0 ] && wait_peer p05-b1 p05-b2 45; then
+      record F02 PASS "suspended B refused new nodes; after resume b1 reconnected and sees b2"
+    else
+      record F02 FAIL "refused while suspended=$refused (rc=$rs), resume rc=$rr, b1 peers=[$(peers p05-b1)]"
+    fi
+  else
+    record F02 FAIL "could not suspend b"
+  fi
+
+  # F03: move A to another cluster: this cluster stops serving it (new
+  # registrations refused); B and D are unaffected.
+  local rm=0
+  if cp_ "$HSC tailnet reassign --slug a --to mc-cp-c2 >/dev/null"; then
+    sleep 4
+    ts_auth p05-y up "$TMPD/key-a" p05-y-moved || rm=$?
+    local refused=no; [ $rm != 0 ] && grep -q 'invalid pre auth key' "$TMPD/last.out" && refused=yes
+    local rb=0; start_ts p05-b3 && ts_auth p05-b3 up "$TMPD/key-b" p05-b3 || rb=$?
+    if [ $refused = yes ] && [ $rb = 0 ] && wait_peer p05-b1 p05-b3 30 && cluster_log_has 'retiring tailnet runtime' 60; then
+      record F03 PASS "A moved away: refused here, runtime retired; B still serves new nodes"
+    else
+      record F03 FAIL "A refused=$refused (rc=$rm), B rc=$rb, b1 peers=[$(peers p05-b1)]"
+    fi
+  else
+    record F03 FAIL "reassign to another cluster failed"
+  fi
+  local c; for c in p05-d1 p05-d2 p05-a3 p05-b2 p05-b3 p05-y; do save_logs $c; done
+}
+
 # ---------------------------------------------------------------- main ---
 T0=$(date +%s)
 log "P05 E2E $RUN_ID at $SHA -> $URL (artifacts: ${ART_DIR#"$REPO"/})"
@@ -289,6 +388,7 @@ t_http
 t_isolation
 t_profiles
 t_refusals
+t_p10
 for c in p05-a1 p05-a2 p05-b1; do save_logs $c; done
 cp_ "sudo journalctl -u headscale-cluster --since -$(( $(date +%s) - T0 + 5 ))s --no-pager" 2>&1 | redact >"$ART_DIR/logs/cluster.log"
 cleanup
