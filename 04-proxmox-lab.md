@@ -2,15 +2,15 @@
 
 ## 1. Mục đích
 
-Tạo môi trường kiểm thử có thể tái lập để coding agent kiểm chứng TCP/TLS/Noise, cùng host nhiều Tailscale profile, P2P, NAT, DERP fallback, hai shard, lease failure, backup/restore và traffic isolation. **Không** tự động triển khai ngoài pool lab.
+Tạo môi trường kiểm thử có thể tái lập để coding agent kiểm chứng TCP/TLS/Noise, cùng host nhiều Tailscale profile, P2P, NAT, DERP fallback, bootstrap, hai cluster (mỗi cluster active + standby), failover lease, PostgreSQL dùng chung (primary + replica), backup/restore và traffic isolation. Topology theo PLAN 2.0 §9 và ADR 0005. **Không** tự động triển khai ngoài pool lab.
 
 ## 2. Stack đề xuất
 
 - Proxmox VE 9.x (provider `bpg/proxmox` hiện hướng tới 9.x; nếu host là 8.x phải xác minh tương thích trong ticket lab).
 - OpenTofu/Terraform provider `bpg/proxmox` **pin version trong lockfile** và inspect provider schema trước khi viết HCL; dùng cloud-init Ubuntu Server image.
 - Ansible (cấu hình OS, Docker, systemd, TLS test CA, node firewall); OpenTofu chỉ tạo resources, Ansible cấu hình services.
-- DNS private authoritative cho `*.mesh.test`; CA lab và chứng chỉ hợp lệ với hostname, client VM cài trust chain. Không dùng `curl -k` để 'chứng minh' TLS.
-- Hạ tầng registry PostgreSQL, hai shard SQLite độc lập trên local disks, edge reverse proxy, DERP/STUN riêng.
+- DNS private authoritative cho `*.mesh.test` (hostname của cluster và bootstrap, **không** hostname theo tenant); CA lab và chứng chỉ hợp lệ với hostname, client VM cài trust chain. Không dùng `curl -k` để 'chứng minh' TLS.
+- PostgreSQL dùng chung (primary + replica streaming), bootstrap + placement API, hai cluster mỗi cluster hai VM (active/standby, cùng Noise key, endpoint chuyển theo lease bằng VIP hoặc L4 health check), DERP/STUN riêng. Không còn edge reverse proxy định tuyến theo Host và không còn SQLite riêng mỗi shard (bản 1.1).
 
 ## 3. Sơ đồ underlay và IP tham khảo
 
@@ -19,33 +19,37 @@ Proxmox lab pool: meshcontrol-lab
   vmbr-mgmt: 10.77.10.0/24      (only runner/operator)
   vmbr-client-a: 10.77.20.0/24  (A underlay)
   vmbr-client-b: 10.77.30.0/24  (B underlay)
-  vmbr-service: 10.77.40.0/24   (registry/shards/DERP/edge)
+  vmbr-service: 10.77.40.0/24   (PostgreSQL/bootstrap/cluster/DERP)
 
-  Runner / CI     10.77.10.10
-  Registry        10.77.40.11
-  Edge            10.77.40.12
-  Shard A         10.77.40.21
-  Shard B         10.77.40.22
-  DERP/STUN       10.77.40.30
+  Runner / CI       10.77.10.10
+  PostgreSQL pri    10.77.40.11
+  PostgreSQL rep    10.77.40.12
+  Bootstrap         10.77.40.13
+  Cluster 1 a / b   10.77.40.21 / .22   (VIP cluster 1: .20)
+  Cluster 2 a / b   10.77.40.25 / .26   (VIP cluster 2: .24)
+  DERP/STUN         10.77.40.30
   Client A1/A2    10.77.20.11 / .12
   Client B1/B2    10.77.30.11 / .12
 ```
 
-Đây chỉ là kế hoạch địa chỉ; agent phải kiểm tra tránh xung đột với mạng Proxmox hiện hữu. Nếu host hỗ trợ VLAN, dùng SDN VNet hoặc VLAN-backed Linux bridges tương ứng. Firewall chặn A↔B underlay: nếu client A ping được B qua LAN, phép thử “VPN ngăn liên lạc” không hợp lệ. Mở đúng đường đến edge/DERP/DNS/Registry cần thiết; network faults phải inject có kiểm soát.
+Đây chỉ là kế hoạch địa chỉ; agent phải kiểm tra tránh xung đột với mạng Proxmox hiện hữu. Nếu host hỗ trợ VLAN, dùng SDN VNet hoặc VLAN-backed Linux bridges tương ứng. Firewall chặn A↔B underlay: nếu client A ping được B qua LAN, phép thử “VPN ngăn liên lạc” không hợp lệ. Mở đúng đường đến cluster/bootstrap/DERP/DNS cần thiết; PostgreSQL 5432 chỉ mở cho VM cluster và bootstrap; network faults phải inject có kiểm soát.
 
 ## 4. Ma trận VM (có thể chỉnh theo host)
 
 | VM | vCPU | RAM | Disk | Nhận xét |
 |---|---:|---:|---:|---|
-| `mc-ci` | 8 | 16–32 GiB | 120 GiB | Docker/test runner+Go build |
-| `mc-placement` | 2 | 4 GiB | 30 GiB | PostgreSQL registry |
-| `mc-edge` | 2 | 2 GiB | 20 GiB | Reverse proxy, certs |
-| `mc-shard-01` | 4 | 8 GiB | 50 GiB | SQLite data 01 |
-| `mc-shard-02` | 4 | 8 GiB | 50 GiB | SQLite data 02 |
+| `mc-ci` | 8 | 16–32 GiB | 120 GiB | Docker/test runner+Go build (đã có, 7701) |
+| `mc-pg-01` | 4 | 8 GiB | 50 GiB | PostgreSQL primary dùng chung |
+| `mc-pg-02` | 4 | 8 GiB | 50 GiB | PostgreSQL replica (streaming) |
+| `mc-bootstrap` | 2 | 2 GiB | 20 GiB | `mesh-bootstrap` + `mesh-placement` |
+| `mc-c1-a`, `mc-c1-b` | 4 mỗi máy | 8 GiB | 30 GiB | Cluster 1 active / standby |
+| `mc-c2-a`, `mc-c2-b` | 4 mỗi máy | 8 GiB | 30 GiB | Cluster 2 active / standby |
 | `mc-relay` | 2 | 2 GiB | 20 GiB | DERP + STUN |
 | `mc-client-a1,a2,b1,b2` | 1 mỗi máy | 1–2 GiB | 12 GiB | Real Tailscale clients |
 
-Tổng đặt trước khi chạy đủ cấu hình (với CI 24 GiB và client 2 GiB): khoảng **26 vCPU, 56 GiB RAM guest, 338 GiB disk guest**; chưa tính overhead của Proxmox, backup snapshots, image cache và workload burst. Với một host vật lý, cân nhắc **ít nhất ~96 GiB RAM và SSD 500 GiB trở lên** để có headroom, hoặc triển khai theo từng giai đoạn trên host nhỏ hơn. Đây không phải chuẩn phần cứng bắt buộc.
+`mc-cp` (7702, endpoint public, `serve-tailnets` deprecated) và `mc-bench` (7703, benchmark) đã có từ giai đoạn 1 và không nằm trong bảng trên. IaC giai đoạn 2 hiện có (`infra/lab/stage2-*.tf`, mặc định tắt) vẫn theo topology bản 1.1 (`mc-placement`, `mc-edge`, `mc-shard-01/02`); phải cập nhật trong ticket LAB riêng trước khi bật.
+
+Tổng đặt trước khi chạy đủ cấu hình (với CI 24 GiB và client 2 GiB): khoảng **40 vCPU, 84 GiB RAM guest, 428 GiB disk guest** (ước tính theo bảng trên); chưa tính overhead của Proxmox, backup snapshots, image cache và workload burst. Với một host vật lý, cân nhắc **ít nhất ~128 GiB RAM và SSD 500 GiB trở lên** để có headroom, hoặc triển khai theo từng giai đoạn trên host nhỏ hơn. Đây không phải chuẩn phần cứng bắt buộc.
 
 Lab quy mô nhỏ: dùng Docker namespaces/containers cho client unit test; vẫn giữ các VM isolated để chứng minh routing/NAT/DERP và host failure. `mc-ci` có thể đặt ngoài Proxmox nếu CI runner đã có.
 
@@ -107,11 +111,11 @@ infra/lab/
 
 - `tofu fmt -check`/`validate` pass; plan chỉ tạo VM thuộc pool lab, không thay tài nguyên khác.
 - Ansible idempotent; chạy lại lần 2 không thay ngoài ý muốn.
-- DNS và TLS tương ứng `tailnet-a.mesh.test`, `tailnet-b.mesh.test` đến cùng edge.
-- Underlay A→B blocked; cả A/B vẫn kết nối edge và DERP ở test scenario tương ứng.
+- DNS và TLS tương ứng `cluster-1.mesh.test`, `cluster-2.mesh.test` (VIP của từng cluster) và hostname bootstrap. Không có hostname theo tenant.
+- Underlay A→B blocked; cả A/B vẫn kết nối bootstrap, cluster và DERP ở test scenario tương ứng.
 - Khi dùng `root@pam`, không có cơ chế kỹ thuật nào chặn agent thao tác ngoài pool. Vì vậy mỗi lần apply phải lưu bằng chứng rằng plan chỉ chạm tới VMID `7700–7799` trong pool lab, và inventory VM ngoài pool trước/sau phải giống nhau. Khi chuyển sang token tách quyền cho CI, phải chạy thêm negative test: token không xóa hoặc sửa được VM ngoài pool.
-- E2E capture: Tailscale status, DERP map, routing logs, edge hostname mapping, packet capture đã redact.
-- Failure scenarios: stop shard A, disconnect registry, restart relay, stale signed route manifest; xác minh ảnh hưởng phù hợp và không cross-tenant leak.
+- E2E capture: Tailscale status, DERP map, routing logs, phản hồi bootstrap, audit lease, packet capture đã redact.
+- Failure scenarios: kill/treo active của cluster (F01–F02), cắt active ↔ PostgreSQL (F03), failover PostgreSQL (F05), restart relay, bootstrap trả dữ liệu cũ (F07); xác minh ảnh hưởng phù hợp, không split brain và không cross-tenant leak.
 
 ## 9. Không tự động xóa dữ liệu
 

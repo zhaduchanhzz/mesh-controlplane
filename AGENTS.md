@@ -16,6 +16,7 @@
 10. Không sửa tay bất kỳ file nào trong `gen/`. Repo **không có** `proto/`: API dùng Huma + OpenAPI. Sửa định nghĩa API trong code Go, rồi chạy generator đã pin: `make openapi` (`cmd/gen-openapi`) để xuất spec, `make generate` để sinh code và client `gen/client/v1/client.gen.go`, `gen/client/v2/client.gen.go`. Commit code sinh ra cùng thay đổi nguồn.
 11. v0.1 mở **chuỗi migration mới** (fresh schema, không nâng cấp DB Headscale). Không sửa, không reorder migration của fork đã được commit; chỉ thêm vào cuối. Theo `hscontrol/db/AGENTS.md`: không disable FK, không `AutoMigrate` trong migration, migration chạy trong transaction. Không chạy test destructively trên dữ liệu không thuộc lab.
 12. Không tự ý đổi thiết kế Noise multi-identity nếu client không tương thích; ghi ADR, log protocol đã redact và dừng PR đến khi được duyệt.
+    - Ghi chú: chủ dự án đã chọn **một Noise key cho mỗi cluster** (ADR 0005); đó là thiết kế hiện hành, không tự đổi.
 13. Lỗi isolation = **BLOCK MERGE** bất kể unit tests khác pass.
 
 ## Chu trình bắt buộc cho mỗi ticket
