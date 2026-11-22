@@ -49,13 +49,17 @@ Code hiện tại (P03b, commit `3a4cb6c`):
 3. **Trigger plpgsql** (`credentials_user_tailnet_check`) không bị ảnh hưởng: chạy trong server, trong transaction của câu gọi.
 4. **Timeout:** đặt `query_wait_timeout` của PgBouncer nhỏ hơn deadline self-fence của lease (P11b), để process đang chờ kết nối không tưởng mình còn giữ lease. Giá trị chốt trong P11b.
 5. **Kiểm tra khi khởi động:** khi pooler cấu hình sai (`max_prepared_statements = 0`), `NewHeadscaleDatabase` hiện báo lỗi **gây hiểu nhầm** "database was not created by mesh-controlplane v0.1 … tables exist but no migration record", vì `Migrator().HasTable` nuốt lỗi prepared statement (đã đo, §4). Hành vi vẫn fail closed (không khởi động), nhưng P13 phải thêm self-check rõ ràng (ví dụ chạy hai lần cùng một câu có tham số và báo lỗi cấu hình pooler).
+6. **Pool riêng cho lease:** lease/fencing control (gia hạn lease của active, poll của standby) đi qua một alias DB riêng trong `[databases]` (ví dụ `mesh_lease`, cùng database vật lý), `pool_size` 2–4 và `reserve_pool_size`, để không xếp hàng sau traffic dữ liệu. Số đo B2: poll của standby qua pool dữ liệu bão hòa có p99 141–651 ms, so với 3–33 ms khi nối thẳng.
+7. **Kích thước pool (đề xuất ban đầu, chờ đo lại trên `mc-pg-01` riêng):** active `max_open_conns` 8, `max_idle_conns` 2–4; standby 2 / 1; PgBouncer `default_pool_size` 32–40 cho primary 4 vCPU (B2 N=16: pool 40 > 20 > 10 về thông lượng); `max_client_conn` ≥ 1,5 × tổng pool client.
 
 ## 4. Bằng chứng đã có
 
 `evidence/P14-db-benchmarks.md` (B2):
 - Transaction mode, `max_prepared_statements=200`: chạy được toàn bộ đường đọc/ghi thật (`NewHeadscaleDatabase`, `CreateUser`, `CreatePreAuthKey`, `GetPreAuthKey`, đăng ký node, cập nhật node, `ListNodes`).
 - Transaction mode, `max_prepared_statements=0`: PostgreSQL log `ERROR: prepared statement "stmtcache_…" already exists`; process không mở được DB.
-- Số kết nối, độ trễ và thông lượng có và không có PgBouncer: xem evidence.
+- Session mode, pool 20, 40 client: tới 16 client chờ tới `query_wait_timeout`, 12 thao tác lỗi, thông lượng 193 thao tác/s.
+- Tạo schema v0.1 mới qua transaction mode: thành công.
+- N=16 cluster: 164 backend khi nối thẳng, 10/20/40 qua PgBouncer. Khi chưa bão hòa, PgBouncer thêm ~+0,3–0,6 ms p50, +2–5 ms p99. CPU PgBouncer 0,5–0,77 core ở 2,6–4,8 nghìn transaction/s (ngoại suy: ~6 nghìn transaction/s mỗi process).
 
 ## 5. HA PgBouncer (P13, gate N3)
 
