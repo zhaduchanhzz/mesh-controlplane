@@ -26,6 +26,9 @@ var rawTenantWriteAllowlist = map[string]string{
 	// is being created, in the same transaction as the tailnets row
 	// (AGENTS rule 8). The tailnet has no runtime and no fence yet.
 	"hscontrol/db/platform_admin.go": "CreateTailnet deny-all policy",
+	// Placement CreateTailnet (operator API): same deny-all policy insert in
+	// the transaction that creates the PENDING tailnet (AGENTS rule 8).
+	"internal/placement/tailnets.go": "placement CreateTailnet deny-all policy",
 	// Benchmark B3 (build tag benchdb, never in the server binary): measures
 	// the cost of rewriting every row of a tenant on a move, on purpose.
 	"cmd/bench-db/b3.go": "benchmark B3 bulk rewrite",
