@@ -4,7 +4,7 @@
 - **Nhánh:** `feat/P05-multitenant-runtime`, từ `master` 82f9b36 + ADR 0007 (ce75c1b).
 - **Hợp đồng:** `design/adr/0007-multi-tenant-runtime-and-session-routing.md` (Accepted).
 - **Song song:**
-  - `agent/p05-db`: `db.Platform`, unique `(machine_key, node_key)`;
+  - `agent/p05-db`: `db.Platform`, cặp `(machine_key, node_key)` chỉ thuộc một tailnet (trigger, xem ADR 0007 §2);
   - `agent/p05-tests`: servertest 2 tailnet trong 1 cluster.
 
 ## 1. Path/symbol đã đọc
