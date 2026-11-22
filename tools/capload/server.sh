@@ -49,6 +49,7 @@ regions:
 EOF
 	cat >"$dir/config.yaml" <<EOF
 server_url: http://$addr
+disable_check_updates: true
 listen_addr: $addr
 metrics_listen_addr: 127.0.0.1:9090
 unix_socket: $dir/headscale.sock
