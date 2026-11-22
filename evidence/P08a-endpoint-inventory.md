@@ -264,7 +264,23 @@ Ngoài 4 server trên (không phải route HTTP của control plane, ghi nhận 
 
 ## 6. Kết quả RED/GREEN
 
-RESULTS_PLACEHOLDER
+Go 1.27.4 ở cả hai nơi. Windows: `go test -count=1 -v -run '^<Test>' <pkg>`. Linux `mc-ci` (`~/src/p08a`, clone từ `git bundle` của commit `608dc39`, không đụng thư mục khác): `go test -race -count=1 -v -run '^<Test>' <pkg>`. "Sub FAIL/PASS" đếm dòng `--- FAIL/PASS` (gồm test cha).
+
+| Test | Pkg | S/I | Mong đợi | Windows exit | Linux -race exit | Sub FAIL / PASS | Kết luận |
+|---|---|---|---|---|---|---|---|
+| `TestEndpointInventory` | `./hscontrol/` | S14, I09, §4 | GREEN (cổng CI) | 0 | 0 | 0 / 1 | GREEN. Đối chứng âm: xóa dòng `public POST /verify none` khỏi allowlist → exit 1, báo "new or changed (not in allowlist)" |
+| `TestP08aPublicRouterHasNoDiagnosticRoutes` | `./hscontrol/` | S14, I09 | GREEN (regression guard) | 0 | 0 | 0 / 1 | GREEN |
+| `TestP08aDebugListenerRefusesNonOperator` | `./hscontrol/` | S14, I09 | RED | 1 | 1 | 18 / 13 | **RED**: statsviz từ 192.168/10/fd00:: (F1); mọi `/debug/*` từ 100.64.0.7 và fd7a:115c:a1e0::7 (N1); `/metrics` từ mọi peer kể cả 203.0.113.9 (N3). GREEN: `/debug/{nodestore,config,pprof}` từ RFC1918/ULA/public; đối chứng loopback 200 |
+| `TestP08aVerifyRejectsUnauthenticatedPublicCaller` | `./hscontrol/` | S15, I11, I15 | RED | 1 | 1 | 1 / 0 | **RED**: caller public nhận `200 {"Allow":true}` cho node key đã đăng ký, body khác với key lạ (F2) |
+| `TestP08aVerifyRefusesUnknownExpiredRevoked` | `./hscontrol/` | S15, I11 | RED (expired) | 1 | 1 | 2 / 3 | **RED** expired → `Allow=true` (F2). GREEN: live (đối chứng), unknown, deleted |
+| `TestP08aDERPVerifyTwoTailnetsOneProcess` | `./hscontrol/endpointaudit/` | S15, I11 | RED | 1 | 1 | 1 / 0 | **RED**: runtime B panic `protocol headscale-derp-verify already registered`; đường verify dùng chung admit node key của tailnet A (F3, N2) |
+| `TestP08aAPIv2AdminKeyCannotAddressOtherTailnet` | `./hscontrol/servertest/` | I08, I09, I15 | SKIP (chặn P04/P05) | 0 | 0 | 0 / 0 (1 SKIP) | **SKIP — không phải pass.** Chưa có hai tailnet trên một runtime |
+
+Khác:
+
+- `gofmt -l` (Linux) trên file mới: sạch sau commit evidence (commit đầu có một lỗi căn lề struct trong `endpointaudit`, đã sửa). `go vet ./hscontrol/ ./hscontrol/endpointaudit/ ./hscontrol/servertest/`: exit 0.
+- Hồi quy test có sẵn (Linux): `go test -race -count=1 -skip TestP08a ./hscontrol/` → exit 0 (`ok`, 528.5s). Test mới không làm hỏng test cũ.
+- Package `./hscontrol/` và `./hscontrol/endpointaudit/` sẽ FAIL trong CI cho tới P08 — có chủ đích (AGENTS rule 13). Nếu CI của master không được phép đỏ, PR này phải giữ ở trạng thái draft/không merge cho tới khi P08 sửa xong; không được skip RED.
 
 ## 7. PR P08a Evidence
 

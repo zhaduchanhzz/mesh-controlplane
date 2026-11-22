@@ -49,10 +49,10 @@ func tailnetRuntimeConfig(t *testing.T, name string, regionID tailcfg.DERPRegion
 		Enabled:                            true,
 		VerifyClients:                      true,
 		AutomaticallyAddEmbeddedDerpRegion: true,
-		PrivateKeyPath: filepath.Join(dir, "derp.key"),
-		RegionID:       regionID,
-		RegionCode:     name,
-		STUNAddr:       "127.0.0.1:0",
+		PrivateKeyPath:                     filepath.Join(dir, "derp.key"),
+		RegionID:                           regionID,
+		RegionCode:                         name,
+		STUNAddr:                           "127.0.0.1:0",
 	}
 
 	return &cfg
