@@ -51,28 +51,35 @@ Lab quy mô nhỏ: dùng Docker namespaces/containers cho client unit test; vẫ
 
 ## 5. Quyền Proxmox và policy an toàn
 
-- Tạo Proxmox Pool độc lập `meshcontrol-lab`, đặt ID VM/disk/netnames trong một namespace để tránh thao tác nhầm.
-- Tạo **API token privilege-separated** cho agent/CI, chỉ có các quyền tối thiểu trên pool và storage/template sử dụng, không gán `Administrator` ở `/` hoặc root@pam.
-- Tránh các operation provider cần root SSH; nếu provider yêu cầu root-only, **ghi blocker** và người vận hành làm thủ công hoặc thay phương án. Không cung cấp root SSH cho agent như fallback tự động.
-- Secrets dùng env / secret manager và TLS verification thật; `*.tfstate` chứa thông tin nhạy cảm, không lưu trong Git/ZIP public.
+**Quyết định của chủ lab (2026-11-22):** agent được dùng `root@pam` để tạo và cấu hình VM lab, và được tự `apply` trong phạm vi lab. Token tách quyền ([`infra/lab/LAB00-operator.md`](infra/lab/LAB00-operator.md) §4) vẫn là phương án khuyến nghị khi chuyển sang CI hoặc khi có nhiều người dùng chung host.
+
+Khi dùng root, các giới hạn sau vẫn bắt buộc:
+
+- Tạo Proxmox Pool độc lập `meshcontrol-lab`. Mọi VM, disk và tên mạng của lab đặt trong một namespace riêng (VMID `7700–7799`) để tránh thao tác nhầm.
+- Chỉ tạo, sửa, bật hoặc tắt VM **trong pool `meshcontrol-lab` và dải VMID lab**. Không sửa, dừng, clone hay xóa VM nào khác trên host.
+- Không thay đổi network, firewall, storage, cluster, user hay ACL của host, trừ khi ticket LAB ghi rõ thay đổi đó và người vận hành đã duyệt.
+- Dùng SSH root vào host chỉ khi provider bắt buộc (upload snippet, import image) hoặc khi tạo template. Không dùng SSH root để chạy lệnh tùy ý trên host.
+- Credential root nằm trong file env ngoài repo (`%USERPROFILE%\.mesh-lab\proxmox.env`). Không ghi vào Git, log, output, artifact, ảnh chụp hay chat. Đổi mật khẩu root khi kết thúc giai đoạn lab, hoặc ngay khi nghi bị lộ.
+- Secrets dùng env / secret manager và TLS verification thật (pin certificate PVE, không `insecure = true`). `*.tfstate` chứa thông tin nhạy cảm, không lưu trong Git/ZIP public.
 - Không cấp public IP của host PVE hoặc giao diện `:8006` cho Internet.
 - Tắt SSH password auth trên VM test, dùng cloud-init SSH key công khai. Tất cả service credential chỉ là test fixtures xoay vòng được.
 
 ## 6. Pipeline IaC bắt buộc
 
 ```text
-LAB00 — Người vận hành cấp pool/storage/network/permission và kiểm tra PVE version
+LAB00 — Agent (root, đã được cho phép) kiểm tra PVE version, tài nguyên, storage, bridge; tạo pool lab
 LAB01 — Agent tạo infra/lab/*.tf + cloud-init + Ansible, chạy fmt/validate
-LAB02 — Agent chạy tofu plan, export bản tóm tắt create/update/delete cho reviewer
-LAB03 — Human approves apply trên lab pool
-LAB04 — Agent/operator áp dụng bằng credential giới hạn, chụp inventory + IP
+LAB02 — Agent chạy tofu plan -out, export bản tóm tắt create/update/delete vào evidence
+LAB03 — Plan chỉ create/update trong pool + dải VMID lab → agent tự apply;
+        plan có destroy/replace hoặc ngoài phạm vi → human approves
+LAB04 — Agent áp dụng plan đã lưu, chụp inventory + IP
 LAB05 — Ansible bootstrap máy, cài Tailscale client và Go binaries
 LAB06 — E2E self-tests (TLS, trust CA, direct underlay isolation, DERP)
 LAB07 — Snapshot/backup only lab (không là backup cơ chế cũ)
 LAB08 — Human approves destroy; xác minh only lab resources trong state
 ```
 
-Lưu ý: `tofu plan` với provider thực có thể đọc API và ghi state local; chỉ dùng credentials đúng scope; không cho phép `apply -auto-approve` hay `destroy -auto-approve`.
+Lưu ý: `tofu plan` với provider thực có thể đọc API và ghi state local. Không dùng `apply -auto-approve` hay `destroy -auto-approve`. Agent chỉ apply **đúng file plan đã lưu**, sau khi đã kiểm tra (`tofu show -json`) rằng plan không có destroy/replace và chỉ chạm tới tài nguyên trong pool + dải VMID lab.
 
 ## 7. File IaC agent phải sinh
 
@@ -102,7 +109,7 @@ infra/lab/
 - Ansible idempotent; chạy lại lần 2 không thay ngoài ý muốn.
 - DNS và TLS tương ứng `tailnet-a.mesh.test`, `tailnet-b.mesh.test` đến cùng edge.
 - Underlay A→B blocked; cả A/B vẫn kết nối edge và DERP ở test scenario tương ứng.
-- PVE token không thể xóa/sửa một VM outside pool lab (negative authorization test bằng API read-only hoặc controlled denied action do operator duyệt).
+- Khi dùng `root@pam`, không có cơ chế kỹ thuật nào chặn agent thao tác ngoài pool. Vì vậy mỗi lần apply phải lưu bằng chứng rằng plan chỉ chạm tới VMID `7700–7799` trong pool lab, và inventory VM ngoài pool trước/sau phải giống nhau. Khi chuyển sang token tách quyền cho CI, phải chạy thêm negative test: token không xóa hoặc sửa được VM ngoài pool.
 - E2E capture: Tailscale status, DERP map, routing logs, edge hostname mapping, packet capture đã redact.
 - Failure scenarios: stop shard A, disconnect registry, restart relay, stale signed route manifest; xác minh ảnh hưởng phù hợp và không cross-tenant leak.
 

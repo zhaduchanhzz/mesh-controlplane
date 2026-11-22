@@ -1,0 +1,50 @@
+# mc-cp: public test control plane (owner request 2026-11-22).
+# Reached as https://hs.cp.gta5web.online:8443 via 116.118.3.46:8443 -> wg-mesh -> mc-cp.
+# Baseline (single-tailnet) build: used to prove DNS/TLS/tunnel/Noise with real clients,
+# not a multi-tenant claim.
+server_url: https://hs.cp.gta5web.online:8443
+listen_addr: 0.0.0.0:8443
+# AGENTS.md rule 9: metrics/debug never on a public listener.
+metrics_listen_addr: 127.0.0.1:9090
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"
+disable_check_updates: true
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+# Explicit policy file; never rely on the "no policy = allow all" default.
+policy:
+  mode: file
+  path: /etc/headscale/policy.hujson
+
+derp:
+  # 03-isolation-threat-model.md §4: embedded DERP stays off until audited.
+  server:
+    enabled: false
+  # Temporary: Tailscale's public DERP map for relay fallback tests (no client verify).
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  auto_update_enabled: true
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+dns:
+  magic_dns: true
+  base_domain: tailnet.internal
+  override_local_dns: false
+
+tls:
+  cert_path: /etc/headscale/tls/fullchain.pem
+  key_path: /etc/headscale/tls/privkey.pem
+
+log:
+  level: info

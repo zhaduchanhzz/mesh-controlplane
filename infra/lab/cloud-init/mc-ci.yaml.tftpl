@@ -1,0 +1,39 @@
+#cloud-config
+hostname: ${hostname}
+manage_etc_hosts: true
+
+groups:
+  - docker
+
+users:
+  - name: mesh
+    gecos: mesh-controlplane lab admin
+    shell: /bin/bash
+    groups: [sudo, docker]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+# 04-proxmox-lab.md §5: key-only SSH on lab VMs.
+ssh_pwauth: false
+disable_root: true
+
+package_update: true
+package_upgrade: false
+packages:
+  - qemu-guest-agent
+  - docker.io
+  - docker-buildx
+  - git
+  - make
+  - build-essential
+  - ca-certificates
+  - curl
+  - jq
+  - unzip
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - systemctl enable --now docker
+  - touch /var/lib/mesh-lab-bootstrap-done

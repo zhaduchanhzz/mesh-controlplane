@@ -1,0 +1,7 @@
+// mc-cp test tailnet policy. Explicit, so the server never falls back to its
+// implicit allow-all. Only nodes registered with a pre-auth key exist here.
+{
+  "grants": [
+    { "src": ["*"], "dst": ["*"], "ip": ["*"] }
+  ]
+}

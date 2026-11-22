@@ -1,0 +1,33 @@
+#cloud-config
+# mc-cp: test control plane reachable from the Internet through a WireGuard
+# tunnel to the public VPS. No secrets here; keys are created on the VM.
+hostname: ${hostname}
+manage_etc_hosts: true
+
+users:
+  - name: mesh
+    gecos: mesh-controlplane lab admin
+    shell: /bin/bash
+    groups: [sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+ssh_pwauth: false
+disable_root: true
+
+package_update: true
+package_upgrade: false
+packages:
+  - qemu-guest-agent
+  - wireguard-tools
+  - nftables
+  - ca-certificates
+  - curl
+  - jq
+  - sqlite3
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - touch /var/lib/mesh-lab-bootstrap-done

@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars (gitignored) only if you need to override defaults.
+# Credentials never go here: they are read from ~/.mesh-lab/proxmox.env by scripts/tofu.sh.
+
+# pve_node        = "hanh"
+# pve_ssh_address = "192.168.1.14"   # set by scripts/tofu.sh from PVE_IP
+# vm_datastore    = "nvme01"
+#
+# mc_ci = {
+#   vm_id     = 7701
+#   ipv4      = "192.168.1.240"
+#   mac       = "BC:24:11:77:02:40"
+#   cores     = 8
+#   memory_mb = 24576
+#   disk_gb   = 120
+# }
