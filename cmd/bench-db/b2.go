@@ -793,7 +793,9 @@ func openBouncerAdmin(t pgTarget) (*sql.DB, error) {
 
 	db.SetMaxOpenConns(1)
 
-	if err := db.Ping(); err != nil {
+	// No Ping: pgx pings with a comment-only query, which the admin console
+	// rejects. A first SHOW is the connectivity check.
+	if _, err := db.Exec("SHOW VERSION"); err != nil {
 		return nil, fmt.Errorf("pgbouncer admin console: %w", err)
 	}
 
