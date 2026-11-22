@@ -231,6 +231,20 @@ func (d *DatabaseType) UnmarshalText(text []byte) error {
 	})
 }
 
+func (PostgresQueryExecMode) Allowed() []string {
+	return []string{
+		string(PostgresQueryExecCacheStatement), string(PostgresQueryExecCacheDescribe),
+		string(PostgresQueryExecDescribeExec), string(PostgresQueryExecExec),
+		string(PostgresQueryExecSimpleProtocol),
+	}
+}
+
+func (m *PostgresQueryExecMode) UnmarshalText(text []byte) error {
+	return setEnum(m, string(text), m.Allowed(), ConfigError{
+		Hint: "pick one of the allowed values; simple_protocol works behind PgBouncer without prepared statements",
+	})
+}
+
 // ACMEChallenge is the ACME challenge type. "" decodes without error to the
 // zero value (unset).
 type ACMEChallenge string //nolint:recvcheck // UnmarshalText needs a pointer; the rest read the value

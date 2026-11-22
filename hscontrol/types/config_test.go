@@ -373,6 +373,15 @@ func TestPostgresConfigDSN(t *testing.T) {
 			want: map[string]string{"host": "/var/run/postgresql", "port": "5433"},
 		},
 		{
+			name: "query exec mode for PgBouncer is passed to pgx",
+			cfg: PostgresConfig{
+				Host: "db", Name: "headscale", User: "hs",
+				QueryExecMode: PostgresQueryExecSimpleProtocol,
+			},
+			host: "db", user: "hs", path: "/headscale",
+			want: map[string]string{"default_query_exec_mode": "simple_protocol"},
+		},
+		{
 			name: "ipv6 host is bracketed",
 			cfg:  PostgresConfig{Host: "::1", Port: 5432, Name: "headscale", User: "hs"},
 			host: "::1", port: "5432", user: "hs", path: "/headscale",

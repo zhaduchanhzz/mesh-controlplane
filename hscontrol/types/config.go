@@ -564,7 +564,35 @@ type PostgresConfig struct {
 	// ConnMaxIdleTimeSecs is how long, in seconds, a connection may stay
 	// idle before it is closed.
 	ConnMaxIdleTimeSecs int `example:"600" koanf:"conn_max_idle_time_secs"`
+
+	// QueryExecMode is how the driver (pgx) sends queries, passed as its
+	// `default_query_exec_mode`. Behind PgBouncer in transaction mode
+	// without `max_prepared_statements`, use `simple_protocol`.
+	QueryExecMode PostgresQueryExecMode `example:"\"simple_protocol\"" koanf:"query_exec_mode"`
 }
+
+// PostgresQueryExecMode is pgx's default_query_exec_mode. "" decodes without
+// error to the zero value (unset: the driver default, cache_statement).
+type PostgresQueryExecMode string //nolint:recvcheck // UnmarshalText needs a pointer; the rest read the value
+
+const (
+	// PostgresQueryExecCacheStatement prepares each statement once per
+	// connection and caches it; the driver default and the fastest.
+	PostgresQueryExecCacheStatement PostgresQueryExecMode = "cache_statement"
+	// PostgresQueryExecCacheDescribe caches only the statement
+	// description and sends each query unnamed.
+	PostgresQueryExecCacheDescribe PostgresQueryExecMode = "cache_describe"
+	// PostgresQueryExecDescribeExec describes then executes each query,
+	// with no cache; two round trips per query.
+	PostgresQueryExecDescribeExec PostgresQueryExecMode = "describe_exec"
+	// PostgresQueryExecExec sends each query unprepared with the extended
+	// protocol, with text-encoded arguments.
+	PostgresQueryExecExec PostgresQueryExecMode = "exec"
+	// PostgresQueryExecSimpleProtocol sends each query with the simple
+	// protocol, arguments interpolated by the driver; needs no prepared
+	// statements, for PgBouncer in transaction mode without them.
+	PostgresQueryExecSimpleProtocol PostgresQueryExecMode = "simple_protocol"
+)
 
 // DSN returns the connection string for this configuration as a
 // postgres:// URL, the form lib/pq and pgx both accept. Building it with
@@ -605,6 +633,10 @@ func (cfg PostgresConfig) DSN() string {
 		u.Host = "[" + cfg.Host + "]" // bare IPv6 literal
 	default:
 		u.Host = cfg.Host
+	}
+
+	if cfg.QueryExecMode != "" {
+		query.Set("default_query_exec_mode", string(cfg.QueryExecMode))
 	}
 
 	sslEnabled, err := strconv.ParseBool(cfg.Ssl)

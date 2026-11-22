@@ -1774,6 +1774,60 @@ oidc:
 	assert.Contains(t, err.Error(), "oidc.pkce.method has an unsupported value")
 }
 
+// TestPostgresQueryExecMode: database.postgres.query_exec_mode picks pgx's
+// default_query_exec_mode (simple_protocol for PgBouncer without prepared
+// statement support, ADR 0006); cache_statement is the default and an
+// unknown mode is refused at load.
+func TestPostgresQueryExecMode(t *testing.T) {
+	base := `---
+noise:
+  private_key_path: noise_private.key
+server_url: http://127.0.0.1:8080
+dns:
+  override_local_dns: false
+database:
+  type: postgres
+  postgres:
+    host: db
+    name: headscale
+    user: headscale
+`
+
+	const nl = "\n"
+
+	tests := []struct {
+		name    string
+		extra   string
+		want    types.PostgresQueryExecMode
+		wantErr string
+	}{
+		{name: "default", want: types.PostgresQueryExecCacheStatement},
+		{name: "simple protocol", extra: "    query_exec_mode: simple_protocol" + nl, want: types.PostgresQueryExecSimpleProtocol},
+		{name: "describe exec", extra: "    query_exec_mode: describe_exec" + nl, want: types.PostgresQueryExecDescribeExec},
+		{name: "unknown", extra: "    query_exec_mode: prepared" + nl, wantErr: "database.postgres.query_exec_mode has an unsupported value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			err := os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(base+tt.extra), 0o600)
+			require.NoError(t, err)
+
+			cfg, err := loadServer(tmpDir, false)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.Database.Postgres.QueryExecMode)
+			assert.Contains(t, cfg.Database.Postgres.DSN(), "default_query_exec_mode="+string(tt.want))
+		})
+	}
+}
+
 // TestOIDCConfigValidation covers the issuer-URL and required-field checks that
 // fail an unworkable OIDC setup fast at config load.
 func TestOIDCConfigValidation(t *testing.T) {

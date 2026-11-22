@@ -96,6 +96,7 @@ func TestConfigFields(t *testing.T) {
 		"database.postgres.max_open_conns",
 		"database.postgres.max_idle_conns",
 		"database.postgres.conn_max_idle_time_secs",
+		"database.postgres.query_exec_mode",
 		"dns.magic_dns",
 		"dns.base_domain",
 		"dns.override_local_dns",
