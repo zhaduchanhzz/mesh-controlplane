@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -76,7 +77,15 @@ const (
 )
 
 type noiseServer struct {
+	// headscale is the tailnet runtime serving this session. In a single-tailnet
+	// process it is set up front. In a cluster process (ADR 0007) it is nil
+	// until the first register/map request resolves the tenant; the session is
+	// then bound to that runtime for its lifetime (I01).
 	headscale *Headscale
+	// router resolves the tenant of a request in a cluster process; nil in a
+	// single-tailnet process.
+	router sessionRouter
+	bindMu sync.Mutex
 
 	conn       *controlbase.Conn
 	machineKey key.MachinePublic
@@ -107,16 +116,25 @@ func (h *Headscale) NoiseUpgradeHandler(
 		return
 	}
 
-	ns := noiseServer{
+	serveNoiseSession(writer, req, *h.noisePrivateKey, &noiseServer{
 		headscale: h,
 		challenge: key.NewChallenge(),
-	}
+	})
+}
 
+// serveNoiseSession completes the TS2021 upgrade with privateKey and serves
+// the session's requests with ns.
+func serveNoiseSession(
+	writer http.ResponseWriter,
+	req *http.Request,
+	privateKey key.MachinePrivate,
+	ns *noiseServer,
+) {
 	noiseConn, err := controlhttpserver.AcceptHTTP(
 		req.Context(),
 		writer,
 		req,
-		*h.noisePrivateKey,
+		privateKey,
 		ns.earlyNoise,
 	)
 	if err != nil {
@@ -336,6 +354,11 @@ func (ns *noiseServer) C2NResponseHandler(
 		return
 	}
 
+	if err := ns.requireBound(); err != nil { //nolint:noinlineerr
+		ns.refuseRoute(writer, err)
+		return
+	}
+
 	nodeID, ok := ns.headscale.state.C2NTarget(c2nID)
 	if !ok {
 		http.Error(writer, "unknown or expired c2n request", http.StatusNotFound)
@@ -449,6 +472,11 @@ func (ns *noiseServer) SSHActionHandler(
 			err,
 		))
 
+		return
+	}
+
+	if err := ns.requireBound(); err != nil { //nolint:noinlineerr
+		ns.refuseRoute(writer, err)
 		return
 	}
 
@@ -816,6 +844,13 @@ func (ns *noiseServer) PollNetMapHandler(
 		return
 	}
 
+	// Cluster process: resolve the tenant from (machine key, node key) and
+	// keep the session on it (ADR 0007, I01).
+	if err := ns.bindForNode(mapRequest.NodeKey); err != nil { //nolint:noinlineerr
+		ns.refuseRoute(writer, err)
+		return
+	}
+
 	nv, err := ns.getAndValidateNode(mapRequest)
 	if err != nil {
 		// A deleted node gets a bare 404, as Tailscale's control server sends;
@@ -887,8 +922,7 @@ var challengeValueRE = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 // record is visible. The client never asks for removal; [dns.Challenges]
 // removes the record later.
 func (ns *noiseServer) SetDNSHandler(writer http.ResponseWriter, req *http.Request) {
-	challenges := ns.headscale.challenges
-	if challenges == nil {
+	if ns.router == nil && ns.headscale.challenges == nil {
 		http.Error(writer, "HTTPS certificates are not enabled on this headscale server", http.StatusNotImplemented)
 
 		return
@@ -904,6 +938,18 @@ func (ns *noiseServer) SetDNSHandler(writer http.ResponseWriter, req *http.Reque
 	}
 
 	if rejectUnsupported(writer, setDNS.Version, ns.machineKey, setDNS.NodeKey) {
+		return
+	}
+
+	if err := ns.bindForNode(setDNS.NodeKey); err != nil { //nolint:noinlineerr
+		ns.refuseRoute(writer, err)
+		return
+	}
+
+	challenges := ns.headscale.challenges
+	if challenges == nil {
+		http.Error(writer, "HTTPS certificates are not enabled on this headscale server", http.StatusNotImplemented)
+
 		return
 	}
 
@@ -1047,6 +1093,21 @@ func (ns *noiseServer) RegistrationHandler(
 	// A failed decode still gets checked against whatever Version it read.
 	if rejectUnsupported(writer, registerRequest.Version, ns.machineKey, registerRequest.NodeKey) {
 		return
+	}
+
+	// Cluster process: resolve the tenant from the auth key or the existing
+	// node before any registration side effect (ADR 0007, I01). A request
+	// that did not decode is refused here too: there is no default tenant.
+	if ns.router != nil {
+		err := decodeErr
+		if err == nil {
+			err = ns.bindForRegister(registerRequest)
+		}
+
+		if err != nil {
+			ns.refuseRoute(writer, err)
+			return
+		}
 	}
 
 	statusCode := http.StatusOK
