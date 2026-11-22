@@ -60,14 +60,8 @@ func TestRebuildPeerMapsAppliesQueuedWritesFirst(t *testing.T) {
 		t.Fatal("RebuildPeerMaps waited for the batch timeout")
 	}
 
-	for _, r := range results {
-		select {
-		case <-r:
-		default:
-			t.Fatal("a write queued before the rebuild was not applied with it")
-		}
-	}
-
+	// When RebuildPeerMaps returns, the snapshot already holds the
+	// earlier writes ...
 	snap := store.data.Load()
 	require.Len(t, snap.nodesByID, 3)
 	require.ElementsMatch(t, []types.NodeID{2, 3}, snap.peersByNode[1])
@@ -75,4 +69,14 @@ func TestRebuildPeerMapsAppliesQueuedWritesFirst(t *testing.T) {
 	// and the rebuild were applied together.
 	require.Len(t, builds, 2)
 	require.Len(t, builds[1], 3)
+
+	// ... and their writers are released by the same batch, not the
+	// batch timeout.
+	for _, r := range results {
+		select {
+		case <-r:
+		case <-time.After(10 * time.Second):
+			t.Fatal("a write queued before the rebuild was not applied with it")
+		}
+	}
 }
