@@ -570,18 +570,20 @@ func distOf(ds []time.Duration) dist {
 }
 
 type phaseSummary struct {
-	Name     string         `json:"name"`
-	Nodes    int            `json:"nodes"`
-	OK       int            `json:"ok"`
-	Failed   int            `json:"failed"`
-	Errors   map[string]int `json:"errors"`
-	WallSec  float64        `json:"wall_s"`
-	Register dist           `json:"register"`
-	FirstMap dist           `json:"first_map"`
-	Total    dist           `json:"start_to_first_map"`
-	Frames   int64          `json:"frames_all_clients"`
-	Bytes    int64          `json:"bytes_all_clients"`
-	Peers    map[int]int    `json:"decoded_first_map_peers"`
+	Name   string         `json:"name"`
+	Nodes  int            `json:"nodes"`
+	OK     int            `json:"ok"`
+	Failed int            `json:"failed"`
+	Errors map[string]int `json:"errors"`
+	// ErrorSample is the first message of each class.
+	ErrorSample map[string]string `json:"error_sample"`
+	WallSec     float64           `json:"wall_s"`
+	Register    dist              `json:"register"`
+	FirstMap    dist              `json:"first_map"`
+	Total       dist              `json:"start_to_first_map"`
+	Frames      int64             `json:"frames_all_clients"`
+	Bytes       int64             `json:"bytes_all_clients"`
+	Peers       map[int]int       `json:"decoded_first_map_peers"`
 }
 
 type summary struct {
@@ -596,7 +598,7 @@ func summarize(name string, rs []*result, wall time.Duration) phaseSummary {
 	var reg, fm, tot []time.Duration
 
 	s := phaseSummary{
-		Name: name, Nodes: len(rs), Errors: map[string]int{}, Peers: map[int]int{},
+		Name: name, Nodes: len(rs), Errors: map[string]int{}, ErrorSample: map[string]string{}, Peers: map[int]int{},
 		WallSec: wall.Seconds(),
 	}
 
@@ -605,6 +607,10 @@ func summarize(name string, rs []*result, wall time.Duration) phaseSummary {
 		case r.Err != "":
 			s.Failed++
 			s.Errors[errClass(r.Err)]++
+
+			if _, ok := s.ErrorSample[errClass(r.Err)]; !ok {
+				s.ErrorSample[errClass(r.Err)] = r.Err[:min(len(r.Err), 200)]
+			}
 		case r.Total > 0:
 			s.OK++
 			reg, fm, tot = append(reg, r.Register), append(fm, r.FirstMap), append(tot, r.Total)
