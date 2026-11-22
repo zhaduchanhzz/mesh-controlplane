@@ -511,7 +511,7 @@ func TestClusterOverlapAndConfigIndependence(t *testing.T) {
 	})
 
 	t.Run("policy_change_in_A_is_silent_in_B", func(t *testing.T) {
-		before := frames(bClients)
+		before := settledFrames(t, bClients)
 
 		tc.SetPolicy(t, tenantA, allowSSHPortOnly)
 
@@ -527,7 +527,7 @@ func TestClusterOverlapAndConfigIndependence(t *testing.T) {
 	})
 
 	t.Run("rename_in_A_is_silent_in_B", func(t *testing.T) {
-		before := frames(bClients)
+		before := settledFrames(t, bClients)
 
 		nv, ok := a.State().GetNodeByNodeKey(selfKey(t, aPhone))
 		require.True(t, ok)
@@ -549,7 +549,7 @@ func TestClusterOverlapAndConfigIndependence(t *testing.T) {
 	})
 
 	t.Run("policy_change_in_B_is_silent_in_A", func(t *testing.T) {
-		before := frames(aClients)
+		before := settledFrames(t, aClients)
 
 		tc.SetPolicy(t, tenantB, allowSSHPortOnly)
 
@@ -942,6 +942,36 @@ func frames(cs []*servertest.TestClient) []int {
 	}
 
 	return out
+}
+
+// settledFrames waits until cs received no map response for a full second
+// (their own tenant's setup can still be settling) and returns the counts.
+// A quiet check that starts earlier would blame the other tenant for them.
+func settledFrames(t *testing.T, cs []*servertest.TestClient) []int {
+	t.Helper()
+
+	last := frames(cs)
+	stableSince := time.Now()
+	deadline := time.Now().Add(15 * time.Second)
+
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond) //nolint:forbidigo // sampling counters
+
+		cur := frames(cs)
+		if !slices.Equal(cur, last) {
+			last, stableSince = cur, time.Now()
+
+			continue
+		}
+
+		if time.Since(stableSince) >= time.Second {
+			return cur
+		}
+	}
+
+	t.Fatalf("clients did not settle within 15s: frames %v", last)
+
+	return nil
 }
 
 func assertQuiet(t *testing.T, cs []*servertest.TestClient, before []int, cause string) {
