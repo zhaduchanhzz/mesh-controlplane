@@ -31,7 +31,7 @@ Cluster process (1 binary, 1 Noise key cluster, 1 listener, 1 pool DB qua PgBoun
 | `POST /machine/map` | Node | `(machine_key từ Noise, node_key trong MapRequest)` → `nodes.tailnet_id` |
 | Đăng ký web/OIDC chưa có key | **Chưa có tenant** | Ngoài phạm vi MVP P04 (xem §4) |
 
-- **Unique toàn hệ thống trên `(machine_key, node_key)`** (index mới) để lookup không mơ hồ. Machine key do Noise xác thực nên không giả mạo được; node key là riêng cho mỗi profile.
+- **Một cặp `(machine_key, node_key)` chỉ thuộc một tailnet** (sửa 2026-11-23, khi thực hiện). Ban đầu định dùng unique index toàn hệ thống, nhưng upstream cho một thiết bị đăng nhập lại thành user khác **trong cùng tailnet** với cùng cặp key và giữ node cũ (3 test upstream hỏng). Thay bằng: index lookup + trigger từ chối cặp key đã có ở tailnet khác (PostgreSQL dùng advisory lock), migration `202611230000-nodes-key-pair-one-tailnet`. `TailnetForNode` dùng `SELECT DISTINCT tailnet_id` và vẫn từ chối nếu ra hơn một tailnet. Machine key do Noise xác thực nên không giả mạo được; node key là riêng cho mỗi profile.
 - **Phiên dính một tenant (I01).** Request đầu tiên được phân giải xong thì phiên Noise gắn với runtime đó. Request sau phân giải ra tenant khác thì bị **từ chối** và phiên bị đóng.
 - **Không phân giải được thì từ chối (fail closed).** Không có tenant mặc định trong process nhiều tenant.
 - Tenant không ACTIVE hoặc không thuộc cluster này: từ chối với lỗi rõ ràng, không lộ thông tin tenant khác.
@@ -61,4 +61,4 @@ Cluster process (1 binary, 1 Noise key cluster, 1 listener, 1 pool DB qua PgBoun
   - cùng machine key với hai node key thì thành hai node ở A và B, mỗi map stream chỉ thấy tenant của nó (S05, I03);
   - trên một phiên Noise, request map với node key của tenant khác bị từ chối (I01);
   - policy, DNS và IP của A không ảnh hưởng B (S06, S07).
-- Unit: lookup ở Platform; unique `(machine_key, node_key)`; tenant không ACTIVE hoặc của cluster khác bị từ chối.
+- Unit: lookup ở Platform; một cặp `(machine_key, node_key)` chỉ thuộc một tailnet; tenant không ACTIVE hoặc của cluster khác bị từ chối.
