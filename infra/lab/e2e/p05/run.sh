@@ -290,7 +290,7 @@ t_isolation
 t_profiles
 t_refusals
 for c in p05-a1 p05-a2 p05-b1; do save_logs $c; done
-cp_ "sudo journalctl -u headscale-cluster -b --no-pager" 2>&1 | redact >"$ART_DIR/logs/cluster.log"
+cp_ "sudo journalctl -u headscale-cluster --since -$(( $(date +%s) - T0 + 5 ))s --no-pager" 2>&1 | redact >"$ART_DIR/logs/cluster.log"
 cleanup
 log "done in $(( $(date +%s) - T0 ))s: $FAILS FAIL, cleanup_ok=$CLEAN_OK"
 [ "$CLEAN_OK" = 1 ] || exit 2
