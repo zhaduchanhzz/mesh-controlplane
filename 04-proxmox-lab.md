@@ -10,7 +10,7 @@ Tạo môi trường kiểm thử có thể tái lập để coding agent kiểm
 - OpenTofu/Terraform provider `bpg/proxmox` **pin version trong lockfile** và inspect provider schema trước khi viết HCL; dùng cloud-init Ubuntu Server image.
 - Ansible (cấu hình OS, Docker, systemd, TLS test CA, node firewall); OpenTofu chỉ tạo resources, Ansible cấu hình services.
 - DNS private authoritative cho `*.mesh.test` (hostname của cluster và bootstrap, **không** hostname theo tenant); CA lab và chứng chỉ hợp lệ với hostname, client VM cài trust chain. Không dùng `curl -k` để 'chứng minh' TLS.
-- PostgreSQL dùng chung (primary + replica streaming), bootstrap + placement API, hai cluster mỗi cluster hai VM (active/standby, cùng Noise key, endpoint chuyển theo lease bằng VIP hoặc L4 health check), DERP/STUN riêng. Không còn edge reverse proxy định tuyến theo Host và không còn SQLite riêng mỗi shard (bản 1.1).
+- PostgreSQL dùng chung (primary + replica streaming), bootstrap + placement API, hai cluster mỗi cluster hai VM (active/standby, cùng Noise key, endpoint chuyển theo lease bằng VIP hoặc L4 health check), DERP/STUN riêng. **PgBouncer bắt buộc** trước PostgreSQL ([ADR 0006](design/adr/0006-pgbouncer-connection-pooling.md)): mỗi VM PostgreSQL chạy một PgBouncer (container, image pin tag, PgBouncer ≥ 1.21, chế độ transaction, `max_prepared_statements` > 0); VM cluster chỉ nối tới PgBouncer qua VIP hoặc multi-host. Không còn edge reverse proxy định tuyến theo Host và không còn SQLite riêng mỗi shard (bản 1.1).
 
 ## 3. Sơ đồ underlay và IP tham khảo
 
@@ -24,6 +24,7 @@ Proxmox lab pool: meshcontrol-lab
   Runner / CI       10.77.10.10
   PostgreSQL pri    10.77.40.11
   PostgreSQL rep    10.77.40.12
+  PgBouncer         :6432 trên .11 và .12 (VIP PgBouncer: .10; hoặc multi-host)
   Bootstrap         10.77.40.13
   Cluster 1 a / b   10.77.40.21 / .22   (VIP cluster 1: .20)
   Cluster 2 a / b   10.77.40.25 / .26   (VIP cluster 2: .24)
@@ -32,22 +33,23 @@ Proxmox lab pool: meshcontrol-lab
   Client B1/B2    10.77.30.11 / .12
 ```
 
-Đây chỉ là kế hoạch địa chỉ; agent phải kiểm tra tránh xung đột với mạng Proxmox hiện hữu. Nếu host hỗ trợ VLAN, dùng SDN VNet hoặc VLAN-backed Linux bridges tương ứng. Firewall chặn A↔B underlay: nếu client A ping được B qua LAN, phép thử “VPN ngăn liên lạc” không hợp lệ. Mở đúng đường đến cluster/bootstrap/DERP/DNS cần thiết; PostgreSQL 5432 chỉ mở cho VM cluster và bootstrap; network faults phải inject có kiểm soát.
+Đây chỉ là kế hoạch địa chỉ; agent phải kiểm tra tránh xung đột với mạng Proxmox hiện hữu. Nếu host hỗ trợ VLAN, dùng SDN VNet hoặc VLAN-backed Linux bridges tương ứng. Firewall chặn A↔B underlay: nếu client A ping được B qua LAN, phép thử “VPN ngăn liên lạc” không hợp lệ. Mở đúng đường đến cluster/bootstrap/DERP/DNS cần thiết; PgBouncer 6432 chỉ mở cho VM cluster; PostgreSQL 5432 chỉ mở cho PgBouncer (localhost), bootstrap/placement và replica; network faults phải inject có kiểm soát.
 
 ## 4. Ma trận VM (có thể chỉnh theo host)
 
 | VM | vCPU | RAM | Disk | Nhận xét |
 |---|---:|---:|---:|---|
 | `mc-ci` | 8 | 16–32 GiB | 120 GiB | Docker/test runner+Go build (đã có, 7701) |
-| `mc-pg-01` | 4 | 8 GiB | 50 GiB | PostgreSQL primary dùng chung |
-| `mc-pg-02` | 4 | 8 GiB | 50 GiB | PostgreSQL replica (streaming) |
+| `mc-pg-01` | 4 | 8 GiB | 50 GiB | PostgreSQL primary dùng chung + PgBouncer (cổng 6432) |
+| `mc-pg-02` | 4 | 8 GiB | 50 GiB | PostgreSQL replica (streaming) + PgBouncer dự phòng |
+| (tùy chọn) `mc-pgb-01`, `mc-pgb-02` | 2 mỗi máy | 2 GiB | 12 GiB | Chỉ khi P14 đo thấy PgBouncer tranh CPU với PostgreSQL; khi đó gỡ PgBouncer khỏi VM PG |
 | `mc-bootstrap` | 2 | 2 GiB | 20 GiB | `mesh-bootstrap` + `mesh-placement` |
 | `mc-c1-a`, `mc-c1-b` | 4 mỗi máy | 8 GiB | 30 GiB | Cluster 1 active / standby |
 | `mc-c2-a`, `mc-c2-b` | 4 mỗi máy | 8 GiB | 30 GiB | Cluster 2 active / standby |
 | `mc-relay` | 2 | 2 GiB | 20 GiB | DERP + STUN |
 | `mc-client-a1,a2,b1,b2` | 1 mỗi máy | 1–2 GiB | 12 GiB | Real Tailscale clients |
 
-`mc-cp` (7702, endpoint public, `serve-tailnets` deprecated) và `mc-bench` (7703, benchmark) đã có từ giai đoạn 1 và không nằm trong bảng trên. IaC giai đoạn 2 hiện có (`infra/lab/stage2-*.tf`, mặc định tắt) vẫn theo topology bản 1.1 (`mc-placement`, `mc-edge`, `mc-shard-01/02`); phải cập nhật trong ticket LAB riêng trước khi bật.
+`mc-cp` (7702, endpoint public, `serve-tailnets` deprecated) và `mc-bench` (7703, benchmark) đã có từ giai đoạn 1 và không nằm trong bảng trên. Trên `mc-bench`, benchmark B2/B3 chạy PostgreSQL 17 + PgBouncer bằng container tạm, chỉ bind `127.0.0.1`, mật khẩu sinh ngẫu nhiên trên VM và xóa hết sau khi đo (`evidence/P14-db-benchmarks.md`). IaC giai đoạn 2 hiện có (`infra/lab/stage2-*.tf`, mặc định tắt) vẫn theo topology bản 1.1 (`mc-placement`, `mc-edge`, `mc-shard-01/02`); phải cập nhật trong ticket LAB riêng trước khi bật.
 
 Tổng đặt trước khi chạy đủ cấu hình (với CI 24 GiB và client 2 GiB): khoảng **40 vCPU, 84 GiB RAM guest, 428 GiB disk guest** (ước tính theo bảng trên); chưa tính overhead của Proxmox, backup snapshots, image cache và workload burst. Với một host vật lý, cân nhắc **ít nhất ~128 GiB RAM và SSD 500 GiB trở lên** để có headroom, hoặc triển khai theo từng giai đoạn trên host nhỏ hơn. Đây không phải chuẩn phần cứng bắt buộc.
 
