@@ -184,7 +184,13 @@ mint() { # SLUG USER KEYFILE
   cp_ "$HSC tailnet authkey --slug $1 --user $2 --reusable --expiration 30m" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])' >"$3" && chmod 600 "$3" && [ -s "$3" ]
 }
-cluster_log_has() { cp_ "sudo journalctl -u headscale-cluster --since -${2}s --no-pager" 2>/dev/null | grep -q "$1"; }
+# Read the journal first: grep -q would SIGPIPE journalctl and, with
+# pipefail, fail the pipeline even on a match.
+cluster_log_has() {
+  local out; out=$(cp_ "sudo journalctl -u headscale-cluster --since -${2}s --no-pager" 2>/dev/null)
+  grep -q "$1" <<<"$out"
+}
+drop_ts() { ci_ "docker rm -f $1 >/dev/null 2>&1; docker volume rm $1 >/dev/null 2>&1; true"; }
 
 # --------------------------------------------------------------- tests ---
 t_http() {
@@ -340,12 +346,15 @@ t_p10() {
 
   # F02: suspend B: its keys stop registering; resume: b1 comes back by
   # itself and sees a node that joined after the resume.
-  start_ts p05-y >/dev/null
+  # Fresh devices for every refusal check: a refused tailscaled keeps its
+  # auth key and registers later if the key becomes valid again.
+  start_ts p05-y1 >/dev/null
   local rs=0 rr=0
   if cp_ "$HSC tailnet status --slug b --set SUSPENDED"; then
     sleep 4
-    ts_auth p05-y up "$TMPD/key-b" p05-y-susp || rs=$?
+    ts_auth p05-y1 up "$TMPD/key-b" p05-y-susp || rs=$?
     local refused=no; [ $rs != 0 ] && grep -q 'invalid pre auth key' "$TMPD/last.out" && refused=yes
+    save_logs p05-y1; drop_ts p05-y1
     cp_ "$HSC tailnet status --slug b --set ACTIVE"
     sleep 4
     start_ts p05-b2 && ts_auth p05-b2 up "$TMPD/key-b" p05-b2 || rr=$?
@@ -363,8 +372,10 @@ t_p10() {
   local rm=0
   if cp_ "$HSC tailnet reassign --slug a --to mc-cp-c2 >/dev/null"; then
     sleep 4
-    ts_auth p05-y up "$TMPD/key-a" p05-y-moved || rm=$?
+    start_ts p05-y2 >/dev/null
+    ts_auth p05-y2 up "$TMPD/key-a" p05-y-moved || rm=$?
     local refused=no; [ $rm != 0 ] && grep -q 'invalid pre auth key' "$TMPD/last.out" && refused=yes
+    save_logs p05-y2; drop_ts p05-y2
     local rb=0; start_ts p05-b3 && ts_auth p05-b3 up "$TMPD/key-b" p05-b3 || rb=$?
     if [ $refused = yes ] && [ $rb = 0 ] && wait_peer p05-b1 p05-b3 30 && cluster_log_has 'retiring tailnet runtime' 60; then
       record F03 PASS "A moved away: refused here, runtime retired; B still serves new nodes"
@@ -374,7 +385,7 @@ t_p10() {
   else
     record F03 FAIL "reassign to another cluster failed"
   fi
-  local c; for c in p05-d1 p05-d2 p05-a3 p05-b2 p05-b3 p05-y; do save_logs $c; done
+  local c; for c in p05-d1 p05-d2 p05-a3 p05-b2 p05-b3; do save_logs $c; done
 }
 
 # ---------------------------------------------------------------- main ---

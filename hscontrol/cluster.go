@@ -272,7 +272,7 @@ func (c *Cluster) reconcile() {
 	}
 
 	for _, rt := range stale {
-		c.retire(rt, "no longer owned by this cluster at the loaded epoch")
+		c.retire(rt, "not ACTIVE and owned by this cluster at the loaded epoch any more")
 	}
 
 	for _, tn := range owned {
