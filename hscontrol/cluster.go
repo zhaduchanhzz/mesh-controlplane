@@ -77,6 +77,10 @@ type tenantRuntime struct {
 	epoch uint64
 	h     *Headscale
 
+	// policyRev is the tailnets.policy_revision the runtime's policy matches;
+	// only the reconcile loop reads or writes it after load.
+	policyRev uint64
+
 	cancel context.CancelFunc // stops its scheduled tasks
 	stop   func()             // from startRuntime
 }
@@ -177,7 +181,10 @@ func (c *Cluster) load(tn types.Tailnet) error {
 		return fmt.Errorf("tailnet %s runtime: %w", id, err)
 	}
 
-	rt := &tenantRuntime{id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h}
+	rt := &tenantRuntime{
+		id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h,
+		policyRev: tdb.Tailnet().PolicyRevision,
+	}
 
 	c.mu.Lock()
 	c.runtimes[id] = rt
@@ -231,15 +238,38 @@ func (c *Cluster) reconcile() {
 	}
 
 	c.mu.RLock()
-	var stale []*tenantRuntime
+	var stale, policyChanged []*tenantRuntime
 	loaded := make(map[string]bool, len(c.runtimes))
 	for id, rt := range c.runtimes {
 		loaded[id.String()] = true
-		if tn, ok := want[id.String()]; !ok || tn.OwnerEpoch != rt.epoch {
+		tn, ok := want[id.String()]
+		switch {
+		case !ok || tn.OwnerEpoch != rt.epoch:
 			stale = append(stale, rt)
+		case tn.PolicyRevision != rt.policyRev:
+			policyChanged = append(policyChanged, rt)
 		}
 	}
 	c.mu.RUnlock()
+
+	for _, rt := range policyChanged {
+		rev := want[rt.id.String()].PolicyRevision
+		// The revision is recorded even when the new policy does not load:
+		// the runtime keeps enforcing the previous one (never allow-all) and
+		// the error is logged once, not on every tick.
+		rt.policyRev = rev
+
+		changes, err := rt.h.state.ReloadPolicy()
+		if err != nil {
+			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).
+				Msg("reconcile: new policy rejected, keeping the previous one")
+
+			continue
+		}
+
+		rt.h.Change(changes...)
+		log.Info().Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).Msg("reconcile: policy reloaded")
+	}
 
 	for _, rt := range stale {
 		c.retire(rt, "no longer owned by this cluster at the loaded epoch")

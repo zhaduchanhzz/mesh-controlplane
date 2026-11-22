@@ -92,3 +92,27 @@ func (tc *TestCluster) WaitRuntime(tb testing.TB, slug string, want bool, within
 
 	tb.Fatalf("servertest: runtime of %q present=%v not reached within %s", slug, want, within)
 }
+
+// SetPolicyViaDB stores pol for slug in the shared database and bumps its
+// policy revision, as an operator would; the running cluster reloads it.
+func (tc *TestCluster) SetPolicyViaDB(tb testing.TB, slug, pol string) {
+	tb.Helper()
+
+	p := tc.Platform(tb)
+	id := tc.Tailnet(tb, slug).ID
+
+	hs, err := p.TenantDB(id)
+	if err != nil {
+		tb.Fatalf("servertest: tenant handle of %q: %v", slug, err)
+	}
+
+	_, err = hs.SetPolicy(pol)
+	if err != nil {
+		tb.Fatalf("servertest: set policy of %q: %v", slug, err)
+	}
+
+	err = p.BumpPolicyRevision(id)
+	if err != nil {
+		tb.Fatalf("servertest: bump policy revision of %q: %v", slug, err)
+	}
+}

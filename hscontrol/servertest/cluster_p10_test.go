@@ -114,7 +114,9 @@ func TestClusterLoadsNewTailnetLive(t *testing.T) {
 		require.Empty(t, cl.Netmap().Peers, "%s: a new tailnet starts with a deny-all policy", cl.Name)
 	}
 
-	tc.SetPolicy(t, tenantC, allowAll)
+	// The operator path: policy written to the database, revision bumped;
+	// the running runtime reloads it without a restart.
+	tc.SetPolicyViaDB(t, tenantC, allowAll)
 	waitPeersExactly(t, cClients[0], selfKey(t, cClients[1]))
 	waitPeersExactly(t, cClients[1], selfKey(t, cClients[0]))
 	assert.Empty(t, a1.Netmap().Peers, "A sees nothing of C")
