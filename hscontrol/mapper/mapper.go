@@ -1,0 +1,561 @@
+package mapper
+
+import (
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"maps"
+	"net/url"
+	"os"
+	"path"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	policyv2 "github.com/juanfont/headscale/hscontrol/policy/v2"
+	"github.com/juanfont/headscale/hscontrol/state"
+	"github.com/juanfont/headscale/hscontrol/types"
+	"github.com/juanfont/headscale/hscontrol/types/change"
+	"github.com/rs/zerolog/log"
+	"tailscale.com/envknob"
+	"tailscale.com/tailcfg"
+	"tailscale.com/types/dnstype"
+	"tailscale.com/types/views"
+)
+
+const (
+	nextDNSDoHPrefix     = "https://dns.nextdns.io"
+	debugMapResponsePerm = 0o755
+)
+
+var debugDumpMapResponsePath = envknob.String("HEADSCALE_DEBUG_DUMP_MAPRESPONSE_PATH")
+
+// TODO: Optimise
+// As this work continues, the idea is that there will be one Mapper instance
+// per node, attached to the open stream between the control and client.
+// This means that this can hold a state per node and we can use that to
+// improve the mapresponses sent.
+// We could:
+// - Keep information about the previous mapresponse so we can send a diff
+// - Store hashes
+// - Create a "minifier" that removes info not needed for the node
+// - some sort of batching, wait for 5 or 60 seconds before sending
+
+type mapper struct {
+	// Configuration
+	state   *state.State
+	cfg     *types.Config
+	batcher *Batcher
+
+	created time.Time
+}
+
+func newMapper(
+	cfg *types.Config,
+	state *state.State,
+) *mapper {
+	// uid, _ := util.GenerateRandomStringDNSSafe(mapperIDLength)
+	return &mapper{
+		state: state,
+		cfg:   cfg,
+
+		created: time.Now(),
+	}
+}
+
+// generateUserProfiles creates user profiles for [tailcfg.MapResponse].
+func generateUserProfiles(
+	node types.NodeView,
+	peers views.Slice[types.NodeView],
+) []tailcfg.UserProfile {
+	userMap := make(map[uint]types.UserView)
+
+	user := node.Owner()
+	if !user.Valid() {
+		log.Error().
+			EmbedObject(node).
+			Msg("node has no valid owner, skipping user profile generation")
+
+		return nil
+	}
+
+	userMap[user.Model().ID] = user
+
+	for _, peer := range peers.All() {
+		peerUser := peer.Owner()
+		if !peerUser.Valid() {
+			continue
+		}
+
+		userMap[peerUser.Model().ID] = peerUser
+	}
+
+	var profiles []tailcfg.UserProfile
+
+	for _, id := range slices.Sorted(maps.Keys(userMap)) {
+		profiles = append(profiles, userMap[id].TailscaleUserProfile())
+	}
+
+	return profiles
+}
+
+func generateDNSConfig(
+	cfg *types.Config,
+	node types.NodeView,
+	capMap tailcfg.NodeCapMap,
+) *tailcfg.DNSConfig {
+	dnsConfig := cfg.CloneTailcfgDNSConfig()
+
+	profile := nextDNSProfileFromCapMap(capMap)
+	if profile != "" {
+		applyNextDNSProfile(dnsConfig.Resolvers, profile)
+		applyNextDNSProfile(dnsConfig.FallbackResolvers, profile)
+
+		for suffix, rs := range dnsConfig.Routes {
+			applyNextDNSProfile(rs, profile)
+			dnsConfig.Routes[suffix] = rs
+		}
+	}
+
+	if _, suppressMetadata := capMap[policyv2.NextDNSAttrNoInfo]; !suppressMetadata {
+		addNextDNSMetadata(dnsConfig.Resolvers, node)
+		addNextDNSMetadata(dnsConfig.FallbackResolvers, node)
+
+		for suffix, rs := range dnsConfig.Routes {
+			addNextDNSMetadata(rs, node)
+			dnsConfig.Routes[suffix] = rs
+		}
+	}
+
+	if domain, ok := node.CertDomain(cfg); ok {
+		dnsConfig.CertDomains = []string{domain}
+	}
+
+	// An exit node refuses to proxy these names. Without this, where its OS
+	// resolver reaches MagicDNS, a client allowed only to use the exit node can
+	// read its view of the tailnet through it. Two gaps are deliberate. Without
+	// MagicDNS, base_domain can be a public domain whose names clients ask the
+	// exit node for, so node names stay readable. Reverse lookups stay open, as
+	// on Tailscale SaaS.
+	if dnsConfig.Proxied && cfg.DNSConfig.BaseDomain != "" {
+		dnsConfig.ExitNodeFilteredSet = []string{"." + strings.ToLower(cfg.DNSConfig.BaseDomain)}
+	}
+
+	return dnsConfig
+}
+
+// nextDNSProfileFromCapMap returns the policy-selected
+// `nextdns:<profile>` value on the node, or the empty string when none
+// is set or the cap is malformed. The reserved
+// `nextdns:no-device-info` string is not a profile — it controls
+// metadata appending and is handled separately.
+//
+// The profile pick is deterministic across reloads: cap keys are
+// gathered, sorted, and the first valid profile wins. Map iteration
+// order in Go is randomised, so taking the literal first match would
+// cause the chosen profile to flip between reloads when a node has
+// multiple `nextdns:` caps. The profile string is also validated
+// against [policyv2.NextDNSProfileRE] so a crafted cap cannot inject path or
+// query characters into the resolver URL.
+func nextDNSProfileFromCapMap(capMap tailcfg.NodeCapMap) string {
+	if len(capMap) == 0 {
+		return ""
+	}
+
+	candidates := make([]string, 0, len(capMap))
+
+	for attr := range capMap {
+		if attr == policyv2.NextDNSAttrNoInfo {
+			continue
+		}
+
+		profile, ok := strings.CutPrefix(string(attr), policyv2.NextDNSAttrPrefix)
+		if !ok || profile == "" {
+			continue
+		}
+
+		// Skipped in silence: the policy warns once when it loads, and this
+		// check guards the URL splice.
+		if !policyv2.NextDNSProfileRE.MatchString(profile) {
+			continue
+		}
+
+		candidates = append(candidates, profile)
+	}
+
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	slices.Sort(candidates)
+
+	return candidates[0]
+}
+
+// nextDNSDoHHost matches a NextDNS DoH resolver address. The check is
+// anchored on the host segment so a typo-squatted operator-configured
+// resolver such as `https://dns.nextdns.io.attacker.example/x` does
+// not slip through.
+func nextDNSDoHHost(addr string) bool {
+	return addr == nextDNSDoHPrefix ||
+		strings.HasPrefix(addr, nextDNSDoHPrefix+"/") ||
+		strings.HasPrefix(addr, nextDNSDoHPrefix+"?")
+}
+
+// applyNextDNSProfile rewrites every NextDNS DoH resolver to point at
+// the given profile, dropping any existing profile path or query. Per
+// the Tailscale spec the per-node profile overrides the global value,
+// so the rewrite is unconditional rather than additive.
+func applyNextDNSProfile(resolvers []*dnstype.Resolver, profile string) {
+	for _, resolver := range resolvers {
+		if !nextDNSDoHHost(resolver.Addr) {
+			continue
+		}
+
+		resolver.Addr = nextDNSDoHPrefix + "/" + profile
+	}
+}
+
+// addNextDNSMetadata appends device metadata as a query string to
+// every NextDNS DoH resolver. Existing query parameters on the
+// resolver address are preserved by parsing the URL and merging into
+// its [url.URL.RawQuery] rather than concatenating with `?`.
+func addNextDNSMetadata(resolvers []*dnstype.Resolver, node types.NodeView) {
+	for _, resolver := range resolvers {
+		if !nextDNSDoHHost(resolver.Addr) {
+			continue
+		}
+
+		u, err := url.Parse(resolver.Addr)
+		if err != nil {
+			continue
+		}
+
+		q := u.Query()
+		q.Set("device_id", string(node.ID().StableID()))
+		q.Set("device_name", node.Hostname())
+
+		// Guard Hostinfo().Valid() before dereferencing OS(): a node loaded
+		// from a legacy NULL host_info row has a nil Hostinfo, and OS() would
+		// panic. Mirrors the .Valid() guard in RequestTags/TailNode.
+		if node.Hostinfo().Valid() {
+			q.Set("device_model", node.Hostinfo().OS())
+		}
+
+		if ips := node.IPs(); len(ips) > 0 {
+			q.Set("device_ip", ips[0].String())
+		}
+
+		u.RawQuery = q.Encode()
+		resolver.Addr = u.String()
+	}
+}
+
+// fullMapResponse returns a [tailcfg.MapResponse] for the given node.
+//
+//nolint:unused
+func (m *mapper) fullMapResponse(
+	nodeID types.NodeID,
+	capVer tailcfg.CapabilityVersion,
+) (*tailcfg.MapResponse, error) {
+	peers := m.state.ListPeers(nodeID)
+
+	return m.NewMapResponseBuilder(nodeID).
+		WithDebugType(fullResponseDebug).
+		WithCapabilityVersion(capVer).
+		WithSelfNode().
+		WithDERPMap().
+		WithDomain().
+		WithCollectServicesDisabled().
+		WithDebugConfig().
+		WithSSHPolicy().
+		WithDNSConfig().
+		WithUserProfiles(peers).
+		WithPacketFilters().
+		WithPeers(peers).
+		Build()
+}
+
+func (m *mapper) selfMapResponse(
+	nodeID types.NodeID,
+	capVer tailcfg.CapabilityVersion,
+) (*tailcfg.MapResponse, error) {
+	ma, err := m.NewMapResponseBuilder(nodeID).
+		WithDebugType(selfResponseDebug).
+		WithCapabilityVersion(capVer).
+		WithSelfNode().
+		Build()
+	if err != nil {
+		return nil, err
+	}
+
+	// Set the peers to nil, to ensure the node does not think
+	// its getting a new list.
+	ma.Peers = nil
+
+	return ma, err
+}
+
+// policyChangeResponse creates a [tailcfg.MapResponse] for policy changes.
+// Peers no longer visible after the change are sent separately, see
+// [handleNodeChange]. It sends:
+//   - PeersChanged for remaining peers (their AllowedIPs may have changed due to policy)
+//   - Updated PacketFilters
+//   - Updated SSHPolicy (SSH rules may reference users/groups that changed);
+//     dropped per connection when unchanged, see [connectionEntry.withSSHPolicyDelta]
+//   - The node's own self info, which renders from the same state as peers;
+//     dropped per connection when unchanged, see [connectionEntry.withSelfDelta]
+//
+// DNSConfig is left out: it forces clients into a full netmap rebuild, and
+// the node's DNS config inputs arrive with its own [change.SelfUpdate], see
+// [state.State.DrainSelfRefreshes].
+//
+// This avoids the issue where an empty Peers slice is interpreted by Tailscale
+// clients as "no change" rather than "no peers".
+func (m *mapper) policyChangeResponse(
+	nodeID types.NodeID,
+	capVer tailcfg.CapabilityVersion,
+	currentPeers views.Slice[types.NodeView],
+) (*tailcfg.MapResponse, error) {
+	builder := m.NewMapResponseBuilder(nodeID).
+		WithDebugType(policyResponseDebug).
+		WithCapabilityVersion(capVer).
+		WithPacketFilters().
+		WithSSHPolicy().
+		WithSelfNode()
+
+	// Send remaining peers in PeersChanged - their AllowedIPs may have
+	// changed due to the policy update (e.g., different routes allowed).
+	// Cross-user peers must also carry their user profile, otherwise the
+	// client's netmap shows the peer without a UserProfiles[user] entry.
+	if currentPeers.Len() > 0 {
+		builder.WithUserProfiles(currentPeers)
+		builder.WithPeerChanges(currentPeers)
+	}
+
+	return builder.Build()
+}
+
+// buildFromChange builds a [tailcfg.MapResponse] from a [change.Change] specification.
+// This provides fine-grained control over what gets included in the response.
+func (m *mapper) buildFromChange(
+	nodeID types.NodeID,
+	capVer tailcfg.CapabilityVersion,
+	resp *change.Change,
+) (*tailcfg.MapResponse, error) {
+	if resp.IsEmpty() {
+		return nil, nil //nolint:nilnil // Empty response means nothing to send, not an error
+	}
+
+	// If this is a self-update (the changed node is the receiving node),
+	// send a self-update response to ensure the node sees its own changes.
+	if resp.OriginNode != 0 && resp.OriginNode == nodeID {
+		return m.selfMapResponse(nodeID, capVer)
+	}
+
+	builder := m.NewMapResponseBuilder(nodeID).
+		WithCapabilityVersion(capVer).
+		WithDebugType(changeResponseDebug)
+
+	// Clients forget the logtail instruction when their process restarts, and
+	// every stream opens with a full map, so full maps carry it.
+	if resp.IsFull() {
+		builder.WithDebugConfig()
+	}
+
+	if resp.IncludeSelf {
+		builder.WithSelfNode()
+	}
+
+	if resp.IncludeDERPMap {
+		builder.WithDERPMap()
+	}
+
+	if resp.IncludeDNS {
+		builder.WithDNSConfig()
+	}
+
+	if resp.IncludeDomain {
+		builder.WithDomain()
+	}
+
+	if resp.IncludePolicy {
+		builder.WithPacketFilters()
+		builder.WithSSHPolicy()
+	}
+
+	if resp.SendAllPeers {
+		peers := m.state.ListPeers(nodeID)
+		builder.WithUserProfiles(peers)
+		builder.WithPeers(peers)
+	} else {
+		if len(resp.PeersChanged) > 0 {
+			// Visibility may leave none of the changed peers for this
+			// recipient; the profiles would then carry only its own
+			// user, which it already holds.
+			if peers := m.state.ListPeers(nodeID, resp.PeersChanged...); peers.Len() > 0 {
+				builder.WithUserProfiles(peers)
+				builder.WithPeerChanges(peers)
+			}
+		}
+
+		if len(resp.PeersRemoved) > 0 {
+			builder.WithPeersRemoved(resp.PeersRemoved...)
+		}
+	}
+
+	patches := m.filterVisiblePeerPatches(nodeID, resp.PeerPatches)
+	if len(patches) > 0 {
+		builder.WithPeerChangedPatch(patches)
+	}
+
+	if resp.PingRequest != nil {
+		builder.WithPingRequest(resp.PingRequest)
+	}
+
+	return builder.Build()
+}
+
+// filterVisiblePeerPatches drops peer-change patches whose target is not in
+// the recipient's NodeStore peer map, the same set
+// [MapResponseBuilder.buildTailPeers] is fed from. Without it, online/offline,
+// endpoint, and key-expiry patches disclose the existence, presence, and
+// addresses of peers the recipient's policy forbids it from accessing.
+func (m *mapper) filterVisiblePeerPatches(
+	nodeID types.NodeID,
+	patches []*tailcfg.PeerChange,
+) []*tailcfg.PeerChange {
+	if len(patches) == 0 {
+		return patches
+	}
+
+	// Key by tailcfg.NodeID so patches are looked up by patch.NodeID
+	// directly, avoiding an unchecked int64->uint64 conversion.
+	peers := m.state.ListPeers(nodeID)
+
+	visible := make(map[tailcfg.NodeID]struct{}, peers.Len())
+	for _, peer := range peers.All() {
+		visible[peer.ID().NodeID()] = struct{}{}
+	}
+
+	return filterByVisible(visible, patches, func(p *tailcfg.PeerChange) tailcfg.NodeID {
+		return p.NodeID
+	})
+}
+
+// filterByVisible keeps only the items whose key resolves to a NodeID present
+// in the visible set, preserving input order.
+func filterByVisible[T any](
+	visible map[tailcfg.NodeID]struct{},
+	items []T,
+	key func(T) tailcfg.NodeID,
+) []T {
+	var filtered []T
+
+	for _, it := range items {
+		if _, ok := visible[key(it)]; ok {
+			filtered = append(filtered, it)
+		}
+	}
+
+	return filtered
+}
+
+func writeDebugMapResponse(
+	resp *tailcfg.MapResponse,
+	t debugType,
+	nodeID types.NodeID,
+) {
+	body, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+
+	perms := fs.FileMode(debugMapResponsePerm)
+	mPath := path.Join(debugDumpMapResponsePath, fmt.Sprintf("%d", nodeID))
+
+	err = os.MkdirAll(mPath, perms)
+	if err != nil {
+		panic(err)
+	}
+
+	now := time.Now().Format("2006-01-02T15-04-05.999999999")
+
+	mapResponsePath := path.Join(
+		mPath,
+		fmt.Sprintf("%s-%s.json", now, t),
+	)
+
+	log.Trace().Msgf("writing MapResponse to %s", mapResponsePath)
+
+	err = os.WriteFile(mapResponsePath, body, perms)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (m *mapper) debugMapResponses() (map[types.NodeID][]tailcfg.MapResponse, error) {
+	if debugDumpMapResponsePath == "" {
+		return nil, nil //nolint:nilnil // intentional: no data when debug path not set
+	}
+
+	return ReadMapResponsesFromDirectory(debugDumpMapResponsePath)
+}
+
+func ReadMapResponsesFromDirectory(dir string) (map[types.NodeID][]tailcfg.MapResponse, error) {
+	nodes, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[types.NodeID][]tailcfg.MapResponse)
+
+	for _, node := range nodes {
+		if !node.IsDir() {
+			continue
+		}
+
+		nodeIDu, err := strconv.ParseUint(node.Name(), 10, 64)
+		if err != nil {
+			log.Error().Err(err).Msgf("parsing node ID from dir %s", node.Name())
+			continue
+		}
+
+		nodeID := types.NodeID(nodeIDu)
+
+		files, err := os.ReadDir(path.Join(dir, node.Name()))
+		if err != nil {
+			log.Error().Err(err).Msgf("reading dir %s", node.Name())
+			continue
+		}
+
+		slices.SortStableFunc(files, func(a, b fs.DirEntry) int {
+			return strings.Compare(a.Name(), b.Name())
+		})
+
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+				continue
+			}
+
+			body, err := os.ReadFile(path.Join(dir, node.Name(), file.Name()))
+			if err != nil {
+				log.Error().Err(err).Msgf("reading file %s", file.Name())
+				continue
+			}
+
+			var resp tailcfg.MapResponse
+
+			err = json.Unmarshal(body, &resp)
+			if err != nil {
+				log.Error().Err(err).Msgf("unmarshalling file %s", file.Name())
+				continue
+			}
+
+			result[nodeID] = append(result[nodeID], resp)
+		}
+	}
+
+	return result, nil
+}
