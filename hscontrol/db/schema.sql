@@ -1,11 +1,38 @@
--- This file is the representation of the SQLite schema of Headscale.
--- It is the "source of truth" and is used to validate any migrations
--- that are run against the database to ensure it ends in the expected state.
+-- mesh-controlplane schema v0.1 (SQLite form, used for development and unit
+-- tests). Production uses schema_postgres.sql on the shared PostgreSQL
+-- (ADR 0005); the two must stay equivalent.
+--
+-- This file is executed verbatim to create a fresh database and is also the
+-- squibble source of truth the database is validated against.
+--
+-- Tenant isolation (ADR 0005, application layer only):
+--   - every tenant table carries tailnet_id NOT NULL;
+--   - the tenantscope GORM plugin confines statements to one tailnet;
+--   - composite foreign keys / triggers stop cross-tailnet references even
+--     when application code is wrong.
 
 CREATE TABLE migrations(id text,PRIMARY KEY(id));
 
+-- One row per tailnet. owner_cluster_id/owner_epoch fence the cluster that
+-- may serve and mutate the tailnet (I12): every mutation checks both.
+CREATE TABLE tailnets(
+  id text PRIMARY KEY,
+  slug text NOT NULL,
+  status text NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','ACTIVE','SUSPENDED','DELETING')),
+  owner_cluster_id text NOT NULL,
+  owner_epoch integer NOT NULL DEFAULT 1 CHECK(owner_epoch >= 1),
+  policy_revision integer NOT NULL DEFAULT 1,
+  config_revision integer NOT NULL DEFAULT 1,
+  created_at datetime NOT NULL,
+  updated_at datetime NOT NULL,
+  deleted_at datetime
+);
+CREATE UNIQUE INDEX idx_tailnets_slug ON tailnets(slug);
+CREATE INDEX idx_tailnets_owner ON tailnets(owner_cluster_id, status);
+
 CREATE TABLE users(
   id integer PRIMARY KEY AUTOINCREMENT,
+  tailnet_id text NOT NULL,
   name text,
   display_name text,
   email text,
@@ -15,36 +42,30 @@ CREATE TABLE users(
 
   created_at datetime,
   updated_at datetime,
-  deleted_at datetime
+  deleted_at datetime,
+
+  CONSTRAINT fk_users_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id)
 );
+-- Target of composite foreign keys (tailnet_id, user_id).
+CREATE UNIQUE INDEX idx_users_tailnet_id_id ON users(tailnet_id, id);
 CREATE INDEX idx_users_deleted_at ON users(deleted_at);
 
-
--- The following three UNIQUE indexes work together to enforce the user identity model:
---
--- 1. Users can be either local (provider_identifier is NULL) or from external providers (provider_identifier set)
--- 2. Each external provider identifier must be unique across the system
--- 3. Local usernames must be unique among local users
--- 4. The same username can exist across different providers with different identifiers
---
--- Examples:
--- - Can create local user "alice" (provider_identifier=NULL)
--- - Can create external user "alice" with GitHub (name="alice", provider_identifier="alice_github")
--- - Can create external user "alice" with Google (name="alice", provider_identifier="alice_google")
--- - Cannot create another local user "alice" (blocked by idx_name_no_provider_identifier)
--- - Cannot create another user with provider_identifier="alice_github" (blocked by idx_provider_identifier)
--- - Cannot create user "bob" with provider_identifier="alice_github" (blocked by idx_name_provider_identifier)
-CREATE UNIQUE INDEX idx_provider_identifier ON users(provider_identifier) WHERE provider_identifier IS NOT NULL;
-CREATE UNIQUE INDEX idx_name_provider_identifier ON users(name, provider_identifier);
-CREATE UNIQUE INDEX idx_name_no_provider_identifier ON users(name) WHERE provider_identifier IS NULL;
+-- The user identity model, now per tailnet:
+-- 1. Users are local (provider_identifier NULL) or external.
+-- 2. An external provider identifier is unique within a tailnet.
+-- 3. A local username is unique among the tailnet's local users.
+-- 4. The same name may exist in different tailnets and across providers.
+CREATE UNIQUE INDEX idx_provider_identifier ON users(tailnet_id, provider_identifier) WHERE provider_identifier IS NOT NULL;
+CREATE UNIQUE INDEX idx_name_provider_identifier ON users(tailnet_id, name, provider_identifier);
+CREATE UNIQUE INDEX idx_name_no_provider_identifier ON users(tailnet_id, name) WHERE provider_identifier IS NULL;
 
 -- Unified store for every authenticatable secret (API keys, pre-auth keys,
 -- OAuth clients and access tokens), discriminated by kind. Only a hash of the
--- secret is stored (SHA-256; legacy bcrypt/Argon2id until next use); identifier
--- is the public lookup value, unique within a kind. Per-kind columns are sparse
--- by design.
+-- secret is stored; identifier is the public lookup value, unique within a
+-- kind (random, so global uniqueness is harmless; lookups are scoped).
 CREATE TABLE credentials(
   id integer PRIMARY KEY AUTOINCREMENT,
+  tailnet_id text NOT NULL,
   kind text NOT NULL CHECK(kind IN ('api','authkey','oauth_client','oauth_token')),
   identifier text,
   hash blob,
@@ -62,15 +83,31 @@ CREATE TABLE credentials(
   revoked datetime,
   created_by_token numeric DEFAULT false,
 
+  CONSTRAINT fk_credentials_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id),
+  -- ON DELETE SET NULL cannot be a composite key: it would null tailnet_id.
+  -- The tailnet match is enforced by the triggers below instead.
   CONSTRAINT fk_credentials_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
   CONSTRAINT chk_credentials_hash CHECK(hash IS NOT NULL OR revoked IS NOT NULL),
   CONSTRAINT chk_credentials_hash_format CHECK(hash IS NULL OR substr(CAST(hash AS TEXT), 1, 1) = '$')
 );
 CREATE UNIQUE INDEX idx_credentials_identifier ON credentials(kind, identifier);
 CREATE INDEX idx_credentials_user_id ON credentials(user_id);
+CREATE UNIQUE INDEX idx_credentials_tailnet_id_id ON credentials(tailnet_id, id);
+
+CREATE TRIGGER trg_credentials_user_tailnet_insert BEFORE INSERT ON credentials
+WHEN NEW.user_id IS NOT NULL AND (SELECT tailnet_id FROM users WHERE id = NEW.user_id) IS NOT NEW.tailnet_id
+BEGIN
+  SELECT RAISE(ABORT, 'credential user belongs to another tailnet');
+END;
+CREATE TRIGGER trg_credentials_user_tailnet_update BEFORE UPDATE OF user_id, tailnet_id ON credentials
+WHEN NEW.user_id IS NOT NULL AND (SELECT tailnet_id FROM users WHERE id = NEW.user_id) IS NOT NEW.tailnet_id
+BEGIN
+  SELECT RAISE(ABORT, 'credential user belongs to another tailnet');
+END;
 
 CREATE TABLE nodes(
   id integer PRIMARY KEY AUTOINCREMENT,
+  tailnet_id text NOT NULL,
   machine_key text,
   node_key text,
   disco_key text,
@@ -99,20 +136,29 @@ CREATE TABLE nodes(
   updated_at datetime,
   deleted_at datetime,
 
-  CONSTRAINT fk_nodes_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-  CONSTRAINT fk_nodes_auth_key FOREIGN KEY(auth_key_id) REFERENCES credentials(id)
+  CONSTRAINT fk_nodes_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id),
+  CONSTRAINT fk_nodes_user FOREIGN KEY(tailnet_id, user_id) REFERENCES users(tailnet_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_nodes_auth_key FOREIGN KEY(tailnet_id, auth_key_id) REFERENCES credentials(tailnet_id, id)
 );
 CREATE INDEX idx_nodes_auth_key_id ON nodes(auth_key_id);
+-- Not unique: upstream lets one machine key register as different users of
+-- the same tailnet (NodeStore nodesByMachineKey[mk][userID]).
+CREATE INDEX idx_nodes_tailnet_machine_key ON nodes(tailnet_id, machine_key);
+CREATE INDEX idx_nodes_tailnet_node_key ON nodes(tailnet_id, node_key);
 
 CREATE TABLE policies(
   id integer PRIMARY KEY AUTOINCREMENT,
+  tailnet_id text NOT NULL,
   data text,
 
   created_at datetime,
   updated_at datetime,
-  deleted_at datetime
+  deleted_at datetime,
+
+  CONSTRAINT fk_policies_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id)
 );
 CREATE INDEX idx_policies_deleted_at ON policies(deleted_at);
+CREATE INDEX idx_policies_tailnet_id ON policies(tailnet_id);
 
 CREATE TABLE database_versions(
   id integer PRIMARY KEY,

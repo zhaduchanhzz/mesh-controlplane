@@ -22,16 +22,6 @@ var errVersionMajorChange = errors.New("major version change not supported")
 
 var errVersionParse = errors.New("cannot parse version")
 
-var errDatabaseTooOld = errors.New("database predates the minimum supported version")
-
-// minimumMigrationID is the last migration shipped in v0.29.0. Migrations up
-// to it were removed from the list, so a database that has recorded neither it
-// nor a later one would silently skip them.
-//
-// TODO(kradalby): in 0.31, bump to the last 0.30 migration when the 0.29-era
-// migrations are removed.
-const minimumMigrationID = "202605221435-clear-zero-time-node-expiry"
-
 var errVersionFormat = errors.New(
 	"version does not follow semver major.minor.patch format",
 )
@@ -186,54 +176,6 @@ func isDev(version string) bool {
 // upgradePath is the documented route for any database older than v0.29.0.
 const upgradePath = "upgrade one minor release at a time, using the latest patch of each, " +
 	"to the latest v0.29.x first, release page: https://github.com/juanfont/headscale/releases"
-
-// checkMinimumMigration rejects non-fresh databases that have not reached
-// v0.29.0. It keys on the migrations table rather than database_versions,
-// which only exists since 0.29.0 and is skipped for dev builds.
-func checkMinimumMigration(db *gorm.DB) error {
-	// Every release before 0.23 has a machines table and every path to 0.29
-	// renames or drops it. Check it before the migrations table, which
-	// InitSchema may have stamped without migrating.
-	if db.Migrator().HasTable("machines") {
-		return fmt.Errorf(
-			"database has the machines table of a release before v0.23.0, "+
-				"if a later release has started on it, restore the backup taken before that, then %s: %w",
-			upgradePath, errDatabaseTooOld,
-		)
-	}
-
-	if !db.Migrator().HasTable("migrations") {
-		return nil
-	}
-
-	var total, found int64
-
-	err := db.Table("migrations").Count(&total).Error
-	if err != nil {
-		return fmt.Errorf("counting migrations: %w", err)
-	}
-
-	// Still fresh: InitSchema is not atomic, so a crashed first start leaves
-	// core tables beside an empty migrations table.
-	if total == 0 {
-		return nil
-	}
-
-	// IDs start with a timestamp, so they order chronologically as strings. A
-	// database created fresh by this release records only newer IDs.
-	err = db.Table("migrations").
-		Where("id >= ? AND id != ?", minimumMigrationID, "SCHEMA_INIT").
-		Count(&found).Error
-	if err != nil {
-		return fmt.Errorf("checking minimum migration: %w", err)
-	}
-
-	if found == 0 {
-		return fmt.Errorf("%s: %w", upgradePath, errDatabaseTooOld)
-	}
-
-	return nil
-}
 
 // checkVersionUpgradePath verifies that the running headscale version
 // is compatible with the version that last used this database.

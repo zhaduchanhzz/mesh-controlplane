@@ -132,6 +132,10 @@ func MustParseNodeID(s string) NodeID {
 type Node struct {
 	ID NodeID `gorm:"primary_key"`
 
+	// TailnetID is the tenant this row belongs to (tailnet_id NOT NULL). The
+	// tenantscope plugin sets and filters it; code never chooses it.
+	TailnetID string `gorm:"column:tailnet_id;not null"`
+
 	MachineKey key.MachinePublic `gorm:"serializer:text"`
 	NodeKey    key.NodePublic    `gorm:"serializer:text"`
 	DiscoKey   key.DiscoPublic   `gorm:"serializer:text"`
