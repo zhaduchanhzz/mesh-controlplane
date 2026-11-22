@@ -145,6 +145,24 @@ CREATE INDEX idx_nodes_auth_key_id ON nodes(auth_key_id);
 -- the same tailnet (NodeStore nodesByMachineKey[mk][userID]).
 CREATE INDEX idx_nodes_tailnet_machine_key ON nodes(tailnet_id, machine_key);
 CREATE INDEX idx_nodes_tailnet_node_key ON nodes(tailnet_id, node_key);
+-- A (machine_key, node_key) pair resolves a Noise session to exactly one
+-- tailnet (ADR 0007 §2): it may not appear in two tailnets. Within one tailnet
+-- upstream keeps several rows for it (re-login as another user), so this is a
+-- trigger, not a unique index. Zero keys (nodes created without keys) are
+-- never resolved and are exempt.
+CREATE INDEX idx_nodes_machine_key_node_key ON nodes(machine_key, node_key);
+CREATE TRIGGER trg_nodes_key_pair_tailnet_insert BEFORE INSERT ON nodes
+WHEN NEW.machine_key <> 'mkey:0000000000000000000000000000000000000000000000000000000000000000' AND NEW.node_key <> 'nodekey:0000000000000000000000000000000000000000000000000000000000000000'
+  AND EXISTS (SELECT 1 FROM nodes WHERE machine_key = NEW.machine_key AND node_key = NEW.node_key AND tailnet_id <> NEW.tailnet_id)
+BEGIN
+  SELECT RAISE(ABORT, 'node key pair belongs to another tailnet');
+END;
+CREATE TRIGGER trg_nodes_key_pair_tailnet_update BEFORE UPDATE OF machine_key, node_key, tailnet_id ON nodes
+WHEN NEW.machine_key <> 'mkey:0000000000000000000000000000000000000000000000000000000000000000' AND NEW.node_key <> 'nodekey:0000000000000000000000000000000000000000000000000000000000000000'
+  AND EXISTS (SELECT 1 FROM nodes WHERE machine_key = NEW.machine_key AND node_key = NEW.node_key AND tailnet_id <> NEW.tailnet_id AND id <> NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'node key pair belongs to another tailnet');
+END;
 
 CREATE TABLE policies(
   id integer PRIMARY KEY AUTOINCREMENT,

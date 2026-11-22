@@ -223,23 +223,9 @@ var (
 )
 
 func findAuthKey(tx *gorm.DB, keyStr string) (*types.PreAuthKey, error) {
-	// Validate input is not empty
-	if keyStr == "" {
-		return nil, ErrPreAuthKeyFailedToParse
-	}
-
-	// Unprefixed: a migrated pre-0.28 plaintext key.
-	// TODO(kradalby): remove in 0.32 with legacy key formats (announced).
-	identifier, secret := legacyAuthKeyIdentifier(keyStr), keyStr
-
-	prefixAndSecret, found := strings.CutPrefix(keyStr, authKeyPrefix)
-	if found {
-		var err error
-
-		identifier, secret, err = parsePrefixedKey(prefixAndSecret, ErrPreAuthKeyFailedToParse)
-		if err != nil {
-			return nil, err
-		}
+	identifier, secret, err := parseAuthKey(keyStr)
+	if err != nil {
+		return nil, err
 	}
 
 	cred, err := authenticateCredential(
@@ -250,6 +236,25 @@ func findAuthKey(tx *gorm.DB, keyStr string) (*types.PreAuthKey, error) {
 	}
 
 	return credentialToPreAuthKey(cred), nil
+}
+
+// parseAuthKey splits a pre-auth key into the public identifier its
+// credential is stored under and the secret to verify. Registration
+// (findAuthKey) and tenant resolution ([Platform.TailnetForAuthKey]) share it
+// so both accept exactly the same keys.
+func parseAuthKey(keyStr string) (string, string, error) {
+	if keyStr == "" {
+		return "", "", ErrPreAuthKeyFailedToParse
+	}
+
+	prefixAndSecret, found := strings.CutPrefix(keyStr, authKeyPrefix)
+	if found {
+		return parsePrefixedKey(prefixAndSecret, ErrPreAuthKeyFailedToParse)
+	}
+
+	// Unprefixed: a migrated pre-0.28 plaintext key.
+	// TODO(kradalby): remove in 0.32 with legacy key formats (announced).
+	return legacyAuthKeyIdentifier(keyStr), keyStr, nil
 }
 
 // legacyAuthKeyIdentifier derives the lookup identifier of a pre-0.28 plaintext

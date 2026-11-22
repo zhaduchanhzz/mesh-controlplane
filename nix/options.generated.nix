@@ -540,6 +540,29 @@ in
         '';
         example = 600;
       };
+      query_exec_mode = lib.mkOption {
+        type = lib.types.enum [
+          "cache_statement"
+          "cache_describe"
+          "describe_exec"
+          "exec"
+          "simple_protocol"
+          ""
+        ];
+        default = "cache_statement";
+        description = ''
+          How the driver (pgx) sends queries, passed as its `default_query_exec_mode`. Behind PgBouncer in transaction mode without `max_prepared_statements`, use `simple_protocol`.
+
+          One of:
+
+          - `cache_statement`: Prepares each statement once per connection and caches it; the driver default and the fastest.
+          - `cache_describe`: Caches only the statement description and sends each query unnamed.
+          - `describe_exec`: Describes then executes each query, with no cache; two round trips per query.
+          - `exec`: Sends each query unprepared with the extended protocol, with text-encoded arguments.
+          - `simple_protocol`: Sends each query with the simple protocol, arguments interpolated by the driver; needs no prepared statements, for PgBouncer in transaction mode without them.
+        '';
+        example = "simple_protocol";
+      };
     };
   };
   dns = {

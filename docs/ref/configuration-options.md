@@ -1244,6 +1244,7 @@ Where headscale stores nodes, users and keys. SQLite is recommended; PostgreSQL 
         max_open_conns: 10
         max_idle_conns: 10
         conn_max_idle_time_secs: 3600
+        query_exec_mode: cache_statement
     ```
 
 ### `database.type` { #database.type data-toc-label="type" }
@@ -1524,6 +1525,7 @@ PostgreSQL, read only when [`database.type`](#database.type) is `postgres`. An e
         max_open_conns: 10
         max_idle_conns: 10
         conn_max_idle_time_secs: 3600
+        query_exec_mode: cache_statement
     ```
 
 #### `database.postgres.host` { #database.postgres.host data-toc-label="host" }
@@ -1791,6 +1793,42 @@ How long, in seconds, a connection may stay idle before it is closed.
 
     ```nix
     services.headscale.settings.database.postgres.conn_max_idle_time_secs = 600;
+    ```
+
+#### `database.postgres.query_exec_mode` { #database.postgres.query_exec_mode data-toc-label="query_exec_mode" }
+
+- **Type:** [enum](#type-enum): `cache_statement`, `cache_describe`, `describe_exec`, `exec`, `simple_protocol`
+- **Default:** `cache_statement`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_QUERY_EXEC_MODE`
+
+How the driver (pgx) sends queries, passed as its `default_query_exec_mode`. Behind PgBouncer in transaction mode without `max_prepared_statements`, use `simple_protocol`.
+
+| Value             | Meaning                                                                                                                                                        |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache_statement` | Prepares each statement once per connection and caches it; the driver default and the fastest.                                                                 |
+| `cache_describe`  | Caches only the statement description and sends each query unnamed.                                                                                            |
+| `describe_exec`   | Describes then executes each query, with no cache; two round trips per query.                                                                                  |
+| `exec`            | Sends each query unprepared with the extended protocol, with text-encoded arguments.                                                                           |
+| `simple_protocol` | Sends each query with the simple protocol, arguments interpolated by the driver; needs no prepared statements, for PgBouncer in transaction mode without them. |
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        query_exec_mode: simple_protocol
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_QUERY_EXEC_MODE=simple_protocol
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.query_exec_mode = "simple_protocol";
     ```
 
 ## `dns` { #dns data-toc-label="dns" }

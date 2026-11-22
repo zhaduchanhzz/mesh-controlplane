@@ -46,108 +46,37 @@ type HSDatabase struct {
 	raw     *gorm.DB
 	tailnet types.Tailnet
 	cfg     *types.Config
+	// sharedPool marks a handle from [Platform.TenantDB]: the pool belongs to
+	// the platform, so Close leaves it open.
+	sharedPool bool
 }
 
 // Tailnet returns the tailnet this handle is bound to.
 func (hsdb *HSDatabase) Tailnet() types.Tailnet { return hsdb.tailnet }
 
-// v01InitMigration marks a database created from the v0.1 schema files. The
-// upstream Headscale migration chain is not carried: v0.1 does not upgrade
-// Headscale databases (tickets/P03.md).
-const v01InitMigration = "202611220000-v0.1-init"
-
-// NewHeadscaleDatabase opens the database, creates the v0.1 schema on a fresh
-// one, refuses databases from Headscale or unknown versions, validates the
-// schema and binds the handle to the runtime's tailnet (tenantscope).
-func NewHeadscaleDatabase(cfg *types.Config) (_ *HSDatabase, retErr error) {
-	dbConn, err := openDB(cfg.Database, cfg.SQLitePath())
+// NewHeadscaleDatabase is the single-tenant path: it opens the platform
+// (schema, version checks, validation; see [OpenPlatform]) and binds the
+// handle to the runtime's tailnet (tenantscope). A fresh database gets one
+// default tailnet. The returned handle owns the connection pool.
+func NewHeadscaleDatabase(cfg *types.Config) (*HSDatabase, error) {
+	p, err := OpenPlatform(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	// Release the connection on every failure path (e.g. a refused Headscale
-	// database); otherwise it leaks and, on Windows, keeps the file locked.
-	defer func() {
-		if retErr != nil {
-			if sqlDB, err := dbConn.DB(); err == nil {
-				_ = sqlDB.Close()
-			}
-		}
-	}()
-
-	err = checkV01Database(dbConn)
+	scoped, tn, err := bindRuntimeTailnet(p.db, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("version check: %w", err)
-	}
+		_ = p.Close()
 
-	err = checkVersionUpgradePath(dbConn)
-	if err != nil {
-		return nil, fmt.Errorf("version check: %w", err)
-	}
-
-	migrations := gormigrate.New(
-		dbConn,
-		gormigrate.DefaultOptions,
-		[]*gormigrate.Migration{
-			{
-				// The schema files create everything; this ID only marks a
-				// v0.1 database.
-				ID:       v01InitMigration,
-				Migrate:  func(*gorm.DB) error { return nil },
-				Rollback: func(*gorm.DB) error { return nil },
-			},
-			// New migrations are appended here, each in tx.Transaction, with
-			// explicit DDL for both SQLite and PostgreSQL (hscontrol/db/AGENTS.md).
-		},
-	)
-
-	migrations.InitSchema(func(tx *gorm.DB) error {
-		return tx.Transaction(createSchema)
-	})
-
-	err = runMigrations(cfg.Database, dbConn, migrations)
-	if err != nil {
-		return nil, fmt.Errorf("migration failed: %w", err)
-	}
-
-	// Store the current version in the database after migrations succeed.
-	// Dev builds skip this to preserve the stored version for the next
-	// real versioned binary.
-	currentVersion := types.GetVersionInfo().Version
-	if !isDev(currentVersion) {
-		err = setDatabaseVersion(dbConn, currentVersion)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"storing database version: %w",
-				err,
-			)
-		}
-	}
-
-	// Validate that the schema ends up in the expected state (SQLite only;
-	// squibble does not support PostgreSQL). Done in a helper so its
-	// dedicated connection is released before the runtime binds its tailnet:
-	// SQLite allows a single open connection.
-	if cfg.Database.IsSQLite() {
-		err = validateSQLiteSchema(dbConn)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	scoped, tn, err := bindRuntimeTailnet(dbConn, cfg)
-	if err != nil {
 		return nil, fmt.Errorf("binding runtime tailnet: %w", err)
 	}
 
-	db := HSDatabase{
+	return &HSDatabase{
 		DB:      scoped,
-		raw:     dbConn,
+		raw:     p.db,
 		tailnet: tn,
 		cfg:     cfg,
-	}
-
-	return &db, nil
+	}, nil
 }
 
 // openDB opens the database cfg names; sqlitePath is database.sqlite.path
@@ -340,7 +269,13 @@ func (hsdb *HSDatabase) PingDB(ctx context.Context) error {
 	return sqlDB.PingContext(ctx)
 }
 
+// Close closes the connection pool, unless the handle shares the pool of a
+// [Platform] (then the platform's Close does).
 func (hsdb *HSDatabase) Close() error {
+	if hsdb.sharedPool {
+		return nil
+	}
+
 	db, err := hsdb.DB.DB()
 	if err != nil {
 		return err
