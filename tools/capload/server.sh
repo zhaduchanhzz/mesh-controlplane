@@ -100,6 +100,11 @@ seed)
 	;;
 start)
 	policy=$3 addr=$4 snap=${5:-}
+	# One cell at a time: a second server would share the port and host.
+	if pgrep -f "$HS.* serve" >/dev/null; then
+		echo "a harness server is already running" >&2
+		exit 1
+	fi
 	rm -rf "$dir" && mkdir -p "$dir" && chmod 700 "$dir"
 	write_config "$dir" "$policy" "$addr"
 	if [ -n "$snap" ]; then
