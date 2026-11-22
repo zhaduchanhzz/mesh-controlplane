@@ -1,0 +1,140 @@
+# Tier 1 CI (GitHub-hosted). Design, timings and trade-offs:
+# evidence/P00-toolchain-ci.md.
+#
+# - Go comes from go.mod (actions/setup-go), the same 1.27.4 as the flake's
+#   nixpkgs-stable go_1_27.
+# - Tools that are only in the nix dev shell (golangci-lint, tscli, tofu) come
+#   from the flake's locked nixpkgs via `nix shell --inputs-from .`, so their
+#   versions follow flake.lock exactly and are fetched from cache.nixos.org.
+#   We do not realise the whole `nix develop` shell: its overlay rebuilds
+#   gotools/gofumpt/gotestsum from source on every cold runner.
+# - No secrets, read-only token, every action pinned by commit SHA.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - "feat/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit bash => `-eo pipefail`.
+    shell: bash
+
+env:
+  # Nix installer v3.24.2 (2026-11-05), x86_64-linux asset; SHA-256 as
+  # recorded by GitHub for the release asset and verified on mc-ci.
+  NIX_INSTALLER_VERSION: v3.24.2
+  NIX_INSTALLER_SHA256: 22ed14ee1b24d100d388f1fc245e3062bd5982433d159cffa6dec34c0eb15dab
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go build ./...
+        run: go build ./...
+      # Same command as `make build`, without check-deps (that target only
+      # checks that dev-shell tools are on PATH).
+      - name: build headscale binary
+        run: |
+          go build -buildmode=pie \
+            -ldflags "-X main.version=$(git describe --always --tags --dirty)" \
+            -o headscale ./cmd/headscale
+          ./headscale version
+      - name: go vet
+        run: go vet ./...
+
+  # Everything except hscontrol/servertest, with -race (as `make test`).
+  test-race:
+    name: test (race, without servertest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go test -race
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          mapfile -t pkgs < <(go list ./... | grep -v '/hscontrol/servertest$')
+          go test -race -count=1 -timeout 40m "${pkgs[@]}"
+
+  # hscontrol/servertest: slow (about 37 min on 8 vCPU without -race) and the
+  # TestAPIv2 subtests need tofu and tscli. Upstream also runs it without
+  # -race in a separate job. Split into shards by test name to keep each job
+  # under the timeout on 4-vCPU runners.
+  servertest:
+    name: servertest (${{ matrix.shard.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: apiv2
+            run: "^TestAPIv2"
+          - name: scale-ha
+            run: "^(TestScale|TestHA)"
+          - name: rest
+            skip: "^(TestAPIv2|TestScale|TestHA)"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: install nix (pinned, checksum-verified)
+        run: bash .github/scripts/install-nix.sh
+      - name: go test ./hscontrol/servertest
+        env:
+          RUN: ${{ matrix.shard.run }}
+          SKIP: ${{ matrix.shard.skip }}
+        run: |
+          args=(-count=1 -timeout 55m)
+          if [ -n "$RUN" ]; then args+=(-run "$RUN"); fi
+          if [ -n "$SKIP" ]; then args+=(-skip "$SKIP"); fi
+          nix shell --inputs-from . nixpkgs#tscli nixpkgs#opentofu -c \
+            sh -c 'tscli --version; tofu version; exec go test "$@" ./hscontrol/servertest/...' \
+            sh "${args[@]}"
+
+  lint:
+    name: lint (golangci-lint from flake.lock)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: install nix (pinned, checksum-verified)
+        run: bash .github/scripts/install-nix.sh
+      - name: golangci-lint run
+        run: |
+          nix shell --inputs-from . nixpkgs#golangci-lint -c \
+            sh -c 'golangci-lint version && golangci-lint run --timeout 20m'
