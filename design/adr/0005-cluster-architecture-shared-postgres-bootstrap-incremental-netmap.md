@@ -42,3 +42,14 @@
 
 - Có giữ một **hostname ổn định cho mỗi tenant** (DNS CNAME tới cluster) để chuyển tenant mà client không phải đổi ControlURL không? Hostname đó vẫn trỏ tới Noise key của cluster đích. Lưu ý: key đổi khi chuyển cluster thì client phải reconnect, và có thể phải re-auth (xem `evidence/P02-noise-client-research.md`: key đổi thì client không tự hồi phục).
 - Front door và `serve-tailnets` (P02): giữ lại cho môi trường lab, hay bỏ.
+
+## Bổ sung quyết định (2026-11-22, chủ dự án)
+
+1. **Mỗi cluster một Noise key** (giữ nguyên). Chủ dự án đã xem so sánh với phương án mỗi tenant một key và chọn giữ phương án này.
+2. **Hostname ổn định cho mỗi tenant**: `<tenant>.cp.<domain>` là CNAME tới endpoint của cluster đang sở hữu tenant. Client cấu hình ControlURL một lần.
+3. **Chuyển tenant giữa cluster BUỘC client đăng nhập lại.** Cluster đích có Noise key khác, mà client không tự hồi phục khi key của control URL thay đổi (`evidence/P02-noise-client-research.md`, Q1: key chỉ được giữ trong `Direct`, cần restart hoặc reset profile). Hệ quả:
+   - Dù hostname ổn định, mỗi lần chuyển tenant vẫn gián đoạn control plane cho **mọi** client của tenant, cho tới khi từng client đăng nhập lại.
+   - Node identity (node key, IP) có thể thay đổi sau khi đăng nhập lại; P12b phải đo và ghi lại.
+   - P12b có bước thông báo và yêu cầu đăng nhập lại (xem `tickets/P12b.md`).
+4. **Quyền sở hữu tenant:** thêm `owner_cluster_id` và `owner_epoch` vào bảng `tailnets` (PostgreSQL dùng chung). Cluster chỉ tạo scope cho tenant mà nó sở hữu ở epoch hiện tại. Mọi mutation kiểm owner + epoch trong cùng transaction (I12). Cluster ID **không** nằm trên từng dòng dữ liệu; `tailnet_id` vẫn là ranh giới cô lập duy nhất.
+5. **Phạm vi khi lộ hoặc xoay key cluster:** ảnh hưởng **mọi tenant** trên cluster đó. Quy trình xoay key là yêu cầu của gate N3 (PLAN §7).

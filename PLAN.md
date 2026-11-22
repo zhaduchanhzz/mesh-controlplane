@@ -236,7 +236,7 @@ Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/ne
 
 **N2 — Placement & Fencing:** 2 shard, unique owner/epoch, request stale bị chặn; tenant không bị split; edge fail-closed khi binding không rõ; reconnect sau shard restart hoạt động; fenced move + rolling drain (P12b) không có owner kép và giữ nguyên NodeID.
 
-**N3 — Operational:** backup/restore mới, upgrade shard có canary tại **cấp shard** chứ không phải tenant, phù hợp schema; DERP/STUN verified; queue limit/rate limit và monitoring.
+**N3 — Operational:** backup/restore mới, upgrade shard có canary tại **cấp shard** chứ không phải tenant, phù hợp schema; DERP/STUN verified; queue limit/rate limit và monitoring. **Xoay Noise key của cluster** (ADR 0005): có runbook, đã diễn tập trên lab, ghi rõ **phạm vi ảnh hưởng = mọi tenant và mọi client trên cluster đó** (mọi client phải reconnect và có thể phải đăng nhập lại; đo thời gian và tỉ lệ khôi phục). Có quy trình khẩn cấp khi lộ key: thu hồi, xoay, thông báo admin của mọi tenant bị ảnh hưởng. HA PostgreSQL (failover đã kiểm thử).
 
 **N4 — Capacity:** SLO do người phụ trách xác nhận dựa trên benchmark; không gọi 'unlimited'. Kiểm thử nhiều tailnet nhỏ, một tailnet lớn (tới 10k thiết bị trên dedicated shard), burst registration, reconnect storm, policy changes, relay saturation, quota 5.000/tenant trên shared shard.
 
