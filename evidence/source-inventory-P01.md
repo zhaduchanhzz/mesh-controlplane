@@ -1,6 +1,6 @@
 # Source Inventory — P01 (module rename, `internal/tailnet`)
 
-- **Trạng thái:** `Implemented`. Unit test xanh trên Windows. Full suite Linux (`mc-ci`): xem §5. Chưa `Reviewed`.
+- **Trạng thái:** `Verified` (full suite Linux, §5). Review: agent tự review theo tiêu chí merge chủ repo đặt ra 2026-11-22. Chưa có reviewer bảo mật là người.
 - **Nhánh:** `feat/P01-module-tailnet-types` từ `master` @ `aef014f`
 - **Ticket:** `tickets/P01.md`
 
@@ -48,7 +48,14 @@
 
 ## 5. Full suite trên Linux
 
-Chạy trên `mc-ci` từ `git bundle` (không copy cây Windows). Kết quả ghi bổ sung khi xong. Tiêu chí: số test fail không tăng so với baseline P00 (1 fail do thiếu `tscli`).
+Chạy trên `mc-ci` từ `git bundle` @ `4c2cda8` (0 file CRLF), Go 1.27.4 linux/amd64. Lúc chạy, máy đang chia tải với job nix/race của agent khác.
+
+| Lệnh | Exit | Thời gian | Kết quả |
+|---|---|---|---|
+| `go build ./...` | 0 | 28 s | |
+| `go test -count=1 -timeout 120m ./...` | 1 | 2199 s | **34 ok** (baseline 33 + `internal/tailnet`), **1 FAIL**: `servertest` `TestAPIv2/TSCLI` (thiếu `tscli`, giống baseline P00) |
+
+**Kết luận:** không tăng test fail so với baseline. Trong `nix develop` (agent toolchain), `make build` và `make lint` exit 0 trên cùng mã nguồn.
 
 ## 6. Giả định và giới hạn
 
