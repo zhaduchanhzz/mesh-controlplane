@@ -1,0 +1,41 @@
+# P02 POC runtime "a" (tailnet 0b6f4c2e-8a1d-4f3b-9c7e-2d5a1b3c4e5f). Reached only through the
+# serve-tailnets front door on :8443 (Host a.cp.gta5web.online); listens on loopback.
+server_url: https://a.cp.gta5web.online:8443
+listen_addr: 127.0.0.1:18441
+metrics_listen_addr: 127.0.0.1:9091
+unix_socket: /var/run/headscale/a.sock
+unix_socket_permission: "0770"
+disable_check_updates: true
+trusted_proxies: ["127.0.0.1/32"]
+
+noise:
+  private_key_path: /var/lib/headscale/a/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+policy:
+  mode: file
+  path: /etc/headscale/policy.hujson
+
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  auto_update_enabled: true
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/a/db.sqlite
+
+dns:
+  magic_dns: true
+  base_domain: a.tailnet.internal
+  override_local_dns: false
+
+log:
+  level: info

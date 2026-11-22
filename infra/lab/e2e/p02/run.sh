@@ -32,11 +32,16 @@ IMAGE_REPO=${IMAGE_REPO:-tailscale/tailscale}
 IMAGE_NEW=${IMAGE_NEW:-v1.104.7}
 IMAGE_MIN=${IMAGE_MIN:-v1.84.3}
 HEADSCALE=${HEADSCALE:-sudo -u headscale /usr/local/bin/headscale}
+# Admin CLI per tailnet. With one runtime per tailnet (P02 serve-tailnets) each
+# has its own database, so node and key IDs are only unique per tailnet; the
+# harness tags them "A:<id>" / "B:<id>". Equal values = single-tailnet baseline.
+HS_A=${HS_A:-$HEADSCALE}
+HS_B=${HS_B:-$HEADSCALE}
 # Commands that mint a pre-auth key for tailnet A / tailnet B (JSON on stdout).
 # Baseline has one tailnet, so both default to the same user. Once P02/P03
 # exist, point KEYCMD_B at tailnet B.
-KEYCMD_A=${KEYCMD_A:-$HEADSCALE preauthkeys create --user lab-test --expiration 30m -o json}
-KEYCMD_B=${KEYCMD_B:-$HEADSCALE preauthkeys create --user lab-test --expiration 30m -o json}
+KEYCMD_A=${KEYCMD_A:-$HS_A preauthkeys create --user lab-test --expiration 30m -o json}
+KEYCMD_B=${KEYCMD_B:-$HS_B preauthkeys create --user lab-test --expiration 30m -o json}
 KEEP=${KEEP:-0}        # 1 = skip cleanup (debugging only)
 ONLY=${ONLY:-}         # space-separated test IDs to run, empty = all
 PY=${PY:-python3}
@@ -126,7 +131,22 @@ ws_code() {
 }
 
 # ---- server side (read-only except own keys/nodes) ----
-nodes_json() { cp_ssh "$HEADSCALE nodes list -o json"; }
+# nodes_json -> merged node list of tailnet A and B; "id" is tagged "A:<n>"/"B:<n>".
+nodes_json() {
+  local a b
+  a=$(cp_ssh "$HS_A nodes list -o json") || return 1
+  if [ "$HS_A" = "$HS_B" ]; then b="[]"; else b=$(cp_ssh "$HS_B nodes list -o json") || return 1; fi
+  py -c '
+import json,sys
+out=[]
+for tag,raw in (("A",sys.argv[1]),("B",sys.argv[2])):
+    for n in (json.loads(raw or "[]") or []):
+        n["id"]=tag+":"+str(n["id"]); out.append(n)
+print(json.dumps(out))' "$a" "$b"
+}
+# hs_of TAGGED_ID -> admin CLI of that tailnet; node_delete TAGGED_ID
+hs_of() { case $1 in B:*) printf '%s' "$HS_B" ;; *) printf '%s' "$HS_A" ;; esac; }
+node_delete() { cp_ssh "$(hs_of "$1") nodes delete -i ${1#*:} --force"; }
 
 # node_field NAME FIELD -> value for the node with given name ("" if none)
 node_by_name() {
@@ -152,7 +172,7 @@ mint_key() {
   f=$(mktemp "$TMPD/key-$which-XXXXXX")
   chmod 600 "$f"
   if ! cp_ssh "$cmd" >"$f"; then log "mint_key $which failed"; return 1; fi
-  py -c 'import json,sys;print(json.load(open(sys.argv[1]))["id"])' "$f" >>"$TMPD/keyids"
+  py -c 'import json,sys;print(sys.argv[2]+":"+str(json.load(open(sys.argv[1]))["id"]))' "$f" "$which" >>"$TMPD/keyids"
   printf '%s' "$f"
 }
 # key_secret FILE -> key on stdout (only ever piped, never printed)
@@ -222,13 +242,14 @@ pre=set(sys.argv[1].split(","))
 for n in json.load(sys.stdin) or []:
     if str(n["id"]) not in pre and (n.get("name","").startswith("p02-") or n.get("givenName","").startswith("p02-")):
         print(n["id"])' "$PRE_NODE_IDS" | while read -r id; do
-      cp_ssh "$HEADSCALE nodes delete -i $id --force" >/dev/null 2>&1 && log "deleted node $id"
+      node_delete "$id" >/dev/null 2>&1 && log "deleted node $id"
     done
   fi
   log "cleanup: expire+delete own pre-auth keys"
   while read -r k; do
     [ -n "$k" ] || continue
-    cp_ssh "$HEADSCALE preauthkeys expire -i $k --force >/dev/null 2>&1; $HEADSCALE preauthkeys delete -i $k --force >/dev/null 2>&1" || true
+    local h; h=$(hs_of "$k"); k=${k#*:}
+    cp_ssh "$h preauthkeys expire -i $k --force >/dev/null 2>&1; $h preauthkeys delete -i $k --force >/dev/null 2>&1" || true
   done <"$TMPD/keyids"
   local left
   left=$(nodes_json | py -c '
@@ -424,7 +445,7 @@ r02() {
   # N8: deleting node A must not affect node B (only meaningful with two nodes).
   if [ "$tag" = "$IMAGE_NEW" ]; then
     if [ -n "$ida" ] && [ -n "$idb" ] && [ "$ida" != "$idb" ]; then
-      cp_ssh "$HEADSCALE nodes delete -i $ida --force" >/dev/null 2>&1
+      node_delete "$ida" >/dev/null 2>&1
       if [ -n "$(node_by_name "$n-b" id)" ]; then record N8 "N8" PASS "deleting A's node left B's node (same machine key)"
       else record N8 "N8" FAIL "deleting A's node removed B's node"; fi
     else
