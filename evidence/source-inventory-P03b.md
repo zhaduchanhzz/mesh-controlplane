@@ -80,3 +80,9 @@
 ### Tiếp theo
 - Bước 2: schema v0.1 (PostgreSQL + SQLite tương đương), bảng `tailnets` có `owner_cluster_id`/`owner_epoch`, `versioncheck` từ chối DB cũ.
 - Bước 3: nối plugin vào `HSDatabase` (context có scope của tailnet runtime), review tay mọi `Raw`/`Exec`.
+
+### Bước 2–3: kết quả (Implemented, Verified)
+- Commit `3a4cb6c` (schema v0.1, gắn runtime vào tailnet), sửa thêm `nodeFieldImpact` cho `TailnetID`.
+- `hscontrol/db/...` trên mc-ci (`CGO_ENABLED=1 -race`, PostgreSQL 16.15 qua `postgrestest`): 3/3 package ok. Các subtest PostgreSQL **thực sự chạy**, không skip (cài `postgresql`, service hệ thống tắt).
+- Full suite `go test -count=1 -timeout 120m ./...` (không có nix, nên thiếu `tscli`): 35 package ok. FAIL `servertest` `TestAPIv2/TSCLI` (thiếu công cụ, giống baseline) và `state` `TestUpdateChangesCoversEveryNodeField` (trường mới `TailnetID` chưa được phân loại). Đã sửa; `state` chạy lại với `-race`: ok (178 s).
+- Phát hiện kèm theo: các test PostgreSQL của baseline **bị skip âm thầm** trên mc-ci vì thiếu `pg_ctl`/`initdb`. Nay đã chạy thật.
