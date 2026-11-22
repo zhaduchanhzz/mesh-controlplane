@@ -1,6 +1,6 @@
-# Source Inventory — P03b (schema v0.1: một SQLite cho mỗi shard, `tailnet_id`, scope fail-closed)
+# Source Inventory — P03b (schema v0.1: PostgreSQL dùng chung, `tailnet_id`, scope fail-closed)
 
-- **Trạng thái:** `Planned` → đang làm. Quyết định kiến trúc: **phương án A** (ADR 0004 bị từ chối, ADR 0002).
+- **Trạng thái:** `Planned` → đang làm. **Cập nhật 2026-11-22: ADR 0005 (Accepted)** đổi storage sang **PostgreSQL dùng chung** cho mọi shard. Các mục 2.3–2.5 dưới đây đã được sửa theo ADR 0005.
 - **Nhánh:** `feat/P03-tenant-schema`
 - **Ticket:** `tickets/P03.md`. P03a (policy mặc định deny) làm song song trên nhánh riêng.
 
@@ -39,14 +39,14 @@
 - `HSDatabase` của một runtime giữ `DB = raw.WithContext(ctx đã gắn scope)`, nên mọi lời gọi hiện có tự động có scope mà không phải sửa ~80 chỗ.
 - `Raw`/`Exec` không qua callback: **review tay** từng chỗ, ghi vào §4.
 
-### 2.3 ID toàn cục
-- Mỗi shard có `shard_index` (0…8191). Khi tạo DB, đặt `sqlite_sequence` của `nodes` và `users` bắt đầu từ `shard_index × 2^40`. Như vậy dải ID của các shard không chồng nhau và giữ dưới 2^53 (an toàn với JSON/JS, vừa `tailcfg.NodeID` int64). `AUTOINCREMENT` không tái sử dụng ID.
-- P10: registry cấp `shard_index`. Lab trước P10: cấu hình tĩnh.
+### 2.3 ID toàn cục (ADR 0005)
+- Mọi shard dùng chung một PostgreSQL, nên **sequence của PostgreSQL** đã duy nhất toàn cục và không tái sử dụng. Không cần bộ cấp dải ID theo shard. Giữ giới hạn < 2^53 cho `tailcfg.NodeID`/JSON.
 
 ### 2.4 Phiên bản DB
 - Chuỗi migration mới bắt đầu bằng `202611220000-v0.1-init`.
 - DB có migration ID của upstream, hoặc có bảng `policies`/`users` mà không có `tailnets`, → **từ chối**, kèm lỗi rõ ràng.
-- Cấu hình `database.type: postgres` → từ chối khi khởi động (shard chỉ dùng SQLite).
+- **PostgreSQL là storage production** (ADR 0005). SQLite chỉ giữ cho dev và unit test, với cùng schema v0.1. `schema.sql` (SQLite) và DDL PostgreSQL phải tương đương, có test kiểm.
+- Đánh giá **row-level security** của PostgreSQL theo `tailnet_id` làm lớp phòng thủ thứ hai.
 
 ### 2.5 Tailnet của runtime
 - Chế độ một tailnet (upstream, test): DB mới tự tạo đúng một tailnet ACTIVE; runtime dùng tailnet đó. DB có nhiều hơn một tailnet mà config không chỉ rõ → **từ chối khởi động**.
@@ -57,8 +57,8 @@
 - FK âm tính: node của A trỏ tới user của B → lỗi. Credential của A gán user của B → trigger chặn.
 - Unique: cùng `name` user ở A và B → được; cùng `name` hai lần trong A → lỗi.
 - Plugin: query, create, update, delete khi thiếu scope → `ErrNoScope`; scope A không thấy dòng của B; create tự gán `tailnet_id`.
-- Versioncheck: DB upstream (testdata) bị từ chối; Postgres bị từ chối.
-- ID: shard_index = 3 → node đầu tiên có id = 3·2^40 + 1.
+- Versioncheck: DB upstream (testdata) bị từ chối. Schema v0.1 chạy được trên cả PostgreSQL (`--postgres` trong integration) lẫn SQLite.
+- Hai process dùng chung một PostgreSQL, mỗi process scope một tailnet khác nhau: không đọc hay ghi được dữ liệu của nhau.
 - Bộ test hiện có của `hscontrol/db`, `state`, `servertest` vẫn xanh ở chế độ một tailnet. Các test migration từ dump 0.29 sẽ bị gỡ, kèm lý do (chuỗi upstream đã bỏ).
 
 ## 4. Review tay các câu SQL thô
