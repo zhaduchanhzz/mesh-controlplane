@@ -1,0 +1,38 @@
+[Unit]
+Description=mesh-controlplane P02 POC: several tailnets in one process behind a Host front door (mc-cp)
+After=network-online.target wg-quick@wg-mesh.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=headscale
+Group=headscale
+ExecStart=/usr/local/bin/headscale -c /etc/headscale/tailnets/hs.yaml serve-tailnets \
+  --listen 0.0.0.0:8443 \
+  --tls-cert /etc/headscale/tls/fullchain.pem --tls-key /etc/headscale/tls/privkey.pem \
+  --tailnet "id=4d1c2b7a-0e5f-4a8b-9c3d-6e7f8a9b0c1d;hosts=hs.cp.gta5web.online;config=/etc/headscale/tailnets/hs.yaml" \
+  --tailnet "id=0b6f4c2e-8a1d-4f3b-9c7e-2d5a1b3c4e5f;hosts=a.cp.gta5web.online;config=/etc/headscale/tailnets/a.yaml" \
+  --tailnet "id=7e9d1a3b-5c2f-4e8a-b6d4-1f0c3a5b7d9e;hosts=b.cp.gta5web.online;config=/etc/headscale/tailnets/b.yaml"
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=headscale
+RuntimeDirectoryMode=0770
+StateDirectory=headscale headscale/a headscale/b
+StateDirectoryMode=0750
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/headscale /var/run/headscale
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

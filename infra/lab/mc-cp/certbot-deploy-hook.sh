@@ -7,4 +7,4 @@ dst=/etc/headscale/tls
 install -d -m 0750 -o root -g headscale "$dst"
 install -m 0644 -o root -g headscale "$src/fullchain.pem" "$dst/fullchain.pem"
 install -m 0640 -o root -g headscale "$src/privkey.pem" "$dst/privkey.pem"
-systemctl try-restart headscale.service
+systemctl try-restart headscale.service headscale-tailnets.service
