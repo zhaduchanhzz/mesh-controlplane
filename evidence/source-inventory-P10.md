@@ -70,7 +70,8 @@
 | như trên, `-count=3` | `1da1d71` | 0 | 330 s |
 | Quota servertest khi bỏ `checkQuota` (RED) | `64b3941`* | 1 | 2 test quota fail |
 | Quota + P10 servertest (local) | `64b3941` | 0 | |
-| Full `go test -race ./hscontrol/...` | xem §3.1 | | |
+| `nix shell … tscli opentofu -c go test -count=1 -race ./hscontrol/... ./internal/... ./cmd/...` | `3bb381d` | 1 | 30 package ok (kể cả toàn bộ servertest + API v2). Chỉ `TestNoRawTenantWritesOutsideFence` fail: guard bắt được INSERT policy thô trong `internal/placement/tailnets.go` (từ nhánh agent). Đã review: hợp lệ (policy deny cùng transaction tạo tailnet) → allowlist |
+| `go test -count=1 -race ./hscontrol/db/... ./internal/...` (SQLite + PostgreSQL 16) | `b3904a3` | **0** | 6 package ok |
 
 ### 3.1 E2E client thật (`infra/lab/e2e/p05/run.sh`; tailscale v1.104.7 trên mc-ci → VPS → WireGuard → mc-cp)
 
