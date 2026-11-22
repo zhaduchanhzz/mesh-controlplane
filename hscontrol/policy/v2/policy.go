@@ -880,7 +880,8 @@ func (pm *PolicyManager) Filter() ([]tailcfg.FilterRule, []matcher.Match) {
 // the list as we see relationships while building the map, making it
 // O(n^2/2) in the end, but with less work per node.
 //
-//nolint:gocyclo // global and autogroup:self paths, each with a per-node matcher index
+// The build itself is [PolicyManager.buildPeerMapIndexedLocked]; the pair
+// scan below is its reference.
 func (pm *PolicyManager) BuildPeerMap(nodes views.Slice[types.NodeView]) map[types.NodeID][]types.NodeID {
 	if pm == nil {
 		return nil
@@ -889,6 +890,16 @@ func (pm *PolicyManager) BuildPeerMap(nodes views.Slice[types.NodeView]) map[typ
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
+	return pm.buildPeerMapIndexedLocked(nodes)
+}
+
+// buildPeerMapPairwiseLocked is the pair-scan peer-map build: every node
+// pair is tested in turn. [PolicyManager.buildPeerMapIndexedLocked] must
+// return exactly what it returns; it also handles the inputs the indexed
+// build does not (duplicate IDs, invalid views).
+//
+//nolint:gocyclo // global and autogroup:self paths, each with a per-node matcher index
+func (pm *PolicyManager) buildPeerMapPairwiseLocked(nodes views.Slice[types.NodeView]) map[types.NodeID][]types.NodeID {
 	// Deny all: no node is anyone's peer. This also drops the same-user
 	// adjacency [sameUser] would otherwise add regardless of the rules.
 	if pm.denyAll {
