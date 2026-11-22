@@ -89,3 +89,27 @@ client ──TLS──▶ front door :8443 (1 process)
 - Cổng 80 vẫn là HAProxy MeshGuard (N10).
 - Chưa có quota hay rate limit theo tailnet (P08). Chưa có DERP verify theo tailnet (S15, P08).
 - Mỗi tailnet là một runtime đầy đủ: cô lập tốt, nhưng chi phí theo tailnet cao. P03 sẽ chuyển sang runtime theo tailnet trên một DB của shard (ADR 0001/0002).
+
+## 7. Tăng tốc harness E2E (nhánh `agent/e2e-fast`, 2026-11-22)
+
+- **Phạm vi:** chỉ sửa `infra/lab/e2e/p02/run.sh` và README của nó. Không đổi Go, server, cấu hình `mc-cp`, VPS, DNS hay firewall. Assertion của từng test giữ nguyên. Thay đổi gồm: chạy song song có giới hạn (`JOBS`, mặc định 4), chế độ `--fast` (chỉ K01–K09), `results.json`, polling thay cho `sleep` cố định, kiểm tra image một lần, ControlMaster có probe, cleanup có xác minh (kể cả khi bị ngắt).
+- **Lệnh** (Git Bash, gốc worktree):
+  ```bash
+  HS='sudo -u headscale /usr/local/bin/headscale'
+  HS_A="$HS -c /etc/headscale/tailnets/a.yaml" HS_B="$HS -c /etc/headscale/tailnets/b.yaml" \
+    HEADSCALE="$HS -c /etc/headscale/tailnets/hs.yaml" bash infra/lab/e2e/p02/run.sh [--fast]
+  ```
+
+| Lần chạy | Wall | Chi tiết |
+|---|---|---|
+| Trước: `run.sh` tuần tự @ `7adf255`, run `20261122T124514Z` | **98 s** | test 81 s, cleanup ~12 s. 15 PASS, 6 SKIP, exit 0 |
+| Sau: full, `JOBS=4`, run `20261122T125815Z` | **40 s** | setup 2.7 s, test 28.0 s (đường găng: R02 ~23.5 s), cleanup có xác minh 10.7 s. 15 PASS, 6 SKIP, exit 0 |
+| Sau: `--fast`, run `20261122T130013Z` | **3.4 s** (lần trước đó 4.1 s) | 9 PASS (K01–K09), exit 0. Không dùng `mc-ci`, không tạo gì trên `mc-cp` |
+| Ngắt: `timeout -s INT 14 bash run.sh`, run `20261122T125909Z` | 28 s | exit 2. Cleanup giết các test đang chạy, xóa 6 node `p02-*` và 7 key, xác minh sạch (12.8 s) |
+| `ONLY="K02 R03"` / `ONLY="K05 R01" --fast` | 11.6 s / 1.9 s | chỉ chạy đúng các test được chọn; với `--fast`, R01 bị loại |
+
+- **So khớp từng test (trước → sau):** K01–K09 PASS → PASS; K10 PASS → PASS; R01 PASS → PASS; R02/v1.84.3 PASS → PASS; R02/v1.104.7 PASS → PASS; N8 PASS → PASS; R03 PASS → PASS; K10m, K11, N5, N7, N10, S10w SKIP → SKIP (cùng lý do). Thứ tự trong summary, `results.tsv` và `results.json` cố định, không phụ thuộc test nào xong trước.
+- **Kiểm tra tĩnh:** `bash -n` OK. WSL không có `shellcheck`, nên dùng ShellCheck 0.10.0 (`shellcheck-py` trong venv tạm): 0 finding. Bốn mã mức info đã có từ bản cũ (SC2015, SC2018, SC2019, SC2029) được tắt kèm lý do ở đầu file.
+- **Sau khi chạy, đã kiểm tra trên `mc-cp`:** tailnet `a` và `b` có 0 node và 0 pre-auth key. Trên `mc-ci` chỉ còn container `ts-home1`, không còn volume `p02-*`. Artifact không chứa chuỗi `tskey-`/`hskey-` nào.
+- **SSH multiplexing:** trên Git Bash (OpenSSH 9.7p1 msys), master khởi động được, nhưng session báo `mux_client_request_session: read from master failed` rồi tự mở kết nối mới. Harness probe trước và tắt mux trên Git Bash. Mỗi kết nối LAN trực tiếp mất ~0.35 s. Trên WSL/Linux, mux được dùng.
+- **Giới hạn còn lại:** R01 vẫn giữ cửa sổ quan sát 5 s, vì đây là test âm tính: peer rò rỉ (nếu có) đến bất đồng bộ. Nếu lần ngắt rơi đúng lúc phản hồi SSH của `preauthkeys create` đang truyền về, harness không biết ID của key đó; key ấy chưa dùng và hết hạn sau ≤30 phút. Thời gian chạy bị chặn bởi R02, vì các bước của nó vốn tuần tự (up A → login B → switch → restart).
