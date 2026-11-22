@@ -122,6 +122,25 @@ type PolicyManager struct {
 	nodeAttrsPending atomic.Bool
 
 	routerSession func(types.NodeID) (time.Time, bool)
+
+	// emptyDenies is set by [WithEmptyPolicyDenies] and never changes after
+	// construction. denyAll is derived from it and pol by updateLocked.
+	emptyDenies bool
+	denyAll     bool
+}
+
+// Option configures a [PolicyManager] at construction.
+type Option func(*PolicyManager)
+
+// WithEmptyPolicyDenies makes a policy without access rules deny
+// everything instead of allowing everything, as a tenant tailnet must:
+// a nil or empty policy, "{}", "null", {"acls":[]} and {"grants":[]} all
+// compile to no packet filter rules, no peers (not even a user's own
+// devices) and no SSH rules. Off, the upstream semantics hold: no acls
+// and no grants mean allow all. A policy that fails to parse is refused
+// in both modes; it never falls back to either.
+func WithEmptyPolicyDenies(on bool) Option {
+	return func(pm *PolicyManager) { pm.emptyDenies = on }
 }
 
 // filterAndPolicy combines the compiled filter rules with policy content for hashing.
@@ -235,7 +254,12 @@ func validateUserReferences(pol *Policy, users types.Users) error {
 // NewPolicyManager creates a new [PolicyManager] from a policy file and a list of users and nodes.
 // It returns an error if the policy file is invalid.
 // The policy manager will update the filter rules based on the users and nodes.
-func NewPolicyManager(b []byte, users []types.User, nodes views.Slice[types.NodeView]) (*PolicyManager, error) {
+func NewPolicyManager(
+	b []byte,
+	users []types.User,
+	nodes views.Slice[types.NodeView],
+	opts ...Option,
+) (*PolicyManager, error) {
 	policy, err := unmarshalPolicy(b)
 	if err != nil {
 		return nil, fmt.Errorf("parsing policy: %w", err)
@@ -254,6 +278,10 @@ func NewPolicyManager(b []byte, users []types.User, nodes views.Slice[types.Node
 		sshPolicyMap:       xsync.NewMap[types.NodeID, *tailcfg.SSHPolicy](),
 		filterRulesMap:     xsync.NewMap[types.NodeID, []tailcfg.FilterRule](),
 		matchersForNodeMap: xsync.NewMap[types.NodeID, []matcher.Match](),
+	}
+
+	for _, opt := range opts {
+		opt(&pm)
 	}
 
 	_, err = pm.updateLocked()

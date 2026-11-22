@@ -80,6 +80,10 @@ var serveTailnetsCmd = &cobra.Command{
 
 			cfg := loaded.Config
 
+			// Every runtime here is a tenant tailnet: no policy, an empty
+			// one, or one without acls/grants denies everything (P03a).
+			cfg.PolicyEmptyDenies = true
+
 			target, err := loopbackTarget(string(cfg.Addr))
 			if err != nil {
 				return fmt.Errorf("tailnet %s: %w", ts.id, err)

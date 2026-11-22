@@ -109,14 +109,23 @@ type PolicyManager interface {
 	DebugString() string
 }
 
+// Option configures a [PolicyManager]; see [policyv2.Option].
+type Option = policyv2.Option
+
+// WithEmptyPolicyDenies makes a policy without access rules deny everything,
+// as a tenant tailnet requires; see [policyv2.WithEmptyPolicyDenies].
+func WithEmptyPolicyDenies(on bool) Option {
+	return policyv2.WithEmptyPolicyDenies(on)
+}
+
 // NewPolicyManager returns a new [PolicyManager].
-func NewPolicyManager(pol []byte, users []types.User, nodes views.Slice[types.NodeView]) (PolicyManager, error) {
+func NewPolicyManager(pol []byte, users []types.User, nodes views.Slice[types.NodeView], opts ...Option) (PolicyManager, error) {
 	var (
 		polMan PolicyManager
 		err    error
 	)
 
-	polMan, err = policyv2.NewPolicyManager(pol, users, nodes)
+	polMan, err = policyv2.NewPolicyManager(pol, users, nodes, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +135,8 @@ func NewPolicyManager(pol []byte, users []types.User, nodes views.Slice[types.No
 
 // ValidatePolicy reports whether a policy write of pol would be accepted
 // against users and nodes; see [policyv2.ValidatePolicy].
-func ValidatePolicy(pol []byte, users []types.User, nodes views.Slice[types.NodeView]) error {
-	return policyv2.ValidatePolicy(pol, users, nodes)
+func ValidatePolicy(pol []byte, users []types.User, nodes views.Slice[types.NodeView], opts ...Option) error {
+	return policyv2.ValidatePolicy(pol, users, nodes, opts...)
 }
 
 // PolicyManagersForTest returns all available [PolicyManager] implementations to

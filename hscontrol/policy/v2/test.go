@@ -806,8 +806,16 @@ func CheckPolicy(b []byte) error {
 // ValidatePolicy reports whether a policy write of b would be accepted
 // against users and nodes. It runs the [PolicyManager.SetPolicy] write
 // boundary, `tests` and `sshTests` included, on a throwaway manager.
-func ValidatePolicy(b []byte, users types.Users, nodes views.Slice[types.NodeView]) error {
-	pm, err := NewPolicyManager(nil, users, nodes)
+//
+// An empty b is refused in both modes: it is not a policy write. With
+// [WithEmptyPolicyDenies] in opts, `tests` are evaluated against the
+// deny-all filter a policy without access rules compiles to there.
+func ValidatePolicy(b []byte, users types.Users, nodes views.Slice[types.NodeView], opts ...Option) error {
+	if len(b) == 0 {
+		return ErrPolicyEmpty
+	}
+
+	pm, err := NewPolicyManager(nil, users, nodes, opts...)
 	if err != nil {
 		return fmt.Errorf("creating policy manager: %w", err)
 	}
