@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"os"
 
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
@@ -53,9 +57,36 @@ func ctxFor(t *testing.T, id string) context.Context {
 	return ctx
 }
 
+// dialector picks SQLite by default, or PostgreSQL when
+// MESH_TEST_POSTGRES_DSN is set (ADR 0005: production is shared PostgreSQL).
+// Each PostgreSQL test gets its own schema so runs do not interfere.
+func dialector(t *testing.T) gorm.Dialector {
+	t.Helper()
+	dsn := os.Getenv("MESH_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		return sqlite.Open(filepath.Join(t.TempDir(), "t.db"))
+	}
+	admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch := fmt.Sprintf("ts_%d", time.Now().UnixNano())
+	if err := admin.Exec("CREATE SCHEMA " + sch).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = admin.Exec("DROP SCHEMA " + sch + " CASCADE").Error
+		if sqlDB, err := admin.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	return postgres.Open(dsn + " search_path=" + sch)
+}
+
 func openDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "t.db")), &gorm.Config{Logger: logger.Discard})
+	db, err := gorm.Open(dialector(t), &gorm.Config{Logger: logger.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
