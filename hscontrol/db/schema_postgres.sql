@@ -145,3 +145,58 @@ CREATE TABLE database_versions(
   version text NOT NULL,
   updated_at timestamptz
 );
+
+-- Registry (P10): platform tables, see hscontrol/db/registry.go.
+CREATE TABLE clusters(
+  id text PRIMARY KEY,
+  endpoint_url text NOT NULL,
+  class text NOT NULL CHECK(class IN ('shared','dedicated')),
+  state text NOT NULL DEFAULT 'DISABLED' CHECK(state IN ('ACTIVE','DRAINING','DISABLED')),
+  noise_public_key text,
+  max_devices bigint NOT NULL CHECK(max_devices > 0),
+  revision bigint NOT NULL DEFAULT 1 CHECK(revision >= 1),
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX idx_clusters_endpoint_url ON clusters(endpoint_url);
+CREATE FUNCTION clusters_revision_monotonic() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.revision < OLD.revision THEN
+    RAISE EXCEPTION 'cluster revision must not decrease' USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_clusters_revision_monotonic BEFORE UPDATE OF revision ON clusters
+  FOR EACH ROW EXECUTE FUNCTION clusters_revision_monotonic();
+CREATE FUNCTION tailnets_owner_epoch_monotonic() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.owner_epoch < OLD.owner_epoch OR
+     (NEW.owner_cluster_id <> OLD.owner_cluster_id AND NEW.owner_epoch <= OLD.owner_epoch) THEN
+    RAISE EXCEPTION 'owner_epoch must grow with an owner change and never decrease' USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_tailnets_owner_epoch_monotonic BEFORE UPDATE OF owner_epoch, owner_cluster_id ON tailnets
+  FOR EACH ROW EXECUTE FUNCTION tailnets_owner_epoch_monotonic();
+CREATE TABLE platform_audit(
+  id bigserial PRIMARY KEY,
+  at timestamptz NOT NULL,
+  actor text NOT NULL,
+  action text NOT NULL,
+  target text NOT NULL,
+  outcome text NOT NULL CHECK(outcome IN ('ok','replay','error')),
+  detail text,
+  idempotency_key text
+);
+CREATE INDEX idx_platform_audit_at ON platform_audit(at);
+CREATE TABLE platform_idempotency(
+  actor text NOT NULL,
+  idempotency_key text NOT NULL,
+  operation text NOT NULL,
+  request_hash text NOT NULL,
+  response text NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY(actor, idempotency_key)
+);

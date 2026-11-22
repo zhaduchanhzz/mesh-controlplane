@@ -47,6 +47,7 @@ func v01Migrations() []*gormigrate.Migration {
 			Rollback: func(*gorm.DB) error { return nil },
 		},
 		nodeKeyPairMigration(),
+		registryMigration(),
 	}
 }
 

@@ -183,3 +183,47 @@ CREATE TABLE database_versions(
   version text NOT NULL,
   updated_at datetime
 );
+
+-- Registry (P10): platform tables, see hscontrol/db/registry.go.
+CREATE TABLE clusters(
+  id text PRIMARY KEY,
+  endpoint_url text NOT NULL,
+  class text NOT NULL CHECK(class IN ('shared','dedicated')),
+  state text NOT NULL DEFAULT 'DISABLED' CHECK(state IN ('ACTIVE','DRAINING','DISABLED')),
+  noise_public_key text,
+  max_devices integer NOT NULL CHECK(max_devices > 0),
+  revision integer NOT NULL DEFAULT 1 CHECK(revision >= 1),
+  created_at datetime NOT NULL,
+  updated_at datetime NOT NULL
+);
+CREATE UNIQUE INDEX idx_clusters_endpoint_url ON clusters(endpoint_url);
+CREATE TRIGGER trg_clusters_revision_monotonic BEFORE UPDATE OF revision ON clusters
+WHEN NEW.revision < OLD.revision
+BEGIN
+  SELECT RAISE(ABORT, 'cluster revision must not decrease');
+END;
+CREATE TRIGGER trg_tailnets_owner_epoch_monotonic BEFORE UPDATE OF owner_epoch, owner_cluster_id ON tailnets
+WHEN NEW.owner_epoch < OLD.owner_epoch OR (NEW.owner_cluster_id <> OLD.owner_cluster_id AND NEW.owner_epoch <= OLD.owner_epoch)
+BEGIN
+  SELECT RAISE(ABORT, 'owner_epoch must grow with an owner change and never decrease');
+END;
+CREATE TABLE platform_audit(
+  id integer PRIMARY KEY AUTOINCREMENT,
+  at datetime NOT NULL,
+  actor text NOT NULL,
+  action text NOT NULL,
+  target text NOT NULL,
+  outcome text NOT NULL CHECK(outcome IN ('ok','replay','error')),
+  detail text,
+  idempotency_key text
+);
+CREATE INDEX idx_platform_audit_at ON platform_audit(at);
+CREATE TABLE platform_idempotency(
+  actor text NOT NULL,
+  idempotency_key text NOT NULL,
+  operation text NOT NULL,
+  request_hash text NOT NULL,
+  response text NOT NULL,
+  created_at datetime NOT NULL,
+  PRIMARY KEY(actor, idempotency_key)
+);
