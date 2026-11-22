@@ -54,21 +54,24 @@ import (
 
 type result struct {
 	Index      int
-	Register   time.Duration // TryLogin start → return
-	FirstMap   time.Duration // map request sent → first frame read
-	Total      time.Duration // TryLogin start → first frame read
+	Phase      string
+	Register   time.Duration // TryLogin start -> return (0 for pre-registered nodes)
+	FirstMap   time.Duration // map request sent -> first frame read
+	Total      time.Duration // start -> first frame read
 	Peers      int           // peers in the first map, -1 if not decoded
 	Err        string
 	frames     atomic.Int64
 	bytes      atomic.Int64
 	enrolledAt time.Time
+
+	hostname string
+	authKey  string             // register with this key, or
+	machine  key.MachinePrivate // use these pre-registered keys
+	node     key.NodePrivate
 }
 
 type config struct {
 	server      string
-	keys        []string
-	nodes       int
-	perUser     int
 	concurrency int
 	timeout     time.Duration
 	hold        time.Duration
@@ -79,18 +82,22 @@ type config struct {
 
 func main() {
 	var (
-		cfg      config
-		keysPath string
+		cfg                    config
+		keysPath, nodeKeysPath string
+		nodes, register        int
+		perUser                int
 	)
 
 	flag.StringVar(&cfg.server, "server", "", "Headscale server URL, e.g. http://192.168.1.242:8080")
 	flag.StringVar(&keysPath, "keys", "", "file with one reusable pre-auth key per user")
-	flag.IntVar(&cfg.nodes, "nodes", 1000, "nodes to enroll")
-	flag.IntVar(&cfg.perUser, "per-user", 10, "nodes per user (key file line)")
-	flag.IntVar(&cfg.concurrency, "concurrency", 32, "concurrent registrations")
+	flag.StringVar(&nodeKeysPath, "node-keys", "", "capseed nodes.keys: connect these pre-registered nodes instead of enrolling")
+	flag.IntVar(&nodes, "nodes", 1000, "nodes to enroll, or to connect with -node-keys")
+	flag.IntVar(&register, "register", 0, "after the first phase, register this many new nodes, one per user in turn")
+	flag.IntVar(&perUser, "per-user", 10, "nodes per user (key file line) when enrolling")
+	flag.IntVar(&cfg.concurrency, "concurrency", 32, "concurrent registrations/connections")
 	flag.DurationVar(&cfg.timeout, "timeout", 120*time.Second, "per-node register+first-map timeout")
-	flag.DurationVar(&cfg.hold, "hold", 60*time.Second, "steady-state hold after enrollment")
-	flag.DurationVar(&cfg.deadline, "deadline", 40*time.Minute, "enrollment phase deadline")
+	flag.DurationVar(&cfg.hold, "hold", 60*time.Second, "steady-state hold after the last phase")
+	flag.DurationVar(&cfg.deadline, "deadline", 40*time.Minute, "deadline per phase")
 	flag.IntVar(&cfg.decodeEvery, "decode-every", 100, "decode the first map of every n-th client (0: none)")
 	flag.StringVar(&cfg.out, "out", "capload-out", "output directory")
 	flag.Parse()
@@ -99,16 +106,28 @@ func main() {
 		log.Fatal("capload: -server and -keys are required")
 	}
 
-	keys, err := readKeys(keysPath)
+	keys, err := readLines(keysPath)
 	if err != nil {
 		log.Fatalf("capload: %v", err)
 	}
 
-	cfg.keys = keys
+	first, err := firstPhase(nodeKeysPath, keys, nodes, perUser)
+	if err != nil {
+		log.Fatalf("capload: %v", err)
+	}
 
-	need := (cfg.nodes + cfg.perUser - 1) / cfg.perUser
-	if len(keys) < need {
-		log.Fatalf("capload: %d nodes at %d per user need %d keys, file has %d", cfg.nodes, cfg.perUser, need, len(keys))
+	phases := []phaseSpec{first}
+
+	if register > 0 {
+		rs := make([]*result, register)
+		for i := range rs {
+			rs[i] = &result{
+				Index: nodes + i, Phase: "register", Peers: -1,
+				hostname: fmt.Sprintf("cap-new-%05d", i), authKey: keys[i%len(keys)],
+			}
+		}
+
+		phases = append(phases, phaseSpec{"register", rs})
 	}
 
 	err = os.MkdirAll(cfg.out, 0o750)
@@ -116,13 +135,61 @@ func main() {
 		log.Fatalf("capload: %v", err)
 	}
 
-	err = run(cfg)
+	err = run(cfg, phases)
 	if err != nil {
 		log.Fatalf("capload: %v", err)
 	}
 }
 
-func readKeys(path string) ([]string, error) {
+type phaseSpec struct {
+	name    string
+	results []*result
+}
+
+// firstPhase connects the pre-registered nodes of nodeKeysPath or, without
+// it, enrolls new nodes perUser to a key.
+func firstPhase(nodeKeysPath string, keys []string, nodes, perUser int) (phaseSpec, error) {
+	rs := make([]*result, nodes)
+
+	if nodeKeysPath == "" {
+		if need := (nodes + perUser - 1) / perUser; len(keys) < need {
+			return phaseSpec{}, fmt.Errorf("%d nodes at %d per user need %d keys, file has %d", nodes, perUser, need, len(keys))
+		}
+
+		for i := range rs {
+			rs[i] = &result{
+				Index: i, Phase: "enroll", Peers: -1,
+				hostname: fmt.Sprintf("cap-node-%05d", i), authKey: keys[i/perUser],
+			}
+		}
+
+		return phaseSpec{"enroll", rs}, nil
+	}
+
+	lines, err := readLines(nodeKeysPath)
+	if err != nil {
+		return phaseSpec{}, err
+	}
+
+	if len(lines) < nodes {
+		return phaseSpec{}, fmt.Errorf("-nodes %d but node-keys has %d", nodes, len(lines))
+	}
+
+	for i := range rs {
+		f := strings.Fields(lines[i])
+		r := &result{Index: i, Phase: "connect", Peers: -1, hostname: fmt.Sprintf("cap-node-%05d", i)}
+
+		if len(f) != 2 || r.machine.UnmarshalText([]byte(f[0])) != nil || r.node.UnmarshalText([]byte(f[1])) != nil {
+			return phaseSpec{}, fmt.Errorf("node-keys line %d unparsable", i)
+		}
+
+		rs[i] = r
+	}
+
+	return phaseSpec{"connect", rs}, nil
+}
+
+func readLines(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -145,51 +212,22 @@ func phase(name string) {
 	fmt.Printf("PHASE %s %.3f\n", name, float64(time.Now().UnixNano())/1e9)
 }
 
-func run(cfg config) error {
+func run(cfg config, phases []phaseSpec) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	results := make([]*result, cfg.nodes)
-	for i := range results {
-		results[i] = &result{Index: i, Peers: -1}
-	}
-
 	var (
-		enrolled, failed atomic.Int64
-		streams          sync.WaitGroup
+		all     []*result
+		streams sync.WaitGroup
+		out     = summary{Concurrency: cfg.concurrency}
 	)
 
-	enrollCtx, enrollCancel := context.WithTimeout(ctx, cfg.deadline)
-	defer enrollCancel()
-
-	jobs := make(chan int)
-
-	var workers sync.WaitGroup
-
-	phase("enroll_start")
-
-	start := time.Now()
-
-	for range cfg.concurrency {
-		workers.Go(func() {
-			for i := range jobs {
-				r := results[i]
-
-				err := enrollOne(ctx, enrollCtx, cfg, r, &streams)
-				if err != nil {
-					r.Err = err.Error()
-
-					failed.Add(1)
-
-					continue
-				}
-
-				enrolled.Add(1)
-			}
-		})
+	for _, p := range phases {
+		all = append(all, p.results...)
 	}
 
 	stopProgress := make(chan struct{})
+	start := time.Now()
 
 	go func() {
 		t := time.NewTicker(10 * time.Second)
@@ -200,17 +238,75 @@ func run(cfg config) error {
 			case <-stopProgress:
 				return
 			case <-t.C:
-				fmt.Printf("progress t=%.0fs enrolled=%d failed=%d frames=%d\n",
-					time.Since(start).Seconds(), enrolled.Load(), failed.Load(), totalFrames(results))
+				fmt.Printf("progress t=%.0fs frames=%d\n", time.Since(start).Seconds(), totalFrames(all))
 			}
 		}
 	}()
 
+	for _, p := range phases {
+		framesBefore, bytesBefore := totalFrames(all), totalBytes(all)
+
+		phase(p.name + "_start")
+		wall := runPhase(ctx, cfg, p.results, &streams)
+		phase(p.name + "_end")
+
+		ps := summarize(p.name, p.results, wall)
+		ps.Frames, ps.Bytes = totalFrames(all)-framesBefore, totalBytes(all)-bytesBefore
+		out.Phases = append(out.Phases, ps)
+
+		fmt.Printf("%s wall=%.1fs ok=%d failed=%d frames=%d bytes=%d\n",
+			p.name, wall.Seconds(), ps.OK, ps.Failed, ps.Frames, ps.Bytes)
+	}
+
+	framesBefore, bytesBefore := totalFrames(all), totalBytes(all)
+
+	phase("hold_start")
+	time.Sleep(cfg.hold)
+	phase("hold_end")
+	close(stopProgress)
+
+	out.HoldSec = cfg.hold.Seconds()
+	out.HoldFrames, out.HoldBytes = totalFrames(all)-framesBefore, totalBytes(all)-bytesBefore
+
+	cancel()
+
+	err := writeResults(cfg.out, all, out)
+	if err != nil {
+		return err
+	}
+
+	b, _ := json.MarshalIndent(out, "", "  ")
+	fmt.Println(string(b))
+
+	return nil
+}
+
+func runPhase(ctx context.Context, cfg config, rs []*result, streams *sync.WaitGroup) time.Duration {
+	phaseCtx, phaseCancel := context.WithTimeout(ctx, cfg.deadline)
+	defer phaseCancel()
+
+	jobs := make(chan *result)
+
+	var workers sync.WaitGroup
+
+	start := time.Now()
+
+	for range cfg.concurrency {
+		workers.Go(func() {
+			for r := range jobs {
+				err := enrollOne(ctx, phaseCtx, cfg, r, streams)
+				if err != nil {
+					r.Err = err.Error()
+				}
+			}
+		})
+	}
+
 feed:
-	for i := range cfg.nodes {
+	for _, r := range rs {
 		select {
-		case jobs <- i:
-		case <-enrollCtx.Done():
+		case jobs <- r:
+		case <-phaseCtx.Done():
 			break feed
 		}
 	}
@@ -218,38 +314,11 @@ feed:
 	close(jobs)
 	workers.Wait()
 
-	enrollWall := time.Since(start)
-	enrollFrames, enrollBytes := totalFrames(results), totalBytes(results)
-
-	phase("enroll_end")
-	fmt.Printf("enroll wall=%.1fs enrolled=%d failed=%d frames=%d bytes=%d\n",
-		enrollWall.Seconds(), enrolled.Load(), failed.Load(), enrollFrames, enrollBytes)
-
-	phase("hold_start")
-	time.Sleep(cfg.hold)
-	phase("hold_end")
-
-	close(stopProgress)
-
-	holdFrames, holdBytes := totalFrames(results)-enrollFrames, totalBytes(results)-enrollBytes
-
-	cancel()
-
-	summary := summarize(cfg, results, enrollWall, enrollFrames, enrollBytes, holdFrames, holdBytes)
-
-	err := writeResults(cfg.out, results, summary)
-	if err != nil {
-		return err
-	}
-
-	b, _ := json.MarshalIndent(summary, "", "  ")
-	fmt.Println(string(b))
-
-	return nil
+	return time.Since(start)
 }
 
-func enrollOne(ctx, enrollCtx context.Context, cfg config, r *result, streams *sync.WaitGroup) error {
-	nodeCtx, nodeCancel := context.WithTimeout(enrollCtx, cfg.timeout)
+func enrollOne(ctx, phaseCtx context.Context, cfg config, r *result, streams *sync.WaitGroup) error {
+	nodeCtx, nodeCancel := context.WithTimeout(phaseCtx, cfg.timeout)
 	defer nodeCancel()
 
 	bus := eventbus.New()
@@ -257,18 +326,29 @@ func enrollOne(ctx, enrollCtx context.Context, cfg config, r *result, streams *s
 	dialer := tsdial.NewDialer(netmon.NewStatic())
 	dialer.SetBus(bus)
 
-	machineKey := key.NewMachine()
+	preRegistered := r.authKey == ""
+
+	machineKey := r.machine
+
+	var p persist.Persist
+
+	if preRegistered {
+		p.PrivateNodeKey = r.node
+	} else {
+		machineKey = key.NewMachine()
+	}
+
 	disco := key.NewDisco().Public()
 	hi := &tailcfg.Hostinfo{
-		BackendLogID: fmt.Sprintf("capload-%d", r.Index),
-		Hostname:     fmt.Sprintf("cap-node-%05d", r.Index),
+		BackendLogID: "capload-" + r.hostname,
+		Hostname:     r.hostname,
 	}
 
 	direct, err := controlclient.NewDirect(controlclient.Options{
-		Persist:              persist.Persist{},
+		Persist:              p,
 		GetMachinePrivateKey: func() (key.MachinePrivate, error) { return machineKey, nil },
 		ServerURL:            cfg.server,
-		AuthKey:              cfg.keys[r.Index/cfg.perUser],
+		AuthKey:              r.authKey,
 		Hostinfo:             hi,
 		DiscoPublicKey:       disco,
 		Logf:                 logger.Discard,
@@ -282,18 +362,20 @@ func enrollOne(ctx, enrollCtx context.Context, cfg config, r *result, streams *s
 
 	start := time.Now()
 
-	url, err := direct.TryLogin(nodeCtx, controlclient.LoginDefault)
-	if err != nil {
-		direct.Close()
-		return fmt.Errorf("register: %w", err)
-	}
+	if !preRegistered {
+		url, err := direct.TryLogin(nodeCtx, controlclient.LoginDefault)
+		if err != nil {
+			direct.Close()
+			return fmt.Errorf("register: %w", err)
+		}
 
-	if url != "" {
-		direct.Close()
-		return errors.New("register: unexpected auth URL")
-	}
+		if url != "" {
+			direct.Close()
+			return errors.New("register: unexpected auth URL")
+		}
 
-	r.Register = time.Since(start)
+		r.Register = time.Since(start)
+	}
 
 	body, err := json.Marshal(&tailcfg.MapRequest{
 		Version:   tailcfg.CurrentCapabilityVersion,
@@ -309,7 +391,7 @@ func enrollOne(ctx, enrollCtx context.Context, cfg config, r *result, streams *s
 		return err
 	}
 
-	// The stream outlives enrollment: it ends when ctx (the run) ends.
+	// The stream outlives its phase: it ends when ctx (the run) ends.
 	streamCtx := httpbody.WithMaxSize(ctx, 0)
 	mapURL := strings.Replace(cfg.server, "http:", "https:", 1) + "/machine/map"
 
@@ -487,31 +569,35 @@ func distOf(ds []time.Duration) dist {
 	return dist{N: len(ds), P50: q(0.50), P95: q(0.95), P99: q(0.99), Max: q(1), Over10s: over}
 }
 
-type summary struct {
-	Nodes         int            `json:"nodes"`
-	Enrolled      int            `json:"enrolled"`
-	Failed        int            `json:"failed"`
-	Errors        map[string]int `json:"errors"`
-	EnrollWallSec float64        `json:"enroll_wall_s"`
-	Register      dist           `json:"register"`
-	FirstMap      dist           `json:"first_map"`
-	Total         dist           `json:"register_to_first_map"`
-	EnrollFrames  int64          `json:"enroll_frames"`
-	EnrollBytes   int64          `json:"enroll_bytes"`
-	HoldSec       float64        `json:"hold_s"`
-	HoldFrames    int64          `json:"hold_frames"`
-	HoldBytes     int64          `json:"hold_bytes"`
-	DecodedPeers  map[int]int    `json:"decoded_first_map_peers"`
-	Concurrency   int            `json:"concurrency"`
+type phaseSummary struct {
+	Name     string         `json:"name"`
+	Nodes    int            `json:"nodes"`
+	OK       int            `json:"ok"`
+	Failed   int            `json:"failed"`
+	Errors   map[string]int `json:"errors"`
+	WallSec  float64        `json:"wall_s"`
+	Register dist           `json:"register"`
+	FirstMap dist           `json:"first_map"`
+	Total    dist           `json:"start_to_first_map"`
+	Frames   int64          `json:"frames_all_clients"`
+	Bytes    int64          `json:"bytes_all_clients"`
+	Peers    map[int]int    `json:"decoded_first_map_peers"`
 }
 
-func summarize(cfg config, rs []*result, wall time.Duration, ef, eb, hf, hb int64) summary {
+type summary struct {
+	Concurrency int            `json:"concurrency"`
+	Phases      []phaseSummary `json:"phases"`
+	HoldSec     float64        `json:"hold_s"`
+	HoldFrames  int64          `json:"hold_frames"`
+	HoldBytes   int64          `json:"hold_bytes"`
+}
+
+func summarize(name string, rs []*result, wall time.Duration) phaseSummary {
 	var reg, fm, tot []time.Duration
 
-	s := summary{
-		Nodes: cfg.nodes, Errors: map[string]int{}, DecodedPeers: map[int]int{},
-		EnrollWallSec: wall.Seconds(), EnrollFrames: ef, EnrollBytes: eb,
-		HoldSec: cfg.hold.Seconds(), HoldFrames: hf, HoldBytes: hb, Concurrency: cfg.concurrency,
+	s := phaseSummary{
+		Name: name, Nodes: len(rs), Errors: map[string]int{}, Peers: map[int]int{},
+		WallSec: wall.Seconds(),
 	}
 
 	for _, r := range rs {
@@ -520,12 +606,15 @@ func summarize(cfg config, rs []*result, wall time.Duration, ef, eb, hf, hb int6
 			s.Failed++
 			s.Errors[errClass(r.Err)]++
 		case r.Total > 0:
-			s.Enrolled++
+			s.OK++
 			reg, fm, tot = append(reg, r.Register), append(fm, r.FirstMap), append(tot, r.Total)
 
 			if r.Peers >= 0 {
-				s.DecodedPeers[r.Index] = r.Peers
+				s.Peers[r.Index] = r.Peers
 			}
+		default:
+			s.Failed++
+			s.Errors["not started: phase deadline"]++
 		}
 	}
 
@@ -563,7 +652,7 @@ func writeResults(dir string, rs []*result, s summary) error {
 	defer f.Close()
 
 	w := csv.NewWriter(f)
-	_ = w.Write([]string{"index", "register_ms", "first_map_ms", "total_ms", "peers", "frames", "bytes", "enrolled_unix", "err"})
+	_ = w.Write([]string{"index", "phase", "register_ms", "first_map_ms", "total_ms", "peers", "frames", "bytes", "enrolled_unix", "err"})
 
 	ms := func(d time.Duration) string { return strconv.FormatFloat(float64(d.Microseconds())/1000, 'f', 3, 64) }
 
@@ -574,7 +663,7 @@ func writeResults(dir string, rs []*result, s summary) error {
 		}
 
 		_ = w.Write([]string{
-			strconv.Itoa(r.Index), ms(r.Register), ms(r.FirstMap), ms(r.Total), strconv.Itoa(r.Peers),
+			strconv.Itoa(r.Index), r.Phase, ms(r.Register), ms(r.FirstMap), ms(r.Total), strconv.Itoa(r.Peers),
 			strconv.FormatInt(r.frames.Load(), 10), strconv.FormatInt(r.bytes.Load(), 10), at, errClass(r.Err),
 		})
 	}
