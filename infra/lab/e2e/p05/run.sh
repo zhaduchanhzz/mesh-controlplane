@@ -131,6 +131,8 @@ setup() {
     [ -s "$TMPD/key-$s" ] || return 1
   done
   cp_ "$HSC tailnet status --slug c --set SUSPENDED" || return 1
+  # P10: new devices enroll only into tailnets of a registered cluster.
+  cp_ "$HSC register --class shared --max-devices 5000 >/dev/null" || return 1
   printf 'hskey-auth-AAAAAAAAAAAA-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n' >"$TMPD/key-bogus"
 
   log "starting cluster"

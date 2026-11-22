@@ -17,6 +17,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"golang.org/x/sync/errgroup"
 	"tailscale.com/tailcfg"
@@ -55,6 +56,10 @@ type Cluster struct {
 	cfg      *types.Config
 	platform *db.Platform
 	noiseKey *key.MachinePrivate
+	// registry enforces the per-tailnet device quota on new enrollments
+	// (P10): shared clusters 5000 per tailnet, dedicated clusters their
+	// max_devices. The owner cluster must be registered.
+	registry *placement.Registry
 
 	// front answers the tenant-free endpoints (/key, /version, /robots.txt)
 	// and loads TLS settings; it has no State.
@@ -113,10 +118,18 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		return nil, fmt.Errorf("opening platform database: %w", err)
 	}
 
+	registry, err := placement.New(platform.RegistryDB(), placement.Config{})
+	if err != nil {
+		_ = platform.Close()
+
+		return nil, fmt.Errorf("placement registry: %w", err)
+	}
+
 	c := &Cluster{
 		cfg:      cfg,
 		platform: platform,
 		noiseKey: noiseKey,
+		registry: registry,
 		front:    &Headscale{cfg: cfg, noisePrivateKey: noiseKey},
 		runtimes: make(map[tailnet.ID]*tenantRuntime),
 	}
@@ -397,7 +410,19 @@ func (c *Cluster) runtimeFor(id tailnet.ID, err error) (*Headscale, error) {
 // runtimeForRegister implements sessionRouter.
 func (c *Cluster) runtimeForRegister(req tailcfg.RegisterRequest, mk key.MachinePublic) (*Headscale, error) {
 	if req.Auth != nil && req.Auth.AuthKey != "" {
-		return c.runtimeFor(c.platform.TailnetForAuthKey(req.Auth.AuthKey))
+		id, err := c.platform.TailnetForAuthKey(req.Auth.AuthKey)
+		if err != nil {
+			return nil, err
+		}
+
+		if !c.knownNode(mk, req) {
+			err = c.checkQuota(id)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		return c.runtimeFor(id, nil)
 	}
 
 	id, err := c.platform.TailnetForNode(mk, req.NodeKey)
@@ -407,6 +432,45 @@ func (c *Cluster) runtimeForRegister(req tailcfg.RegisterRequest, mk key.Machine
 	}
 
 	return c.runtimeFor(id, err)
+}
+
+// knownNode reports whether the registering device is already a node
+// (re-login, key rotation): only new devices count against the quota.
+func (c *Cluster) knownNode(mk key.MachinePublic, req tailcfg.RegisterRequest) bool {
+	if _, err := c.platform.TailnetForNode(mk, req.NodeKey); err == nil { //nolint:noinlineerr
+		return true
+	}
+
+	if req.OldNodeKey.IsZero() {
+		return false
+	}
+
+	_, err := c.platform.TailnetForNode(mk, req.OldNodeKey)
+
+	return err == nil
+}
+
+// checkQuota refuses a new device when tailnet id reached its limit, or when
+// its limit cannot be determined (fail closed).
+func (c *Cluster) checkQuota(id tailnet.ID) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q, err := c.registry.EnrollmentAllowed(ctx, id)
+	if err != nil {
+		if !errors.Is(err, placement.ErrQuotaExceeded) {
+			log.Error().Err(err).Str("tailnet", id.String()).Msg("enrollment refused: quota cannot be checked")
+		}
+
+		return err
+	}
+
+	if q.Warn {
+		log.Warn().Str("tailnet", id.String()).Int64("devices", q.Devices).Int64("limit", q.Limit).
+			Msg("tailnet is close to its device limit")
+	}
+
+	return nil
 }
 
 // runtimeForNode implements sessionRouter.

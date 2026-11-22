@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
@@ -32,6 +34,9 @@ var (
 	clusterKeyReusable  bool
 	clusterKeyEphemeral bool
 	clusterMoveTo       string
+	clusterRegClass     string
+	clusterRegMax       int64
+	clusterRegEndpoint  string
 )
 
 var errClusterIDRequired = errors.New("--cluster-id is required")
@@ -48,9 +53,12 @@ func init() {
 	tailnetAuthKeyCmd.Flags().BoolVar(&clusterKeyReusable, "reusable", false, "key can register several nodes")
 	tailnetAuthKeyCmd.Flags().BoolVar(&clusterKeyEphemeral, "ephemeral", false, "nodes are ephemeral")
 	tailnetReassignCmd.Flags().StringVar(&clusterMoveTo, "to", "", "cluster that takes ownership (this cluster again = new epoch)")
+	clusterRegisterCmd.Flags().StringVar(&clusterRegClass, "class", "shared", "shard class: shared or dedicated")
+	clusterRegisterCmd.Flags().Int64Var(&clusterRegMax, "max-devices", 5000, "device budget of the cluster")
+	clusterRegisterCmd.Flags().StringVar(&clusterRegEndpoint, "endpoint", "", "endpoint URL (default: server_url)")
 
 	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetAuthKeyCmd, tailnetNodesCmd, tailnetReassignCmd)
-	clusterCmd.AddCommand(clusterServeCmd, tailnetCmd)
+	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, tailnetCmd)
 	rootCmd.AddCommand(clusterCmd)
 }
 
@@ -303,6 +311,42 @@ var tailnetReassignCmd = &cobra.Command{
 			}
 
 			return printJSON(map[string]any{"id": tn.ID, "slug": tn.Slug, "owner": clusterMoveTo, "epoch": epoch})
+		})
+	},
+}
+
+var clusterRegisterCmd = &cobra.Command{
+	Use:   "register",
+	Short: "Register --cluster-id in the placement registry as ACTIVE (operator)",
+	RunE: func(_ *cobra.Command, _ []string) error {
+		cfg, err := clusterConfig()
+		if err != nil {
+			return err
+		}
+
+		endpoint := clusterRegEndpoint
+		if endpoint == "" {
+			endpoint = cfg.ServerURL
+		}
+
+		return withPlatform(func(p *db.Platform) error {
+			reg, err := placement.New(p.RegistryDB(), placement.Config{})
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			c, err := reg.CreateCluster(ctx, placement.Op{Actor: "cli:" + clusterID}, placement.ClusterSpec{
+				ID: clusterID, EndpointURL: endpoint, Class: placement.Class(clusterRegClass),
+				State: placement.ClusterActive, MaxDevices: clusterRegMax,
+			})
+			if err != nil {
+				return err
+			}
+
+			return printJSON(map[string]any{"id": c.ID, "class": c.Class, "state": c.State, "max_devices": c.MaxDevices})
 		})
 	},
 }

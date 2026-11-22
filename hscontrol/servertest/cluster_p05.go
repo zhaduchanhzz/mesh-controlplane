@@ -179,6 +179,9 @@ func NewTestCluster(tb testing.TB, seeds ...TailnetSeed) *TestCluster {
 	}
 
 	tc.seed(tb, seeds)
+	// P10: new devices are admitted only into tailnets of a registered
+	// cluster (quota). Register the cluster under test as shared.
+	tc.registerCluster(tb)
 
 	cluster, err := hscontrol.NewCluster(&cfg)
 	if err != nil {

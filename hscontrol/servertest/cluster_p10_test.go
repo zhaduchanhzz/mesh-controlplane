@@ -129,3 +129,42 @@ func TestClusterLoadsNewTailnetLive(t *testing.T) {
 	waitPeersExactly(t, cClients[1], selfKey(t, cClients[0]))
 	assert.Empty(t, a1.Netmap().Peers, "A sees nothing of C")
 }
+
+// I10: a tailnet at its device limit refuses new devices with a clear
+// message; its existing devices keep working and re-login; another tailnet
+// on the same cluster still enrolls (its own count).
+func TestClusterQuotaRefusesNewDevices(t *testing.T) {
+	tc := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
+	tc.SetPolicy(t, tenantA, allowAll)
+	tc.SetPolicy(t, tenantB, allowAll)
+	tc.SetClusterQuota(t, 2)
+
+	a, b := tc.Tenant(t, tenantA), tc.Tenant(t, tenantB)
+	keyA := mintKey(t, a, "alice")
+	a1 := servertest.NewClusterClient(t, a, "quota-a1", servertest.ClusterClientOptions{AuthKey: keyA})
+	a2 := servertest.NewClusterClient(t, a, "quota-a2", servertest.ClusterClientOptions{AuthKey: keyA})
+
+	before := tc.NodeRows(t)
+	_, err := servertest.TryNewClusterClient(t, a, "quota-a3", servertest.ClusterClientOptions{AuthKey: keyA})
+	require.Error(t, err, "a third device exceeds A's limit of 2")
+	assert.Contains(t, err.Error(), "device limit")
+	assert.Equal(t, before, tc.NodeRows(t), "the refused device created no node")
+
+	// An existing device re-registers (not a new enrollment).
+	a1.Reconnect(t)
+	waitPeersExactly(t, a1, selfKey(t, a2))
+
+	// B counts its own devices.
+	enroll(t, b, "bob", "quota-b1", "quota-b2")
+}
+
+// A tailnet whose owner cluster is not registered cannot enroll new devices:
+// its limit is unknown (fail closed).
+func TestClusterUnregisteredClusterRefusesEnrollment(t *testing.T) {
+	tc := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: tenantA})
+	keyA := mintKey(t, tc.Tenant(t, tenantA), "alice")
+	tc.UnregisterCluster(t)
+
+	_, err := servertest.TryNewClusterClient(t, tc.Front(), "unreg-a1", servertest.ClusterClientOptions{AuthKey: keyA})
+	require.Error(t, err)
+}

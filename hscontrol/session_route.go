@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -166,8 +167,7 @@ func (ns *noiseServer) refuseRoute(w http.ResponseWriter, err error) {
 		return
 	}
 
-	if errors.Is(err, errSessionUnbound) || errors.Is(err, db.ErrUnknownTenant) ||
-		errors.Is(err, db.ErrTailnetNotActive) || errors.Is(err, db.ErrTailnetNotOwned) {
+	if isTenantRefusal(err) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 
 		return
@@ -188,8 +188,12 @@ func registerRefusal(req tailcfg.RegisterRequest, err error) (string, bool) {
 		return "", false // closes the session instead
 	}
 
-	if !errors.Is(err, db.ErrUnknownTenant) && !errors.Is(err, db.ErrTailnetNotActive) &&
-		!errors.Is(err, db.ErrTailnetNotOwned) && !errors.Is(err, errSessionUnbound) {
+	if errors.Is(err, placement.ErrQuotaExceeded) {
+		// Only reached with a valid key of this tailnet: the holder may know.
+		return "this tailnet has reached its device limit", true
+	}
+
+	if !isTenantRefusal(err) {
 		return "", false // lookup failure: 503, the client retries
 	}
 
@@ -198,6 +202,22 @@ func registerRefusal(req tailcfg.RegisterRequest, err error) (string, bool) {
 	}
 
 	return "this server only registers nodes with an auth key", true
+}
+
+// isTenantRefusal reports a permanent refusal by tenant resolution or
+// placement: unknown, foreign or inactive tailnet, or an owner cluster whose
+// quota is unknown. Other errors are lookup failures (retried).
+func isTenantRefusal(err error) bool {
+	for _, e := range []error{
+		errSessionUnbound, db.ErrUnknownTenant, db.ErrTailnetNotActive, db.ErrTailnetNotOwned,
+		placement.ErrNotFound, placement.ErrTailnetNotActive, placement.ErrUnknownCluster,
+	} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func writeRegisterResponse(w http.ResponseWriter, status int, resp *tailcfg.RegisterResponse) {

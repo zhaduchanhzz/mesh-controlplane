@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
@@ -130,5 +131,44 @@ func (c *TestClient) PollEnded() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// registerCluster records the cluster under test in the placement registry
+// as an ACTIVE shared cluster.
+func (tc *TestCluster) registerCluster(tb testing.TB) {
+	tb.Helper()
+
+	now := time.Now().UTC()
+
+	err := tc.raw.Create(&placement.Cluster{
+		ID: tc.ClusterID, EndpointURL: tc.URL, Class: placement.ClassShared,
+		State: placement.ClusterActive, MaxDevices: 100000, Revision: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}).Error
+	if err != nil {
+		tb.Fatalf("servertest: register cluster %q: %v", tc.ClusterID, err)
+	}
+}
+
+// SetClusterQuota makes the cluster under test dedicated with maxDevices
+// per tailnet, so a quota can be reached in a test.
+func (tc *TestCluster) SetClusterQuota(tb testing.TB, maxDevices int64) {
+	tb.Helper()
+
+	err := tc.raw.Model(&placement.Cluster{}).Where("id = ?", tc.ClusterID).
+		Updates(map[string]any{"class": placement.ClassDedicated, "max_devices": maxDevices}).Error
+	if err != nil {
+		tb.Fatalf("servertest: set cluster quota: %v", err)
+	}
+}
+
+// UnregisterCluster removes the cluster under test from the registry.
+func (tc *TestCluster) UnregisterCluster(tb testing.TB) {
+	tb.Helper()
+
+	err := tc.raw.Where("id = ?", tc.ClusterID).Delete(&placement.Cluster{}).Error
+	if err != nil {
+		tb.Fatalf("servertest: unregister cluster: %v", err)
 	}
 }
