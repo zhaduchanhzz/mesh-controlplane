@@ -145,6 +145,11 @@ CREATE INDEX idx_nodes_auth_key_id ON nodes(auth_key_id);
 -- the same tailnet (NodeStore nodesByMachineKey[mk][userID]).
 CREATE INDEX idx_nodes_tailnet_machine_key ON nodes(tailnet_id, machine_key);
 CREATE INDEX idx_nodes_tailnet_node_key ON nodes(tailnet_id, node_key);
+-- Resolves a Noise session to exactly one tailnet (ADR 0007 §2): a (machine,
+-- node) key pair is unique across tailnets. One machine key with several node
+-- keys (one profile per tailnet) stays allowed. Zero keys (nodes created
+-- without keys) are never resolved and stay outside the index.
+CREATE UNIQUE INDEX idx_nodes_machine_key_node_key ON nodes(machine_key, node_key) WHERE machine_key <> 'mkey:0000000000000000000000000000000000000000000000000000000000000000' AND node_key <> 'nodekey:0000000000000000000000000000000000000000000000000000000000000000';
 
 CREATE TABLE policies(
   id integer PRIMARY KEY AUTOINCREMENT,
