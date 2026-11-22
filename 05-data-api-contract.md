@@ -1,6 +1,6 @@
 # 05 — Database / API / Enrollment Contracts
 
-> Chỉ là đặc tả thiết kế. Các SQL ví dụ chưa được kiểm tra trực tiếp trên schema thực của tag `v0.29.7`; **không áp dụng production/staging bằng cách copy nguyên mẫu**.
+> Chỉ là đặc tả thiết kế. Các SQL ví dụ chưa được kiểm tra trực tiếp trên schema thực của snapshot baseline v0.1 (fresh schema, xem ADR 0002); **không áp dụng production/staging bằng cách copy nguyên mẫu**.
 
 ## 1. Domain types
 

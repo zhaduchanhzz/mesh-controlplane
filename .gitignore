@@ -58,3 +58,24 @@ __debug_bin
 node_modules/
 package-lock.json
 package.json
+
+# mesh-controlplane lab (AGENTS.md rule 2: no secrets/state in Git)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!infra/lab/terraform.tfvars.example
+crash.log
+.env
+*.env
+!hscontrol/config/testdata/**/*.env
+infra/lab/ansible/inventory.ini
+infra/lab/ansible/inventory.yml
+artifacts/
+*.pem
+*.p12
+id_*
+!id_*.pub
+!infra/lab/mc-cp/config.yaml
+!infra/lab/mc-cp/*.hujson
