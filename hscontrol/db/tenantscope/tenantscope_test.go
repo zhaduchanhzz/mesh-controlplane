@@ -214,7 +214,12 @@ func TestCreateStampsAndRejectsForeignTenant(t *testing.T) {
 	db := openDB(t)
 	ctxA := ctxFor(t, idA)
 
-	it := item{Name: "new"}
+	var ownerA owner
+	if err := db.WithContext(ctxA).First(&ownerA).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	it := item{Name: "new", OwnerID: ownerA.ID}
 	if err := db.WithContext(ctxA).Create(&it).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +227,7 @@ func TestCreateStampsAndRejectsForeignTenant(t *testing.T) {
 		t.Fatalf("created row tailnet = %q, want A", it.TailnetID)
 	}
 
-	batch := []item{{Name: "b1"}, {Name: "b2"}}
+	batch := []item{{Name: "b1", OwnerID: ownerA.ID}, {Name: "b2", OwnerID: ownerA.ID}}
 	if err := db.WithContext(ctxA).Create(&batch).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +237,7 @@ func TestCreateStampsAndRejectsForeignTenant(t *testing.T) {
 		}
 	}
 
-	evil := item{TailnetID: idB, Name: "smuggled"}
+	evil := item{TailnetID: idB, Name: "smuggled", OwnerID: ownerA.ID}
 	if err := db.WithContext(ctxA).Create(&evil).Error; !errors.Is(err, ErrForeignTenant) {
 		t.Fatalf("create with B's tailnet under A: err=%v, want ErrForeignTenant", err)
 	}
