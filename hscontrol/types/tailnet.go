@@ -27,4 +27,7 @@ type Tailnet struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DeletedAt      *time.Time
+	// MovingToClusterID names the target cluster while the tailnet is being
+	// moved (P12b); bootstrap refuses it then (P11). Nil otherwise.
+	MovingToClusterID *string `gorm:"column:moving_to_cluster_id"`
 }

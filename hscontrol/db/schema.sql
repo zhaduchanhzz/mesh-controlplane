@@ -25,7 +25,8 @@ CREATE TABLE tailnets(
   config_revision integer NOT NULL DEFAULT 1,
   created_at datetime NOT NULL,
   updated_at datetime NOT NULL,
-  deleted_at datetime
+  deleted_at datetime,
+  moving_to_cluster_id text
 );
 CREATE UNIQUE INDEX idx_tailnets_slug ON tailnets(slug);
 CREATE INDEX idx_tailnets_owner ON tailnets(owner_cluster_id, status);
