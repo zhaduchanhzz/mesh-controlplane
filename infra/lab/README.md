@@ -9,8 +9,8 @@ Stage 1 manages one VM, `mc-ci` (VMID 7701, 192.168.1.240 on `vmbr0`): the Linux
 | Host | `116.118.3.46` (`vnflashlearner`), public KVM VPS, Ubuntu 24.04.5, 2 vCPU, 1.9 GiB |
 | Role | **Real Tailscale client on the Internet only** (P2P / DERP fallback from outside the home NAT). Never a control plane, shard, edge or relay. |
 | Access | SSH key `~/.mesh-lab/mesh-vps` (`mesh-vps-test`), root. Password auth is disabled on the host. Host key ED25519 `SHA256:vQeQ2oUNyGXztzOSHwZyu67l2nL7hEEplWndPTOXa2w`. |
-| Tailscale | 1.104.7 from pkgs.tailscale.com stable, `apt-mark hold`, **`tailscaled` disabled and stopped** until P09. Server minimum is v1.84 (capver 116). |
-| Do not touch | Existing services: HAProxy `mg-l4proxy` (80/443), `mg-stund` (3478/udp), Postfix/OpenDKIM (25/587), WireGuard (51820/udp). `network-access-mesh` is no longer developed, but these services are left as they are. |
+| Tailscale | 1.104.7 from pkgs.tailscale.com stable, `apt-mark hold`, **`tailscaled` is active** and joined the POC tailnet as `vps-ext` (earlier plan: disabled until P09). Server minimum is v1.84 (capver 116). |
+| Do not touch | Existing services: HAProxy (80/443), `mg-stund` (3478/udp), Postfix/OpenDKIM (25/587), WireGuard (51820/udp). `network-access-mesh` is no longer developed, but these services are left as they are. |
 | Known gaps | No IPv6. Firewall: MeshGuard nftables table `inet mg_vps` (input policy drop), see "Public test endpoint". |
 
 ## Public test endpoint (owner request 2026-11-22)

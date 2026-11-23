@@ -13,8 +13,9 @@ Bạn là Principal Go Engineer + Tailscale Protocol Engineer + Security Reviewe
 - Chuyển tenant giữa cluster (P12b) có thông báo trước, client re-bootstrap, đổi ControlURL và đăng nhập lại.
 - Lab tự dựng từ Proxmox.
 
-**Đã xong:** P00 (merge), P00b (`Verified`: một process ≈1.5k–2.5k thiết bị với policy thực tế, client trong cùng process), P01 (merge), P02 (POC key theo tenant `Verified`, thiết kế đã bị ADR 0005 thay, giữ làm hồ sơ), P03a (policy tenant rỗng = DENY, merge).
-**Đang làm:** P00c (tối ưu full rebuild + đo server-only, `feat/P00c-peermap-perf`), P03b (schema v0.1 trên PostgreSQL dùng chung + plugin scope, `feat/P03-tenant-schema`).
+**Đã xong:** P00 (merge), P00b (`Verified`: một process ≈1.5k–2.5k thiết bị với policy thực tế, client trong cùng process), P01 (merge), P02 (POC key theo tenant `Verified`, thiết kế đã bị ADR 0005 thay, giữ làm hồ sơ), P03a (policy tenant rỗng = DENY, merge), P03b (schema v0.1 trên PostgreSQL dùng chung + plugin scope, merge `8896b11`, `Verified`), P04+P05 (cluster một process, runtime theo tailnet; merge `d0ad0f6`, `Verified` bằng servertest), P05 E2E client thật chế độ cluster 9/9 (merge `a316f78`, `evidence/P05-e2e-cluster.md`), P14 B2/B3 đã đo (`evidence/P14-db-benchmarks.md`). Trên `master` **chưa mục nào `Reviewed`**.
+**Chưa lên `master`:** P10 (placement + fencing, `origin/feat/P10-placement-fencing`; `Verified` theo evidence của nhánh, gồm E2E client thật 13/13; chờ reviewer). P10 được làm **trước gate N1 theo quyết định của chủ dự án ngày 2026-11-23**, là ngoại lệ so với quy tắc "không làm P10+ trước khi N1 qua gate" ở mục 3 dưới đây.
+**Đang làm:** P08 (endpoint hardening, `feat/P08-endpoint-hardening`, xếp chồng lên P10; các test RED của P08a là lỗ hổng còn mở, **chặn merge**), P00c (`feat/P00c-peermap-perf`: công việc ban đầu chỉ có trên VM lab mc-ci, đang cứu về nhánh này, còn một test fail, chưa có số đo server-only).
 
 Trước khi làm:
 1. Đọc `README.md`, `PLAN.md`, `AGENTS.md`, các file `03-…06-*.md` ở root, ADR trong `design/adr/` (ADR 0005 thắng khi mâu thuẫn với ADR 0001–0003) và ticket hiện tại trong `tickets/`.
@@ -27,4 +28,4 @@ Trước khi làm:
 8. Đáp ứng `S01–S18`, `F01–F08`, `M01–M06` (khi bật netmap tăng dần) và N0–N4 trước khi tuyên bố MVP; N5 là security/production review riêng.
 9. Mỗi PR xuất evidence exact commands, test exit codes, log đã redact, changes, rollback và human reviewer. Lỗi isolation hoặc owner kép = BLOCK MERGE.
 
-**Bắt đầu với ticket đang làm (P00c hoặc `tickets/P03.md` phần P03b); không bắt đầu ticket mới khi hai ticket này chưa merge.**
+**Bắt đầu với ticket đang làm (P08 hoặc P00c); không bắt đầu ticket mới khi các ticket đang làm chưa được duyệt và merge.**
