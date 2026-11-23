@@ -558,12 +558,6 @@ func (s *NodeStore) applyBatch(batch []work) {
 	nodes := make(map[types.NodeID]types.Node)
 	maps.Copy(nodes, prev.nodesByID)
 
-	// Track which work items need node results
-	nodeResultRequests := make(map[types.NodeID][]*work)
-
-	// Track rebuildPeerMaps operations
-	var rebuildOps []*work
-
 	// setErrResults collects per-work errors from the setName path so
 	// they can be delivered after the snapshot swap, together with the
 	// NodeView for that work.
@@ -583,9 +577,6 @@ func (s *NodeStore) applyBatch(batch []work) {
 			n.GivenName = resolveGivenName(nodes, n.ID, n.GivenName, s.reservedLabel)
 
 			nodes[w.nodeID] = n
-			if w.nodeResult != nil {
-				nodeResultRequests[w.nodeID] = append(nodeResultRequests[w.nodeID], w)
-			}
 
 			relationChanged = true
 			electionChanged = true
@@ -622,45 +613,35 @@ func (s *NodeStore) applyBatch(batch []work) {
 			if w.peers != nil {
 				*w.peers = slices.Clone(prev.peersByNode[w.nodeID])
 			}
-			// For delete operations, send an invalid NodeView if requested
-			if w.nodeResult != nil {
-				nodeResultRequests[w.nodeID] = append(nodeResultRequests[w.nodeID], w)
-			}
-
 			relationChanged = true
 			electionChanged = true
 		case setName:
 			n, exists := nodes[w.nodeID]
 			if !exists {
 				setErrResults[w] = ErrNodeNotFound
-				nodeResultRequests[w.nodeID] = append(nodeResultRequests[w.nodeID], w)
 
 				continue
 			}
 
 			if dnsname.ValidLabel(w.name) != nil {
 				setErrResults[w] = ErrGivenNameInvalid
-				nodeResultRequests[w.nodeID] = append(nodeResultRequests[w.nodeID], w)
 
 				continue
 			}
 
 			if resolveGivenName(nodes, w.nodeID, w.name, s.reservedLabel) != w.name {
 				setErrResults[w] = ErrGivenNameTaken
-				nodeResultRequests[w.nodeID] = append(nodeResultRequests[w.nodeID], w)
 
 				continue
 			}
 
 			n.GivenName = w.name
 			nodes[w.nodeID] = n
-			nodeResultRequests[w.nodeID] = append(nodeResultRequests[w.nodeID], w)
 			relationChanged = true
 			electionChanged = true
 		case rebuildPeerMaps:
 			// rebuildPeerMaps doesn't modify nodes, it just forces the snapshot rebuild
 			// below to recalculate peer relationships using the current peersFunc
-			rebuildOps = append(rebuildOps, w)
 			relationChanged = true
 			electionChanged = true
 		}
@@ -680,38 +661,42 @@ func (s *NodeStore) applyBatch(batch []work) {
 	// Update node count gauge
 	nodeStoreNodesCount.Set(float64(len(nodes)))
 
-	// Send the resulting nodes to all work items that requested them.
+	// Release the writers in queue order, so completions are observed in
+	// the order the writes were queued: a caller released by a later work
+	// item (a RebuildPeerMaps behind a PutNode, say) never returns before
+	// the writes queued ahead of it are acknowledged. Releasing rebuilds
+	// first let a policy or user change proceed on the new snapshot while
+	// an earlier writer was still blocked.
+	//
 	// A zero-value NodeView{} reports Valid()==false, matching node.View()
 	// for a node that was deleted or never existed.
-	for nodeID, workItems := range nodeResultRequests {
-		var nodeView types.NodeView
-		if node, exists := nodes[nodeID]; exists {
-			nodeView = node.View()
+	for i := range batch {
+		w := &batch[i]
+
+		if w.op == rebuildPeerMaps {
+			close(w.rebuildResult)
+
+			continue
 		}
 
-		for _, w := range workItems {
+		if w.nodeResult != nil {
+			var nodeView types.NodeView
+			if node, exists := nodes[w.nodeID]; exists {
+				nodeView = node.View()
+			}
+
 			w.nodeResult <- nodeView
 
 			close(w.nodeResult)
-
-			if w.errResult != nil {
-				w.errResult <- setErrResults[w]
-
-				close(w.errResult)
-			}
 		}
-	}
 
-	// Signal completion for rebuildPeerMaps operations
-	for _, w := range rebuildOps {
-		close(w.rebuildResult)
-	}
+		if w.errResult != nil {
+			w.errResult <- setErrResults[w]
 
-	// Signal completion for all other work items
-	for _, w := range batch {
-		if w.op != rebuildPeerMaps {
-			close(w.result)
+			close(w.errResult)
 		}
+
+		close(w.result)
 	}
 }
 
