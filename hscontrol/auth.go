@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"gorm.io/gorm"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -489,6 +490,12 @@ func (h *Headscale) handleRegisterWithAuthKey(
 
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, NewHTTPError(http.StatusUnauthorized, "invalid pre auth key", nil)
+		}
+
+		// Quota refused in the node insert transaction (cluster, P10 review
+		// A3): same text as the early check in session routing.
+		if errors.Is(err, placement.ErrQuotaExceeded) {
+			return nil, NewHTTPError(http.StatusForbidden, "this tailnet has reached its device limit", nil)
 		}
 
 		if perr, ok := errors.AsType[types.PAKError](err); ok {

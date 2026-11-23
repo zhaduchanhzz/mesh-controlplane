@@ -88,6 +88,38 @@ func TestFenceForeignClusterRollsBack(t *testing.T) {
 	assertAllWritesFenced(t, db, ctxFor(t, idA), fencedCtx(t, idA, "c2", testEpoch))
 }
 
+// A1 (review P10): owner and epoch still match, but the tailnet left ACTIVE
+// (suspended, being deleted, back to pending) or is soft-deleted. Status
+// changes do not bump the epoch, so the fence itself must refuse: a runtime
+// that has not been retired yet, or a request still in flight after retire,
+// must not write.
+func TestFenceInactiveTailnetRollsBack(t *testing.T) {
+	for _, st := range []string{"SUSPENDED", "DELETING", "PENDING"} {
+		t.Run(st, func(t *testing.T) {
+			db := openDB(t)
+			if err := db.Model(&tailnetRow{}).Where("id = ?", idA).Update("status", st).Error; err != nil {
+				t.Fatal(err)
+			}
+			assertAllWritesFenced(t, db, ctxFor(t, idA), ctxFor(t, idA))
+
+			// B (ACTIVE) is unaffected.
+			if err := db.WithContext(ctxFor(t, idB)).Model(&item{}).Where("name LIKE ?", "i0-%").
+				Update("name", "b-ok").Error; err != nil {
+				t.Fatalf("B's write: %v", err)
+			}
+		})
+	}
+
+	t.Run("soft-deleted", func(t *testing.T) {
+		db := openDB(t)
+		now := time.Now().UTC()
+		if err := db.Model(&tailnetRow{}).Where("id = ?", idA).Update("deleted_at", &now).Error; err != nil {
+			t.Fatal(err)
+		}
+		assertAllWritesFenced(t, db, ctxFor(t, idA), ctxFor(t, idA))
+	})
+}
+
 func TestFenceOtherTenantUnaffected(t *testing.T) {
 	db := openDB(t)
 	setOwner(t, db, idA, "c2", testEpoch+1)

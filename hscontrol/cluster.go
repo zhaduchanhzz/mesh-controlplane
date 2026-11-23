@@ -23,6 +23,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"golang.org/x/sync/errgroup"
+	"gorm.io/gorm"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
@@ -56,6 +57,13 @@ var (
 // answering map requests from memory.
 const reconcileInterval = 2 * time.Second
 
+// runtimeDrainTimeout bounds how long stopping a retired runtime waits for
+// its in-flight Noise requests (map long-polls included, which retire ends).
+// Past it the runtime's State is left open and the stop is abandoned with an
+// error log: a leaked runtime is safer than handlers on a closed State, and
+// its writes are fenced in the database (P10 review B1).
+var runtimeDrainTimeout = 30 * time.Second
+
 // Cluster is one cluster process (ADR 0005, ADR 0007): one Noise key, one
 // listener and one database pool, serving every ACTIVE tailnet the cluster
 // owns. Each tailnet has its own runtime (a [Headscale] with its own State,
@@ -86,6 +94,10 @@ type Cluster struct {
 	// Set by Serve: runtimes loaded later are started under them.
 	serveCtx   context.Context //nolint:containedctx // lifetime of Serve
 	serveGroup *errgroup.Group
+
+	// stopping tracks runtimes being stopped in the background by retire
+	// (P10 review B1): reconcile never waits for one, shutdown waits for all.
+	stopping sync.WaitGroup
 }
 
 // tenantRuntime is one loaded tailnet: its runtime, the ownership epoch it
@@ -219,6 +231,19 @@ func (c *Cluster) load(tn types.Tailnet) error {
 
 		return fmt.Errorf("tailnet %s runtime: %w", id, err)
 	}
+
+	// The device quota is enforced in the node insert transaction (P10
+	// review A3); the earlier check in runtimeForRegister only refuses
+	// early.
+	h.state.SetEnrollGate(func(tx *gorm.DB) error {
+		q, err := c.registry.EnrollmentAllowedTx(tx, id)
+		if err == nil && q.Warn {
+			log.Warn().Str("tailnet", id.String()).Int64("devices", q.Devices).Int64("limit", q.Limit).
+				Msg("tailnet is close to its device limit")
+		}
+
+		return err
+	})
 
 	rt := &tenantRuntime{
 		id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h,
@@ -368,7 +393,19 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 	log.Warn().Str("tailnet", rt.id.String()).Str("slug", rt.slug).Uint64("epoch", rt.epoch).
 		Str("reason", reason).Msg("retiring tailnet runtime")
 
-	c.stopRuntime(rt)
+	// In the background: one slow request of this tailnet must not hold up
+	// reconcile, and so every other tailnet of the cluster (P10 review B1).
+	// New requests are already refused: rt is out of routing, and
+	// stopRuntime marks it retired before anything else.
+	rt.h.retired.Store(true)
+
+	c.stopping.Add(1)
+
+	go func() {
+		defer c.stopping.Done()
+
+		c.stopRuntime(rt)
+	}()
 }
 
 func (c *Cluster) stopRuntime(rt *tenantRuntime) {
@@ -388,6 +425,17 @@ func (c *Cluster) stopRuntime(rt *tenantRuntime) {
 
 	if h.mapBatcher != nil {
 		h.mapBatcher.Close()
+	}
+
+	// Admitted Noise requests finish first: a handler must not run on a
+	// closed State (P10 review B1). Map streams end because their sessions
+	// were closed above.
+	if !h.inflight.drain(runtimeDrainTimeout) {
+		log.Error().Str("tailnet", rt.id.String()).Int("in_flight", h.inflight.inFlight()).
+			Dur("timeout", runtimeDrainTimeout).
+			Msg("retired tailnet runtime still has requests in flight; leaving its state open")
+
+		return
 	}
 
 	h.clientStreamsOpen.Wait()
@@ -441,6 +489,13 @@ func (c *Cluster) runtimeForRegister(req tailcfg.RegisterRequest, mk key.Machine
 			return nil, err
 		}
 
+		// Served here first (P10 review A4): a tailnet of another cluster or
+		// not ACTIVE gets the generic refusal and costs no quota query.
+		rt, err := c.runtimeFor(id, nil)
+		if err != nil {
+			return nil, err
+		}
+
 		if !c.knownNode(id, mk, req) {
 			err = c.checkQuota(id)
 			if err != nil {
@@ -448,7 +503,7 @@ func (c *Cluster) runtimeForRegister(req tailcfg.RegisterRequest, mk key.Machine
 			}
 		}
 
-		return c.runtimeFor(id, nil)
+		return rt, nil
 	}
 
 	id, err := c.platform.TailnetForNode(mk, req.NodeKey)
@@ -809,6 +864,9 @@ func (c *Cluster) shutdownRuntimes() {
 	for _, rt := range rts {
 		c.stopRuntime(rt)
 	}
+
+	// Runtimes retired earlier may still be stopping in the background.
+	c.stopping.Wait()
 
 	err := c.platform.Close()
 	if err != nil {

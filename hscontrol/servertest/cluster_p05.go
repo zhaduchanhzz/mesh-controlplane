@@ -295,8 +295,28 @@ func (tc *TestCluster) seed(tb testing.TB, seeds []TailnetSeed) {
 		tc.tailnets[s.Slug] = st
 
 		if s.MintKey || s.SeedNode {
+			// Tenant data is written through the fenced tenant handle, which
+			// refuses a tailnet that is not ACTIVE (P10b, A1): seed it while
+			// ACTIVE, then set the requested status, as an operator would.
+			if status != types.TailnetActive {
+				tc.setSeedStatus(tb, id, types.TailnetActive)
+			}
+
 			tc.seedTenantData(tb, st, owner, s)
+
+			if status != types.TailnetActive {
+				tc.setSeedStatus(tb, id, status)
+			}
 		}
+	}
+}
+
+func (tc *TestCluster) setSeedStatus(tb testing.TB, id string, status types.TailnetStatus) {
+	tb.Helper()
+
+	err := tc.raw.Model(&types.Tailnet{}).Where("id = ?", id).Update("status", status).Error
+	if err != nil {
+		tb.Fatalf("servertest: set seed status: %v", err)
 	}
 }
 

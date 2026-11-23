@@ -113,6 +113,10 @@ type Headscale struct {
 	// shutdown can close state after waiting on it.
 	clientStreamsOpen sync.WaitGroup
 
+	// inflight counts Noise requests bound to this runtime; a cluster drains
+	// it before closing the runtime's State (P10 review B1).
+	inflight inflightGate
+
 	// Cluster runtimes only (P10): retired is set when the cluster stops
 	// serving this tailnet (ownership moved); sessions are the Noise sessions
 	// bound to it, closed on retirement.
