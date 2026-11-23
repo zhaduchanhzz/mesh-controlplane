@@ -117,3 +117,17 @@ Không có ô enroll nào chạy với binary mới.
 ## 8. Reviewer approval
 
 Chưa có.
+
+## 8. Merge vào `master` (2026-11-23, theo lệnh chủ dự án)
+
+Merge `37f8f2c` = `master` `df7a4b8` (đã có P08, P09a, P10, P10b, P10c) + nhánh này, không có conflict. Kiểm chứng trên cây đã gộp (code giống hệt commit thử `0ae602e`, chỉ khác evidence):
+
+| Lệnh | Máy | Exit | Ghi chú |
+|---|---|---:|---|
+| `go build ./... && go vet ./hscontrol/state/ ./hscontrol/policy/... ./hscontrol/db/...` | mc-bench | 0 | |
+| `go test -race -count=1 -p 6 -timeout 90m ./hscontrol/... ./internal/... ./cmd/...` | mc-bench | 1 | 31 package ok (gồm `hscontrol/state` 306 s, `policy/v2` 547 s, `mapper` 132 s). `servertest` FAIL chỉ ở `TestAPIv2` và `TestAPIv2OAuthScopes`: `exec: "tscli"` / `"tofu": executable file not found` (mc-bench không có nix dev shell) |
+| `nix shell --inputs-from . nixpkgs#tscli nixpkgs#opentofu -c go test -race -count=1 -run '^(TestAPIv2\|TestAPIv2OAuthScopes)$' ./hscontrol/servertest/` | mc-ci | 0 | 50 s |
+| `go test -race -count=1 -tags p05cluster -run Cluster ./hscontrol/servertest/` | mc-ci | 0 | 114 s |
+| E2E `infra/lab/e2e/p05/run.sh`, binary `37f8f2c` (CGO_ENABLED=0, sha256 `2b1ec3ced400c4d3…`) | mc-cp | 0, 0 | **19/19 PASS ×2**: `artifacts/37f8f2c/P05/e2e-20261123T122016Z/`, `…T122630Z/`; `cleanup_ok=1`, 0 key chưa redact |
+
+Trạng thái vẫn là `Implemented` (chưa `Reviewed`). Số đo capacity §6 vẫn là của cây trước khi port, chưa đo lại trên `master`; đó là điều kiện để đóng N0 và là chuẩn so sánh cho P00d.
