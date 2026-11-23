@@ -1,40 +1,42 @@
 # P08a endpoint allowlist (I09, I11, S14, S15). Checked by TestEndpointInventory.
 # Format: <server> <METHOD|ANY> <path> <auth today>
 #   server: public (cfg.Addr, also the HEADSCALE_DEBUG_INSECURE_TLS listener),
+#           cluster (cfg.Addr of `headscale cluster serve`; every route behind the P08 Host/SNI guard, 421),
 #           noise (inside /ts2021), debug (metrics_listen_addr), unix (unix_socket)
 #   auth:   none | auth (Huma API key / OAuth token) | local-trust (socket file perms)
-#           | noise-session | noise-handshake | auth-id-secret | oidc-state | ping-id-secret
-#           | tsweb-protected (loopback, 100.64/10, fd7a:115c:a1e0::/48, TS_ALLOW_DEBUG_IP)
-#           | private-ip (protectedDebugHandler: tsweb rule + any ip.IsPrivate())
+#           | disabled-404 (cluster: interactive registration refused) | noise-session | noise-handshake | auth-id-secret | oidc-state | ping-id-secret
+#           | verify-secret (derp.verify_secret_path, constant-time; none configured = 403 for all)
+#           | operator-only (P08 operatorOnly: loopback or metrics_operator_cidrs, never the
+#             Tailscale range; replaces tsweb-protected / private-ip / none of P08a)
 # Changing this file requires updating evidence/P08a-endpoint-inventory.md and a security review.
-debug ANY /debug/ tsweb-protected
-debug ANY /debug/batcher tsweb-protected
-debug ANY /debug/config tsweb-protected
-debug ANY /debug/derp tsweb-protected
-debug ANY /debug/filter tsweb-protected
-debug ANY /debug/gc tsweb-protected
-debug ANY /debug/mapresponses tsweb-protected
-debug ANY /debug/nodestore tsweb-protected
-debug ANY /debug/overview tsweb-protected
-debug ANY /debug/ping tsweb-protected
-debug ANY /debug/policy tsweb-protected
-debug ANY /debug/policy-manager tsweb-protected
-debug ANY /debug/pprof/ tsweb-protected
-debug ANY /debug/pprof/cmdline tsweb-protected
-debug ANY /debug/pprof/goroutine tsweb-protected
-debug ANY /debug/pprof/profile tsweb-protected
-debug ANY /debug/pprof/symbol tsweb-protected
-debug ANY /debug/pprof/trace tsweb-protected
-debug ANY /debug/registration-cache tsweb-protected
-debug ANY /debug/routes tsweb-protected
-debug ANY /debug/runtime-metrics tsweb-protected
-debug ANY /debug/ssh tsweb-protected
-debug ANY /debug/statsviz private-ip
-debug ANY /debug/statsviz/ private-ip
-debug ANY /debug/statsviz/ws private-ip
-debug ANY /debug/vars tsweb-protected
-debug ANY /debug/varz tsweb-protected
-debug ANY /metrics none
+debug ANY /debug/ operator-only
+debug ANY /debug/batcher operator-only
+debug ANY /debug/config operator-only
+debug ANY /debug/derp operator-only
+debug ANY /debug/filter operator-only
+debug ANY /debug/gc operator-only
+debug ANY /debug/mapresponses operator-only
+debug ANY /debug/nodestore operator-only
+debug ANY /debug/overview operator-only
+debug ANY /debug/ping operator-only
+debug ANY /debug/policy operator-only
+debug ANY /debug/policy-manager operator-only
+debug ANY /debug/pprof/ operator-only
+debug ANY /debug/pprof/cmdline operator-only
+debug ANY /debug/pprof/goroutine operator-only
+debug ANY /debug/pprof/profile operator-only
+debug ANY /debug/pprof/symbol operator-only
+debug ANY /debug/pprof/trace operator-only
+debug ANY /debug/registration-cache operator-only
+debug ANY /debug/routes operator-only
+debug ANY /debug/runtime-metrics operator-only
+debug ANY /debug/ssh operator-only
+debug ANY /debug/statsviz operator-only
+debug ANY /debug/statsviz/ operator-only
+debug ANY /debug/statsviz/ws operator-only
+debug ANY /debug/vars operator-only
+debug ANY /debug/varz operator-only
+debug ANY /metrics operator-only
 noise GET /machine/ssh/action/{src_node_id}/to/{dst_node_id} noise-session
 noise GET /machine/whoami noise-session
 noise PATCH /machine/set-device-attr noise-session
@@ -132,7 +134,7 @@ public POST /api/v2/tailnet/{tailnet}/acl/validate auth
 public POST /api/v2/tailnet/{tailnet}/keys auth
 public POST /register/confirm/{auth_id} auth-id-secret
 public POST /ts2021 noise-handshake
-public POST /verify none
+public POST /verify verify-secret
 public PUT /api/v1/policy auth
 unix DELETE /api/v1/apikey/{prefix} local-trust
 unix DELETE /api/v1/node/{nodeId} local-trust
@@ -199,3 +201,14 @@ unix POST /api/v2/tailnet/{tailnet}/acl local-trust
 unix POST /api/v2/tailnet/{tailnet}/acl/validate local-trust
 unix POST /api/v2/tailnet/{tailnet}/keys local-trust
 unix PUT /api/v1/policy local-trust
+cluster GET / none
+cluster GET /auth/{auth_id} disabled-404
+cluster GET /favicon.ico none
+cluster GET /health none
+cluster GET /key none
+cluster GET /register/{auth_id} disabled-404
+cluster GET /robots.txt none
+cluster GET /ts2021 noise-handshake
+cluster GET /version none
+cluster HEAD /machine/ping-response ping-id-secret
+cluster POST /ts2021 noise-handshake

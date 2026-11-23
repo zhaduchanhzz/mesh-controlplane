@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/frontdoor"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
@@ -29,7 +32,14 @@ var (
 		"cluster mode serves auth-key registration only; OIDC/web registration per tailnet is P04b",
 	)
 	errClusterEmbeddedDERP = errors.New(
-		"cluster mode does not run the embedded DERP server yet (per-tenant DERP verify is P08)",
+		"cluster mode does not run the embedded DERP server: one DERP server would relay for every " +
+			"tailnet of the cluster, and per-tailnet DERP verify in cluster mode is P08b",
+	)
+	errClusterTailSQL = errors.New(
+		"cluster mode refuses tailsql: it would expose the shared database of every tailnet (P08a N4)",
+	)
+	errClusterServerURL = errors.New(
+		"cluster mode needs server_url with a DNS hostname: the listener answers only that host (P08, S11c)",
 	)
 	errClusterPolicyFile = errors.New(
 		"cluster mode needs policy.mode=database: a policy file would apply to every tailnet",
@@ -60,6 +70,10 @@ type Cluster struct {
 	// (P10): shared clusters 5000 per tailnet, dedicated clusters their
 	// max_devices. The owner cluster must be registered.
 	registry *placement.Registry
+
+	// host is the normalized server_url hostname, the only Host (and, over
+	// TLS, SNI) the public listener answers (P08, S11c).
+	host string
 
 	// front answers the tenant-free endpoints (/key, /version, /robots.txt)
 	// and loads TLS settings; it has no State.
@@ -125,7 +139,13 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		return nil, fmt.Errorf("placement registry: %w", err)
 	}
 
+	host, err := clusterHost(cfg.ServerURL)
+	if err != nil {
+		return nil, err
+	}
+
 	c := &Cluster{
+		host:     host,
 		cfg:      cfg,
 		platform: platform,
 		noiseKey: noiseKey,
@@ -166,6 +186,12 @@ func validateClusterConfig(cfg *types.Config) error {
 		return errClusterPolicyFile
 	case cfg.TLS.ACME.Hostname != "":
 		return errClusterTLSUnsupported
+	case cfg.TailSQL.Enabled:
+		return errClusterTailSQL
+	}
+
+	if _, err := clusterHost(cfg.ServerURL); err != nil { //nolint:noinlineerr
+		return err
 	}
 
 	return nil
@@ -562,11 +588,70 @@ func clusterRegistrationDisabled(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "interactive registration is not available on this server; use an auth key", http.StatusNotFound)
 }
 
+// clusterHost returns the normalized hostname of server_url. An IP literal or
+// a missing host is refused: the listener selects nothing by IP.
+func clusterHost(serverURL string) (string, error) {
+	u, err := url.Parse(serverURL)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("%w: %q", errClusterServerURL, serverURL)
+	}
+
+	host, err := frontdoor.NormalizeHost(u.Host)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errClusterServerURL, err)
+	}
+
+	return host, nil
+}
+
+// hostGuard answers 421 Misdirected Request unless the request is for this
+// cluster's hostname (P08, S11c): Host, normalized (lowercase, no port, no
+// trailing dot), must equal the server_url host, and over TLS the SNI must
+// equal it too. A raw-IP Host, a hostname of another cluster or tenant, or a
+// connection whose SNI differs from Host gets nothing, not even /health.
+func (c *Cluster) hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, err := frontdoor.NormalizeHost(r.Host)
+		if err != nil || host != c.host {
+			misdirectedCluster(w, r, "host is not this cluster")
+			return
+		}
+
+		if r.TLS != nil {
+			sni, err := frontdoor.NormalizeHost(r.TLS.ServerName)
+			if err != nil || sni != host {
+				misdirectedCluster(w, r, "sni does not match host")
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func misdirectedCluster(w http.ResponseWriter, r *http.Request, why string) {
+	log.Debug().Str("host", r.Host).Str("path", r.URL.Path).Msg("cluster listener: refused: " + why)
+	http.Error(w, "misdirected request", http.StatusMisdirectedRequest)
+}
+
+// MetricsHandler is the cluster's private metrics listener
+// (metrics_listen_addr): /metrics only, operators only ([operatorOnly]:
+// loopback or metrics_operator_cidrs, never the Tailscale range). No debug
+// pages: they would show state of every tailnet of the cluster.
+func (c *Cluster) MetricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.Handler())
+
+	return securityHeaders(operatorOnly(c.cfg.MetricsOperatorCIDRs, mux))
+}
+
 // HTTPHandler is the public handler of the cluster listener. It serves only
-// the tenant-free and Noise endpoints: no admin API, debug or metrics
-// (AGENTS rule 9; per-tailnet admin API is P08).
+// the tenant-free and Noise endpoints for the cluster's own hostname: no
+// admin API, debug or metrics (AGENTS rule 9; per-tailnet admin API is
+// P08b). Metrics are on [Cluster.MetricsHandler].
 func (c *Cluster) HTTPHandler() http.Handler {
 	r := chi.NewRouter()
+	r.Use(c.hostGuard)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RequestLogger(&zerologRequestLogger{}))
 	r.Use(middleware.Recoverer)
@@ -636,6 +721,28 @@ func (c *Cluster) Serve(ctx context.Context) error {
 
 	errorGroup.Go(serveHTTP(srv, ln))
 
+	var metricsSrv *http.Server
+
+	if c.cfg.MetricsAddr != "" {
+		mln, err := new(net.ListenConfig).Listen(ctx, "tcp", string(c.cfg.MetricsAddr))
+		if err != nil {
+			return &types.ListenerBindError{
+				Listener: "cluster metrics", YAMLKey: "metrics_listen_addr",
+				Addr: string(c.cfg.MetricsAddr), Err: err,
+			}
+		}
+
+		metricsSrv = &http.Server{
+			Addr:         string(c.cfg.MetricsAddr),
+			Handler:      c.MetricsHandler(),
+			ReadTimeout:  types.HTTPTimeout,
+			WriteTimeout: types.HTTPTimeout,
+		}
+
+		errorGroup.Go(serveHTTP(metricsSrv, mln))
+		log.Info().Msgf("cluster metrics (operators only) on %s", mln.Addr())
+	}
+
 	c.mu.RLock()
 	n := len(c.order)
 	c.mu.RUnlock()
@@ -667,6 +774,12 @@ func (c *Cluster) Serve(ctx context.Context) error {
 
 		if err := srv.Shutdown(shutdownCtx); err != nil { //nolint:noinlineerr
 			log.Error().Err(err).Msg("shutting down cluster http server")
+		}
+
+		if metricsSrv != nil {
+			if err := metricsSrv.Shutdown(shutdownCtx); err != nil { //nolint:noinlineerr
+				log.Error().Err(err).Msg("shutting down cluster metrics server")
+			}
 		}
 
 		if tlsBundle.Stop != nil {

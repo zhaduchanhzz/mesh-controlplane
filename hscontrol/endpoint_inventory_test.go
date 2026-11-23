@@ -171,6 +171,8 @@ func publicAuth(route string) string {
 		return "oidc-state"
 	case "/machine/ping-response":
 		return "ping-id-secret"
+	case "/verify":
+		return "verify-secret"
 	default:
 		return "none"
 	}
@@ -287,17 +289,41 @@ func debugRoutes(t *testing.T) []endpointRoute {
 	var out []endpointRoute
 
 	for _, p := range paths {
-		auth := "tsweb-protected"
-
-		switch {
-		case p == "/metrics":
-			auth = "none"
-		case strings.HasPrefix(p, "/debug/statsviz"):
-			auth = "private-ip"
-		}
+		// P08: the whole listener, /metrics and statsviz included, is behind
+		// operatorOnly (loopback or metrics_operator_cidrs).
+		auth := "operator-only"
 
 		out = append(out, endpointRoute{"debug", "ANY", p, auth})
 	}
+
+	return out
+}
+
+// clusterRoutes walks the public listener of a cluster process (P05/P10,
+// headscale cluster serve). Every route is behind hostGuard (Host/SNI must be
+// the server_url host, else 421); the label is what authenticates it beyond
+// that. The listener has no admin API, debug or metrics (AGENTS rule 9).
+func clusterRoutes(t *testing.T) []endpointRoute {
+	t.Helper()
+
+	// Only method values are taken; nothing is called.
+	c := &Cluster{host: "c1.lab.invalid"}
+
+	var out []endpointRoute
+
+	r, ok := c.HTTPHandler().(chi.Routes)
+	require.True(t, ok, "cluster HTTPHandler must be a chi router")
+
+	walkChi(t, r, func(method, route string) {
+		a := publicAuth(route)
+		if route == "/register/{auth_id}" || route == "/auth/{auth_id}" {
+			a = "disabled-404" // clusterRegistrationDisabled
+		}
+
+		out = append(out, endpointRoute{"cluster", method, route, a})
+	})
+
+	require.NotEmpty(t, out)
 
 	return out
 }
@@ -348,7 +374,7 @@ func allEndpointRoutes(t *testing.T) []string {
 
 	var lines []string
 
-	routes := collapseAnyMethod(slices.Concat(publicRoutes(t), noiseRoutes(t), debugRoutes(t), unixRoutes(t)))
+	routes := collapseAnyMethod(slices.Concat(publicRoutes(t), clusterRoutes(t), noiseRoutes(t), debugRoutes(t), unixRoutes(t)))
 	for _, r := range routes {
 		lines = append(lines, r.String())
 	}

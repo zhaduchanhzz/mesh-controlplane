@@ -130,7 +130,15 @@ func NewTestCluster(tb testing.TB, seeds ...TailnetSeed) *TestCluster {
 	prefixV6 := netip.MustParsePrefix("fd7a:115c:a1e0::/48")
 
 	cfg := config.Default()
-	cfg.ServerURL = "http://" + addr
+	// The cluster listener answers only its server_url hostname, never an IP
+	// literal (P08, S11c), so clients use localhost; it still listens on
+	// 127.0.0.1 only.
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		tb.Fatalf("servertest: %v", err)
+	}
+
+	cfg.ServerURL = "http://localhost:" + port
 	cfg.Addr = types.ListenAddr(addr)
 	cfg.MetricsAddr = ""
 	cfg.UnixSocket = filepath.Join(sockDir, "hs.sock")

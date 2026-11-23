@@ -46,6 +46,16 @@ in
     '';
     example = "127.0.0.1:9090";
   };
+  metrics_operator_cidrs = lib.mkOption {
+    type = lib.types.listOf t.prefix;
+    default = [ ];
+    description = ''
+      The networks whose peers, besides loopback, may use `metrics_listen_addr`. Empty admits loopback only. Private ranges are not trusted by default, `X-Forwarded-For` never is, and a range overlapping the Tailscale address space (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) is refused: tenant nodes own addresses there.
+    '';
+    example = [
+      "192.0.2.0/28"
+    ];
+  };
   unix_socket = lib.mkOption {
     type = t.stateFile;
     default = "/var/run/headscale/headscale.sock";
@@ -381,6 +391,16 @@ in
         How often `derp.auto_update_enabled` reloads the DERP map. Zero disables reloading.
       '';
       example = "24h";
+    };
+    verify_secret_path = lib.mkOption {
+      type = t.stateFile;
+      default = "";
+      description = ''
+        A file holding the secret (at least 32 characters) an external DERP server must send to `/verify`, as `?secret=` in its `--verify-client-url`. Empty refuses every `/verify` call: the endpoint would otherwise tell anyone whether a node key is registered. The embedded DERP server does not use it.
+
+        On NixOS, paths must be absolute and outside the Nix store.
+      '';
+      example = "/etc/headscale/derp_verify_secret";
     };
   };
   database = {
