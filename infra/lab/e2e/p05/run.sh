@@ -604,13 +604,13 @@ boot_req() {
 k=open(sys.argv[1]).read().strip()
 r=k.split("hskey-auth-",1)[1]
 i,s=r.split("-",1)
-print(i,s)' "$1")
+print(i,s)' "$1" | tr -d $'\r')
   [ -n "${3:-}" ] && id=$3
   proof=$(printf %s "$secret" | sha256sum | cut -d' ' -f1)
   body=$(python3 -c 'import json,sys
 d={"credential":{"kind":"authkey_proof","key_id":sys.argv[1],"proof":sys.argv[2]}}
 if sys.argv[3]: d["tenant"]=sys.argv[3]
-print(json.dumps(d))' "$id" "$proof" "${2:-}")
+print(json.dumps(d))' "$id" "$proof" "${2:-}" | tr -d $'\r')
   printf %s "$body" | cp_ "curl -s -m 5 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 -o /tmp/boot.out -w '%{http_code} ' \
     -H 'Content-Type: application/json' --data-binary @- https://$BOOT_HOST:$BOOT_PORT/v1/bootstrap; cat /tmp/boot.out; rm -f /tmp/boot.out"
 }
