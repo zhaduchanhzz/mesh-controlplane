@@ -1024,6 +1024,33 @@ type Tuning struct {
 	// waits before the rebuild; must be positive. Lower values answer
 	// single changes faster at the cost of more rebuilds.
 	NodeStoreBatchTimeout time.Duration `example:"\"1s\"" koanf:"node_store_batch_timeout"`
+
+	// IncrementalNetmap updates peer relationships for a joining or
+	// deleted node without rebuilding them for the whole tailnet. Off by
+	// default.
+	IncrementalNetmap IncrementalNetmapConfig `koanf:"incremental_netmap"`
+}
+
+// IncrementalNetmapConfig controls the incremental netmap (P00d, ADR 0005).
+// While off, every topology change rebuilds peer relationships in full.
+// While on, a narrow set of changes (a new node joining, a node deleted,
+// under a policy those changes do not alter) is applied incrementally; a
+// background full rebuild checks the result and replaces it on any
+// difference.
+type IncrementalNetmapConfig struct {
+	// Enabled turns the incremental path on. Experimental: keep off
+	// until it has passed security review.
+	Enabled bool `koanf:"enabled"`
+
+	// ReconcileInterval is how often a full rebuild runs in the
+	// background and is compared with the incremental result; at least
+	// 10s. Read only while enabled.
+	ReconcileInterval time.Duration `example:"\"2m\"" koanf:"reconcile_interval"`
+
+	// FullMapInterval is how often every connected node is sent a full
+	// map, spread over the interval so nodes are not all sent one at
+	// once; at least 1m. Read only while enabled.
+	FullMapInterval time.Duration `example:"\"30m\"" koanf:"full_map_interval"`
 }
 
 // BatcherWorkerCount is BatcherWorkers, or [DefaultBatcherWorkers] when unset.

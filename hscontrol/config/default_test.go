@@ -39,6 +39,9 @@ func TestDefaultHoldsDefaults(t *testing.T) {
 	assert.Equal(t, 100, d.Tuning.NodeStoreBatchSize)
 	assert.Equal(t, 500*time.Millisecond, d.Tuning.NodeStoreBatchTimeout)
 	assert.Zero(t, d.Tuning.BatcherWorkers, "auto: its count depends on the host")
+	assert.False(t, d.Tuning.IncrementalNetmap.Enabled, "P00d: the incremental netmap is off by default")
+	assert.Equal(t, 60*time.Second, d.Tuning.IncrementalNetmap.ReconcileInterval)
+	assert.Equal(t, 15*time.Minute, d.Tuning.IncrementalNetmap.FullMapInterval)
 	require.Equal(t, []string{"9.9.9.9:53", "149.112.112.112:53"}, d.DNSConfig.Challenge.Resolvers)
 
 	assert.Equal(t, types.ListenAddr("0.0.0.0:8080"), d.Addr)
@@ -543,4 +546,22 @@ func sharedKeys(noise, derp string) func(*types.Config) {
 		c.DERP.Server.STUNAddr = "0.0.0.0:3478"
 		c.DERP.Server.PrivateKeyPath = derp
 	}
+}
+
+// TestValidateIncrementalNetmapBounds (P00d): the interval bounds apply only
+// while the incremental netmap is enabled.
+func TestValidateIncrementalNetmapBounds(t *testing.T) {
+	cfg := validConfig()
+	cfg.Tuning.IncrementalNetmap.ReconcileInterval = time.Second
+	cfg.Tuning.IncrementalNetmap.FullMapInterval = time.Second
+	require.NoError(t, Validate(&cfg), "bounds are not checked while disabled")
+
+	cfg.Tuning.IncrementalNetmap.Enabled = true
+	err := Validate(&cfg)
+	require.ErrorContains(t, err, "tuning.incremental_netmap.reconcile_interval must be at least 10s")
+	require.ErrorContains(t, err, "tuning.incremental_netmap.full_map_interval must be at least 1m0s")
+
+	cfg.Tuning.IncrementalNetmap.ReconcileInterval = 10 * time.Second
+	cfg.Tuning.IncrementalNetmap.FullMapInterval = time.Minute
+	require.NoError(t, Validate(&cfg))
 }

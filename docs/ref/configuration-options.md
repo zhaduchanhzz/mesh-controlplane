@@ -3402,6 +3402,10 @@ Holds performance settings that rarely need changing.
       register_cache_max_entries: 1024
       node_store_batch_size: 100
       node_store_batch_timeout: 500ms
+      incremental_netmap:
+        enabled: false
+        reconcile_interval: 1m
+        full_map_interval: 15m
     ```
 
 ### `tuning.batch_change_delay` { #tuning.batch_change_delay data-toc-label="batch_change_delay" }
@@ -3591,6 +3595,104 @@ The longest a partial batch of node changes waits before the rebuild; must be po
 
     ```nix
     services.headscale.settings.tuning.node_store_batch_timeout = "1s";
+    ```
+
+### `tuning.incremental_netmap` { #tuning.incremental_netmap data-toc-label="incremental_netmap" }
+
+Updates peer relationships for a joining or deleted node without rebuilding them for the whole tailnet. Off by default.
+
+??? example "All `tuning.incremental_netmap` keys and defaults"
+
+    ```yaml
+    tuning:
+      incremental_netmap:
+        enabled: false
+        reconcile_interval: 1m
+        full_map_interval: 15m
+    ```
+
+#### `tuning.incremental_netmap.enabled` { #tuning.incremental_netmap.enabled data-toc-label="enabled" }
+
+- **Type:** [boolean](#type-boolean)
+- **Default:** `false`
+- **Env:** `HEADSCALE_TUNING_INCREMENTAL_NETMAP_ENABLED`
+
+Turns the incremental path on. Experimental: keep off until it has passed security review.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      incremental_netmap:
+        enabled: true
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_INCREMENTAL_NETMAP_ENABLED=true
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.incremental_netmap.enabled = true;
+    ```
+
+#### `tuning.incremental_netmap.reconcile_interval` { #tuning.incremental_netmap.reconcile_interval data-toc-label="reconcile_interval" }
+
+- **Type:** [duration](#type-duration)
+- **Default:** `1m`
+- **Env:** `HEADSCALE_TUNING_INCREMENTAL_NETMAP_RECONCILE_INTERVAL`
+
+How often a full rebuild runs in the background and is compared with the incremental result; at least 10s. Read only while enabled.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      incremental_netmap:
+        reconcile_interval: 2m
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_INCREMENTAL_NETMAP_RECONCILE_INTERVAL=2m
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.incremental_netmap.reconcile_interval = "2m";
+    ```
+
+#### `tuning.incremental_netmap.full_map_interval` { #tuning.incremental_netmap.full_map_interval data-toc-label="full_map_interval" }
+
+- **Type:** [duration](#type-duration)
+- **Default:** `15m`
+- **Env:** `HEADSCALE_TUNING_INCREMENTAL_NETMAP_FULL_MAP_INTERVAL`
+
+How often every connected node is sent a full map, spread over the interval so nodes are not all sent one at once; at least 1m. Read only while enabled.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      incremental_netmap:
+        full_map_interval: 30m
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_INCREMENTAL_NETMAP_FULL_MAP_INTERVAL=30m
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.incremental_netmap.full_map_interval = "30m";
     ```
 
 ## Removed keys { #removed-keys }

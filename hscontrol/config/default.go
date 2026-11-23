@@ -87,6 +87,11 @@ func Default() types.Config {
 			NodeStoreBatchTimeout:          500 * time.Millisecond,
 			RegisterCacheExpiration:        15 * time.Minute,
 			RegisterCacheMaxEntries:        1024,
+			IncrementalNetmap: types.IncrementalNetmapConfig{
+				Enabled:           false,
+				ReconcileInterval: 60 * time.Second,
+				FullMapInterval:   15 * time.Minute,
+			},
 		},
 	}
 }
