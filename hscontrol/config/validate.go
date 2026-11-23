@@ -36,6 +36,14 @@ var (
 
 // Validate reports every rule c breaks, in one error. It reads no file and
 // logs nothing; [Warnings] holds the advisories.
+
+// Lower bounds of the incremental netmap intervals (P00d): reconcile is a
+// full peer rebuild, a full map interval sends every node its whole map.
+const (
+	minReconcileInterval = 10 * time.Second
+	minFullMapInterval   = time.Minute
+)
+
 func Validate(c *types.Config) error {
 	v := &configValidator{}
 
@@ -230,6 +238,24 @@ func Validate(c *types.Config) error {
 			Current: []types.KV{{Key: "tuning.max_peer_entries", Value: n}},
 			Hint:    "set to 0 for no bound, or a positive number (default: 1000000)",
 		})
+	}
+
+	if inc := c.Tuning.IncrementalNetmap; inc.Enabled {
+		if inc.ReconcileInterval < minReconcileInterval {
+			v.Add(&types.ConfigError{
+				Reason:  "tuning.incremental_netmap.reconcile_interval must be at least " + minReconcileInterval.String(),
+				Current: []types.KV{{Key: "tuning.incremental_netmap.reconcile_interval", Value: inc.ReconcileInterval.String()}},
+				Hint:    "set to at least " + minReconcileInterval.String() + " (default: 1m0s)",
+			})
+		}
+
+		if inc.FullMapInterval < minFullMapInterval {
+			v.Add(&types.ConfigError{
+				Reason:  "tuning.incremental_netmap.full_map_interval must be at least " + minFullMapInterval.String(),
+				Current: []types.KV{{Key: "tuning.incremental_netmap.full_map_interval", Value: inc.FullMapInterval.String()}},
+				Hint:    "set to at least " + minFullMapInterval.String() + " (default: 15m0s)",
+			})
+		}
 	}
 
 	validateDERP(c, v)

@@ -150,6 +150,9 @@ func TestConfigFields(t *testing.T) {
 		"tuning.node_store_batch_size",
 		"tuning.node_store_batch_timeout",
 		"tuning.max_peer_entries",
+		"tuning.incremental_netmap.enabled",
+		"tuning.incremental_netmap.reconcile_interval",
+		"tuning.incremental_netmap.full_map_interval",
 	}
 	// dns.extra_records is a list, a leaf like any other.
 	wantOpen := []string{"dns.nameservers.split", "dns.challenge.provider", "oidc.extra_params"}
@@ -240,6 +243,7 @@ func TestConfigTree(t *testing.T) {
 		"tailsql",
 		"cli",
 		"tuning",
+		"tuning.incremental_netmap",
 	}
 
 	var cfg Config
