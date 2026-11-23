@@ -72,7 +72,11 @@ Nguyên nhân: khóa dòng `FOR SHARE` không xếp hàng. Một `FOR SHARE` m�
 | như trên với `MESH_TEST_POSTGRES_DSN` (PostgreSQL 16.16) | `203859a` | 0: `hscontrol/db` 88 s, `tenantscope`, `placement`, `placementapi`, `tailnet` ok |
 | `go test -run '^$' -bench … -benchtime 2s -count 6` (bảng §2) | `1c21b42` / `203859a` | 0 |
 
-**Chưa chạy ở PR này:** full race 32 package, suite cluster `p05cluster` và E2E client thật. Thay đổi chỉ chạm `tenantscope` và các hàm platform/placement đã có test ở trên. Servertest và E2E chạy SQLite hoặc không chuyển owner dưới tải. Nên chạy lại trước khi merge.
+| `go test -race -count=1 -tags p05cluster -run Cluster ./hscontrol/servertest/` (mc-ci) | `1bfd04e` | 0, 131 s |
+| `nix shell … -c go test -race -count=1 -p 8 -timeout 60m ./hscontrol/... ./internal/... ./cmd/...` (mc-ci) | `1bfd04e` | 31 package ok; `servertest` bị **tôi** dừng bằng SIGQUIT ở phút 21 vì tưởng treo (thực ra package này chạy ~34 phút, như ở P10b: 2051 s) |
+| `nix shell … -c go test -race -count=1 -timeout 90m ./hscontrol/servertest/` (chạy lại riêng) | `1bfd04e` | 0, 2014 s. Cộng lại: 32 package ok |
+
+**Chưa chạy ở PR này:** E2E client thật (`infra/lab/e2e/p05/run.sh`). `SetTailnetStatus` (dùng bởi F02 suspend/resume và S18 DELETING) giờ chạy trong transaction tường minh; nên chạy E2E trước khi merge.
 
 ## 5. Known limitations / còn mở
 
