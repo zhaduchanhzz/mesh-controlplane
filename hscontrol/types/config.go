@@ -1024,6 +1024,12 @@ type Tuning struct {
 	// waits before the rebuild; must be positive. Lower values answer
 	// single changes faster at the cost of more rebuilds.
 	NodeStoreBatchTimeout time.Duration `example:"\"1s\"" koanf:"node_store_batch_timeout"`
+
+	// MaxPeerEntries bounds the peer relationships of a tailnet: the sum,
+	// over its nodes, of the peers each node is sent. A new node is refused
+	// while the tailnet is at the bound. 1000000 is a full mesh of 1000
+	// nodes; 0 means no bound. Policy changes are not refused.
+	MaxPeerEntries int64 `example:"4000000" koanf:"max_peer_entries"`
 }
 
 // BatcherWorkerCount is BatcherWorkers, or [DefaultBatcherWorkers] when unset.

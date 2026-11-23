@@ -180,6 +180,10 @@ var ErrNodeKeyExpired = errors.New("node key expired")
 // binding.
 var ErrNodeKeyInUse = errors.New("node key already in use by another machine")
 
+// ErrPeerEntriesLimit is returned when a new node would join a tailnet that
+// is at tuning.max_peer_entries (P10d).
+var ErrPeerEntriesLimit = errors.New("tailnet has reached its peer relationship limit")
+
 // ErrExpiryExtension is returned when a client asks for an expiry no earlier
 // than its node's, or under a node key the node no longer holds.
 var ErrExpiryExtension = errors.New("extending key is not allowed")
@@ -2870,6 +2874,16 @@ func (s *State) createAndSaveNewNode(params newNodeParams) (types.NodeView, erro
 	if existing, ok := s.nodeStore.GetNodeByNodeKey(params.NodeKey); ok &&
 		existing.MachineKey() != params.MachineKey {
 		return types.NodeView{}, ErrNodeKeyInUse
+	}
+
+	// A tailnet at its peer bound takes no new node (P10d): under a full
+	// mesh every node is sent every other, so map size and fan-out grow
+	// with the square of the tailnet. The snapshot lags the writes of a
+	// batch, so concurrent joins may pass the bound by a few entries.
+	if limit := s.cfg.Tuning.MaxPeerEntries; limit > 0 {
+		if n := s.nodeStore.PeerEntries(); n >= limit {
+			return types.NodeView{}, fmt.Errorf("%w: %d of %d peer entries", ErrPeerEntriesLimit, n, limit)
+		}
 	}
 
 	// Prepare the node for registration

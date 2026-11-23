@@ -204,6 +204,22 @@ func (ns *noiseServer) refuseRoute(w http.ResponseWriter, err error) {
 	http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 }
 
+// peerLimitRefusal is the client text for a tailnet at
+// tuning.max_peer_entries (P10d).
+const peerLimitRefusal = "this tailnet's access policy connects too many devices to each other to add another; " +
+	"narrow the policy or contact your administrator"
+
+// quotaRefusal is the client text of a quota refusal. A full shared cluster
+// (P10d) is told apart from the tailnet's own limit, without naming the
+// cluster or other tenants.
+func quotaRefusal(err error) string {
+	if errors.Is(err, placement.ErrClusterFull) {
+		return "no capacity for new devices right now; contact your administrator"
+	}
+
+	return "this tailnet has reached its device limit"
+}
+
 // registerRefusal maps a tenant-resolution failure of a registration to the
 // RegisterResponse.Error the client shows, for permanent refusals only. The
 // message is the same for an unknown key and for a key of a foreign or
@@ -215,7 +231,7 @@ func registerRefusal(req tailcfg.RegisterRequest, err error) (string, bool) {
 
 	if errors.Is(err, placement.ErrQuotaExceeded) {
 		// Only reached with a valid key of this tailnet: the holder may know.
-		return "this tailnet has reached its device limit", true
+		return quotaRefusal(err), true
 	}
 
 	if !isTenantRefusal(err) {

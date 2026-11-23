@@ -1097,5 +1097,13 @@ in
       '';
       example = "1s";
     };
+    max_peer_entries = lib.mkOption {
+      type = lib.types.int;
+      default = 1000000;
+      description = ''
+        Bounds the peer relationships of a tailnet: the sum, over its nodes, of the peers each node is sent. A new node is refused while the tailnet is at the bound. 1000000 is a full mesh of 1000 nodes; 0 means no bound. Policy changes are not refused.
+      '';
+      example = 4000000;
+    };
   };
 }
