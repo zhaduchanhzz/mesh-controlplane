@@ -145,6 +145,20 @@ func (m *Match) DestsOverlapsPrefixes(prefixes ...netip.Prefix) bool {
 	})
 }
 
+// SrcRanges returns the sorted, disjoint ranges [Match.SrcsContainsIPs]
+// tests addresses against. Matches copied from one another share it.
+// Callers must not modify it.
+func (m *Match) SrcRanges() []netipx.IPRange {
+	return m.srcRanges
+}
+
+// DestRanges returns the sorted, disjoint ranges [Match.DestsContainsIP]
+// tests addresses against. Matches copied from one another share it.
+// Callers must not modify it.
+func (m *Match) DestRanges() []netipx.IPRange {
+	return m.destRanges
+}
+
 // SrcsOverlapsRanges reports whether the sources overlap sorted, disjoint ranges.
 func (m *Match) SrcsOverlapsRanges(ranges []netipx.IPRange) bool {
 	return rangesOverlap(m.srcRanges, ranges)
