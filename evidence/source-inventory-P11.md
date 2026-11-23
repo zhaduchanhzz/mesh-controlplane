@@ -314,6 +314,8 @@ Binary build trên mc-ci ở `d1d4154` (code không đổi tới `ae281f4`): clu
 | 3–4 | `0426bd7` | `artifacts/0426bd7/P05/…T172603Z`, `…T173403Z` | 1 | như trên |
 | 5–6 | `ae281f4` | `artifacts/ae281f4/P05/e2e-20261123T174347Z/`, `…T175051Z/` | 0 | **25/25 PASS ×2** (19 ca cũ + B01–B06); `cleanup_ok=1`; 0 key chưa redact |
 
+| 7–8 | `82bc3cb` (**đường public**) | `artifacts/82bc3cb/P05/e2e-20261123T191458Z/`, `…T192142Z/` | 0 | **25/25 PASS ×2**; request đi từ máy operator qua `https://boot.cp.gta5web.online:8444` (VPS socket proxy → wg-mesh → mc-cp `10.99.77.2:8444`) |
+
 **Lỗi ở lần 1–4 nằm ở harness, không ở bootstrap:**
 - `python3` trên Windows in ra `
 `, nên `secret` dính `
@@ -338,9 +340,19 @@ Các ca E2E:
 | `go test -race -count=1 -tags p05cluster -run Cluster ./hscontrol/servertest/` (mc-ci) | `ae281f4` | 0 | 112 s |
 | `nix shell … -c go test -race -count=1 -p 8 -timeout 90m ./hscontrol/... ./internal/... ./cmd/...` (mc-ci) | `ae281f4` | **0** | 33 package ok (thêm `internal/bootstrap`) |
 
+### 10.4b Thay đổi hạ tầng (chủ dự án duyệt 2026-11-24, AGENTS rule 3)
+
+| Nơi | Thay đổi | Backup / rollback |
+|---|---|---|
+| mc-cp `table inet mc_cp chain input` | `iifname "wg-mesh" ip saddr 10.99.77.1 tcp dport 8444 accept` (live, handle 9; dòng 12 của `/etc/nftables.conf`, `nft -c` hợp lệ) | `/etc/nftables.conf.before-p11-20261123T191352Z`; `nft delete rule inet mc_cp input handle 9` |
+| VPS `table inet mg_vps chain input` | `tcp dport 8444 accept` (live, handle 25; dòng 28 của `/etc/meshguard/vps-firewall.nft`, `nft -c` hợp lệ). Không nạp lại toàn bộ ruleset | `/etc/meshguard/vps-firewall.nft.before-p11-bootstrap-*`; `nft delete rule inet mg_vps input handle 25` |
+| VPS systemd | `mesh-boot-proxy.socket` (`ListenStream=116.118.3.46:8444`, enabled) và `mesh-boot-proxy.service` (`systemd-socket-proxyd --connections-max=256 10.99.77.2:8444`) | `systemctl disable --now mesh-boot-proxy.socket`; xóa hai file unit |
+| Không đụng | HAProxy 80/443 vẫn phục vụ (đã kiểm `ss`), `mesh-cp-proxy` 8443, stund, mail, WireGuard | — |
+
+Process bootstrap chỉ chạy trong lúc E2E (`systemd-run` unit `mesh-bootstrap-e2e`, dừng và gỡ binary khi cleanup), giống cluster E2E. Ngoài lúc đó, port 8444 trên VPS nhận kết nối nhưng không có upstream.
+
 ### 10.5 Known limitations
 
-- **Đường public chưa có:** E2E chỉ chạy loopback trên mc-cp. Hostname public (`boot.cp.gta5web.online:8444`) cần chủ dự án duyệt diff VPS và firewall mc-cp (AGENTS rule 3).
 - Qua `systemd-socket-proxyd` của VPS, bootstrap chỉ thấy địa chỉ proxy; bucket theo IP để tắt.
 - Chưa đo timing từ chối (`TestBootstrapRefusalTiming`) và chưa có test hai process cluster trên cùng PostgreSQL (F07 với hai cluster thật, cần lab giai đoạn 2). F07 trong một process đã có từ P10 (`TestClusterOwnershipMoveRetiresRuntime`).
 - Trên PostgreSQL, handle chỉ đọc chỉ được bảo đảm trong transaction `READ ONLY` của lookup. Production nên dùng role DB chỉ có `SELECT` trên `credentials`, `tailnets`, `clusters`, `migrations`.
