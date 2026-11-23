@@ -6,6 +6,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"gorm.io/gorm"
@@ -110,24 +111,36 @@ func (p *Platform) SetTailnetStatus(id tailnet.ID, status types.TailnetStatus) e
 	ctx, cancel := p.lookupContext()
 	defer cancel()
 
-	q := p.db.WithContext(ctx).Model(&types.Tailnet{}).
-		Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster)
-	if status != types.TailnetDeleting {
-		q = q.Where("status <> ?", types.TailnetDeleting)
+	var affected int64
+
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err := tenantscope.LockOwnership(tx, id.String())
+		if err != nil {
+			return err
+		}
+
+		q := tx.Model(&types.Tailnet{}).
+			Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster)
+		if status != types.TailnetDeleting {
+			q = q.Where("status <> ?", types.TailnetDeleting)
+		}
+
+		res := q.Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()})
+		affected = res.RowsAffected
+
+		return res.Error
+	})
+	if err != nil {
+		return fmt.Errorf("updating tailnet %s: %w", id, err)
 	}
 
-	res := q.Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()})
-	if res.Error != nil {
-		return fmt.Errorf("updating tailnet %s: %w", id, res.Error)
-	}
-
-	if res.RowsAffected == 1 {
+	if affected == 1 {
 		return nil
 	}
 
 	var cur types.Tailnet
 
-	err := p.db.WithContext(ctx).
+	err = p.db.WithContext(ctx).
 		Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster).
 		Take(&cur).Error
 	if err == nil && cur.Status == types.TailnetDeleting {
@@ -150,18 +163,30 @@ func (p *Platform) ReassignTailnet(id tailnet.ID, fromEpoch uint64, to string) (
 	ctx, cancel := p.lookupContext()
 	defer cancel()
 
-	res := p.db.WithContext(ctx).Model(&types.Tailnet{}).
-		Where("id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND deleted_at IS NULL", id.String(), p.cluster, fromEpoch).
-		Updates(map[string]any{
-			"owner_cluster_id": to,
-			"owner_epoch":      gorm.Expr("owner_epoch + 1"),
-			"updated_at":       time.Now().UTC(),
-		})
-	if res.Error != nil {
-		return 0, fmt.Errorf("reassigning tailnet %s: %w", id, res.Error)
+	var affected int64
+
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err := tenantscope.LockOwnership(tx, id.String())
+		if err != nil {
+			return err
+		}
+
+		res := tx.Model(&types.Tailnet{}).
+			Where("id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND deleted_at IS NULL", id.String(), p.cluster, fromEpoch).
+			Updates(map[string]any{
+				"owner_cluster_id": to,
+				"owner_epoch":      gorm.Expr("owner_epoch + 1"),
+				"updated_at":       time.Now().UTC(),
+			})
+		affected = res.RowsAffected
+
+		return res.Error
+	})
+	if err != nil {
+		return 0, fmt.Errorf("reassigning tailnet %s: %w", id, err)
 	}
 
-	if res.RowsAffected != 1 {
+	if affected != 1 {
 		return 0, fmt.Errorf("%w: tailnet %s is not owned by %s at epoch %d", ErrTailnetNotOwned, id, p.cluster, fromEpoch)
 	}
 
@@ -175,14 +200,26 @@ func (p *Platform) BumpPolicyRevision(id tailnet.ID) error {
 	ctx, cancel := p.lookupContext()
 	defer cancel()
 
-	res := p.db.WithContext(ctx).Model(&types.Tailnet{}).
-		Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster).
-		Updates(map[string]any{"policy_revision": gorm.Expr("policy_revision + 1"), "updated_at": time.Now().UTC()})
-	if res.Error != nil {
-		return fmt.Errorf("bumping policy revision of %s: %w", id, res.Error)
+	var affected int64
+
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err := tenantscope.LockOwnership(tx, id.String())
+		if err != nil {
+			return err
+		}
+
+		res := tx.Model(&types.Tailnet{}).
+			Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster).
+			Updates(map[string]any{"policy_revision": gorm.Expr("policy_revision + 1"), "updated_at": time.Now().UTC()})
+		affected = res.RowsAffected
+
+		return res.Error
+	})
+	if err != nil {
+		return fmt.Errorf("bumping policy revision of %s: %w", id, err)
 	}
 
-	if res.RowsAffected != 1 {
+	if affected != 1 {
 		return fmt.Errorf("%w: tailnet %s", ErrTailnetNotOwned, id)
 	}
 

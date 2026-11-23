@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,5 +204,103 @@ func TestFenceBlocksConcurrentMove(t *testing.T) {
 	}
 	if err := db.WithContext(ctxFor(t, idA)).Model(&item{}).Where("1 = 1").Update("name", "late").Error; !errors.Is(err, ErrFenced) {
 		t.Fatalf("write after move: err=%v, want ErrFenced", err)
+	}
+}
+
+// TestOwnershipChangeNotStarvedByWriters (P10c, review B3): on PostgreSQL an
+// ownership change made with LockOwnership completes promptly while writers
+// of the tailnet run back to back. Before P10c the UPDATE waited for a
+// moment with no FOR SHARE holder, which a steady write load never gives
+// (26-136 s per move with 8 writers). Writers keep committing afterwards.
+func TestOwnershipChangeNotStarvedByWriters(t *testing.T) {
+	db := openDB(t)
+	if db.Dialector.Name() != "postgres" {
+		t.Skip("PostgreSQL only (MESH_TEST_POSTGRES_DSN)")
+	}
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(64)
+	}
+	var it item
+	if err := db.WithContext(ctxFor(t, idA)).Order("id").First(&it).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var epoch atomic.Int64
+	epoch.Store(testEpoch)
+	stop := writeLoad(t, db, it.OwnerID, 16, &epoch)
+	time.Sleep(300 * time.Millisecond)
+
+	var worst time.Duration
+	for range 20 {
+		next := epoch.Load() + 1
+		start := time.Now()
+		if err := moveEpoch(db, next); err != nil {
+			stop()
+			t.Fatalf("ownership change under load: %v", err)
+		}
+		worst = max(worst, time.Since(start))
+		epoch.Store(next)
+	}
+	before := stop()
+
+	if worst > 2*time.Second {
+		t.Fatalf("slowest ownership change took %s under write load, want < 2s", worst)
+	}
+	if before == 0 {
+		t.Fatal("no write committed under the fence")
+	}
+	t.Logf("20 changes, slowest %s; %d writes committed", worst, before)
+}
+
+// TestOwnershipChangeBoundedByLockTimeout: a write transaction that never
+// commits cannot hang an ownership change; it fails after
+// OwnershipLockTimeout and changes nothing.
+func TestOwnershipChangeBoundedByLockTimeout(t *testing.T) {
+	db := openDB(t)
+	if db.Dialector.Name() != "postgres" {
+		t.Skip("PostgreSQL only (MESH_TEST_POSTGRES_DSN)")
+	}
+	saved := OwnershipLockTimeout
+	OwnershipLockTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { OwnershipLockTimeout = saved })
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	writer := make(chan error, 1)
+	go func() {
+		writer <- db.WithContext(ctxFor(t, idA)).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&item{}).Where("name LIKE ?", "i0-%").Update("name", "held").Error; err != nil {
+				close(held)
+
+				return err
+			}
+			close(held)
+			<-release
+
+			return nil
+		})
+	}()
+	<-held
+
+	start := time.Now()
+	err := moveEpoch(db, testEpoch+1)
+	took := time.Since(start)
+	close(release)
+	if werr := <-writer; werr != nil {
+		t.Fatalf("held writer: %v", werr)
+	}
+
+	if err == nil {
+		t.Fatal("ownership change succeeded while a writer held the tailnet")
+	}
+	if took > 3*time.Second {
+		t.Fatalf("ownership change waited %s, want about OwnershipLockTimeout", took)
+	}
+	var row tailnetRow
+	if err := db.First(&row, "id = ?", idA).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.OwnerEpoch != testEpoch {
+		t.Fatalf("epoch moved to %d despite the failed change", row.OwnerEpoch)
 	}
 }
