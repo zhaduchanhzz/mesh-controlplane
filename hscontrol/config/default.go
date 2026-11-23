@@ -87,6 +87,7 @@ func Default() types.Config {
 			NodeStoreBatchTimeout:          500 * time.Millisecond,
 			RegisterCacheExpiration:        15 * time.Minute,
 			RegisterCacheMaxEntries:        1024,
+			MaxPeerEntries:                 1_000_000,
 		},
 	}
 }

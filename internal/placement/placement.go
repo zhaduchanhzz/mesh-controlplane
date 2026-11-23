@@ -123,6 +123,15 @@ type Quota struct {
 	// Warn reports that the tailnet is at or above the warning threshold
 	// (Config.WarnPercent of Limit, counting the enrolling device).
 	Warn bool `json:"warn"`
+	// ClusterDevices and ClusterLimit are the live devices of every
+	// tailnet on the owner cluster and its max_devices (shared clusters,
+	// P10d); zero on a dedicated cluster, whose tailnet limit is the
+	// cluster's.
+	ClusterDevices int64 `json:"cluster_devices,omitempty"`
+	ClusterLimit   int64 `json:"cluster_limit,omitempty"`
+	// ClusterWarn reports that the shared cluster is at or above
+	// Config.WarnPercent of max_devices, counting the enrolling device.
+	ClusterWarn bool `json:"cluster_warn,omitempty"`
 }
 
 // DefaultSharedTenantLimit is the hard device limit of a tailnet on a shared
@@ -152,6 +161,10 @@ var (
 	// ErrNoCapacity reports that no ACTIVE cluster of the class can take a
 	// tailnet.
 	ErrNoCapacity = errors.New("no cluster with capacity")
+	// ErrClusterFull reports that the shared cluster owning the tailnet has
+	// reached its max_devices (P10d). It is returned joined with
+	// ErrQuotaExceeded, so callers that refuse on a quota refuse on it too.
+	ErrClusterFull = errors.New("cluster has reached its device limit")
 	// ErrInvalidTransition reports a status change the tailnet's current
 	// status does not allow.
 	ErrInvalidTransition = errors.New("invalid status transition")

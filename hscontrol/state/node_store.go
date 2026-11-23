@@ -210,6 +210,8 @@ type Snapshot struct {
 	// peersByNode stores immutable adjacency as IDs; ListPeers resolves the
 	// corresponding views through nodeViewsByID.
 	peersByNode map[types.NodeID][]types.NodeID
+	// peerEntries is the sum of len(peersByNode[id]) (P10d).
+	peerEntries int64
 	nodesByUser map[types.UserID][]types.NodeView
 	allNodes    []types.NodeView
 
@@ -797,15 +799,22 @@ func snapshotFromNodes(
 		routes, isPrimaryRoute = electPrimaryRoutes(nodes, prevRoutes)
 	}
 
-	var peerIDsByNode map[types.NodeID][]types.NodeID
+	var (
+		peerIDsByNode map[types.NodeID][]types.NodeID
+		peerEntries   int64
+	)
 
 	if reusePeers {
-		peerIDsByNode = prev.peersByNode
+		peerIDsByNode, peerEntries = prev.peersByNode, prev.peerEntries
 	} else {
 		peersTimer := prometheus.NewTimer(nodeStorePeersCalculationDuration)
 		peerIDsByNode = peersFunc(allNodes)
 
 		peersTimer.ObserveDuration()
+
+		for _, peers := range peerIDsByNode {
+			peerEntries += int64(len(peers))
+		}
 	}
 
 	newSnap := Snapshot{
@@ -815,6 +824,7 @@ func snapshotFromNodes(
 		nodesByNodeKey:    make(map[key.NodePublic]types.NodeView),
 		nodesByMachineKey: make(map[key.MachinePublic]map[types.UserID]types.NodeView),
 		peersByNode:       peerIDsByNode,
+		peerEntries:       peerEntries,
 		nodesByUser:       make(map[types.UserID][]types.NodeView),
 		routes:            routes,
 		isPrimaryRoute:    isPrimaryRoute,
@@ -1228,4 +1238,10 @@ func (s *NodeStore) ListNodesByUser(uid types.UserID) views.Slice[types.NodeView
 	nodeStoreOperations.WithLabelValues("list_by_user").Inc()
 
 	return views.SliceOf(s.data.Load().nodesByUser[uid])
+}
+
+// PeerEntries is the number of peer relationships in the current snapshot:
+// the sum, over all nodes, of the peers each node is sent (P10d).
+func (s *NodeStore) PeerEntries() int64 {
+	return s.data.Load().peerEntries
 }

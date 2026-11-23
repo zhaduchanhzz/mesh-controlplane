@@ -17,6 +17,8 @@ import (
 //
 //   - shared cluster: hard limit Config.SharedTenantLimit (5000) per tailnet;
 //     other tailnets on the cluster do not count;
+//   - shared cluster, also: the cluster's max_devices over all its tailnets
+//     (P10d) -> ErrClusterFull joined with ErrQuotaExceeded;
 //   - dedicated cluster: the cluster's max_devices;
 //   - Quota.Warn at Config.WarnPercent (80%) of the limit, counting the
 //     enrolling device;
@@ -107,7 +109,49 @@ func (r *Registry) EnrollmentAllowedTx(tx *gorm.DB, id tailnet.ID) (Quota, error
 		return q, fmt.Errorf("%w: %d of %d devices", ErrQuotaExceeded, q.Devices, q.Limit)
 	}
 
+	if c.Class == ClassShared {
+		err = clusterBudget(tx, c, r.cfg.WarnPercent, &q)
+		if err != nil {
+			return q, err
+		}
+	}
+
 	q.Allowed = true
 
 	return q, nil
+}
+
+// clusterBudget checks the shared cluster c against its max_devices (P10d):
+// the tailnet quota alone lets the tenants of one cluster together grow past
+// what the cluster was sized for, since max_devices was otherwise only
+// checked when a tailnet is placed. On PostgreSQL a transaction-scoped
+// advisory lock on the cluster, taken after the tailnet's, serialises the
+// enrollments of the cluster's tailnets until the caller commits, so the
+// limit is exact. Lock order is always tailnet, then cluster.
+func clusterBudget(tx *gorm.DB, c Cluster, warnPercent int64, q *Quota) error {
+	if isPostgres(tx) {
+		err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended('placement/cluster/' || ?, 0))`, c.ID).Error
+		if err != nil {
+			return fmt.Errorf("locking cluster budget: %w", err)
+		}
+	}
+
+	err := tx.Raw(`SELECT count(n.id) FROM nodes n JOIN tailnets t ON t.id = n.tailnet_id
+		WHERE t.owner_cluster_id = ? AND t.deleted_at IS NULL AND n.deleted_at IS NULL`, c.ID).
+		Scan(&q.ClusterDevices).Error
+	if err != nil {
+		return fmt.Errorf("counting cluster devices: %w", err)
+	}
+
+	q.ClusterLimit = c.MaxDevices
+	q.ClusterWarn = (q.ClusterDevices+1)*100 >= q.ClusterLimit*warnPercent
+
+	if q.ClusterDevices >= q.ClusterLimit {
+		q.Allowed = false
+
+		return fmt.Errorf("%w: %w: cluster %s has %d of %d devices",
+			ErrQuotaExceeded, ErrClusterFull, c.ID, q.ClusterDevices, q.ClusterLimit)
+	}
+
+	return nil
 }

@@ -242,6 +242,11 @@ func (c *Cluster) load(tn types.Tailnet) error {
 				Msg("tailnet is close to its device limit")
 		}
 
+		if err == nil && q.ClusterWarn {
+			log.Warn().Str("cluster", q.ClusterID).Int64("devices", q.ClusterDevices).Int64("limit", q.ClusterLimit).
+				Msg("cluster is close to its device limit; place new tailnets elsewhere")
+		}
+
 		return err
 	})
 
