@@ -1,6 +1,6 @@
 # PR P10c Evidence — benchmark fence (review B3) và sửa starvation khi thay đổi ownership
 
-- **Repo commit before / after:** `77ccd10` (master, sau merge P10b) → `1c21b42` (benchmark), `203859a` (sửa), commit evidence (commit chứa file này). Nhánh `feat/P10c-fence-benchmark`.
+- **Repo commit before / after:** `77ccd10` (master, sau merge P10b) → `1c21b42` (benchmark), `203859a` (sửa), `5dba471` (tiêu chí S18 của E2E), commit evidence (commit chứa file này). Nhánh `feat/P10c-fence-benchmark`.
 - **Nguồn:** `evidence/REVIEW-2026-11-23-P10-P08.md` B3. Chủ dự án yêu cầu benchmark B3 (2026-11-23), rồi yêu cầu sửa bằng advisory lock sau khi benchmark lộ starvation.
 - **ADR:** không có ADR mới. PLAN §5 (ADR 0006) cho phép `pg_advisory_xact_lock` và `SET LOCAL` qua PgBouncer transaction mode; thay đổi này chỉ dùng hai thứ đó.
 
@@ -76,7 +76,27 @@ Nguyên nhân: khóa dòng `FOR SHARE` không xếp hàng. Một `FOR SHARE` m�
 | `nix shell … -c go test -race -count=1 -p 8 -timeout 60m ./hscontrol/... ./internal/... ./cmd/...` (mc-ci) | `1bfd04e` | 31 package ok; `servertest` bị **tôi** dừng bằng SIGQUIT ở phút 21 vì tưởng treo (thực ra package này chạy ~34 phút, như ở P10b: 2051 s) |
 | `nix shell … -c go test -race -count=1 -timeout 90m ./hscontrol/servertest/` (chạy lại riêng) | `1bfd04e` | 0, 2014 s. Cộng lại: 32 package ok |
 
-**Chưa chạy ở PR này:** E2E client thật (`infra/lab/e2e/p05/run.sh`). `SetTailnetStatus` (dùng bởi F02 suspend/resume và S18 DELETING) giờ chạy trong transaction tường minh; nên chạy E2E trước khi merge.
+## 4b. E2E client thật
+
+`infra/lab/e2e/p05/run.sh`, binary build từ `876b60f` trên mc-ci (sha256 `1cf1e125a75e44cb…`), `tailscale/tailscale:v1.104.7`.
+
+| Lần | Harness | Artifact | Exit | Kết quả |
+|---|---|---|---|---|
+| 1 | `876b60f` | `artifacts/876b60f/P05/e2e-20261123T114557Z/` | 0 | 19/19 PASS, 365 s |
+| 2 | `876b60f` | `artifacts/876b60f/P05/e2e-20261123T115202Z/` | **1** | 18/19: **S18** `deleted tenant's node e1 is Running again` |
+| 3 | `5dba471` | `artifacts/5dba471/P05/e2e-20261123T115919Z/` | 0 | **19/19 PASS**, 411 s |
+| 4 | `5dba471` | `artifacts/5dba471/P05/e2e-20261123T120610Z/` | 0 | **19/19 PASS**, 366 s |
+
+Tất cả: `cleanup_ok=1`, 0 key chưa redact.
+
+**Phân tích S18 ở lần 2 (không phải lỗi cô lập):** log của e1 (`logs/p05-e1.tailscaled.log`) cho thấy:
+- Sau khi tenant e bị DELETING, mọi request của e1 bị từ chối: `PollNetMap: initial fetch failed 401: unauthorized`, rồi sau restart `this server only registers nodes with an auth key`.
+- Sau `docker restart`, tailscaled 1.104 nạp netmap đã lưu trên đĩa (`Start: loaded netmap from disk cache; 0 peers`, `control-netmap … cached=true`) và tự chuyển `Starting -> Running` mà không có câu trả lời nào từ control.
+- e2 chỉ có node của mình và không thấy e1.
+
+Tiêu chí cũ (`BackendState != Running`) phụ thuộc việc client kịp ghi cache trước khi bị từ chối. Commit `5dba471` đổi tiêu chí sang phía server: sau restart, e1 không được nhận netmap nào từ control (`control-netmap … cached=false`), phải thấy dòng từ chối, và không có peer. State của client chỉ còn được ghi lại. Một node được phục vụ thật sẽ sinh dòng `cached=false` như ở lần đăng ký đầu của e1, nên tiêu chí mới vẫn bắt được lỗi thật.
+
+Các lần chạy chậm hơn P10b (365–411 s so với 192 s) ở **mọi** bước, kể cả bước chép binary sang mc-cp (74 s so với 5 s), nên nguyên nhân là mạng hoặc máy lúc chạy, không phải code.
 
 ## 5. Known limitations / còn mở
 
