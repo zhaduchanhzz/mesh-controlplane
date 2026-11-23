@@ -599,18 +599,18 @@ t_lifecycle() {
 # leaves this host); prints "<status> <body>". Bodies are not logged with
 # the proof.
 boot_req() {
-  local id secret proof body
-  read -r id secret < <(python3 -c 'import sys
+  local body
+  # One python step builds the body: the proof is computed over the secret
+  # read from the key file, so no shell variable ever holds the secret, and
+  # no line ending of the host's python can leak into it.
+  body=$(python3 -c 'import hashlib,json,sys
 k=open(sys.argv[1]).read().strip()
-r=k.split("hskey-auth-",1)[1]
-i,s=r.split("-",1)
-print(i,s)' "$1" | tr -d $'\r')
-  [ -n "${3:-}" ] && id=$3
-  proof=$(printf %s "$secret" | sha256sum | cut -d' ' -f1)
-  body=$(python3 -c 'import json,sys
-d={"credential":{"kind":"authkey_proof","key_id":sys.argv[1],"proof":sys.argv[2]}}
-if sys.argv[3]: d["tenant"]=sys.argv[3]
-print(json.dumps(d))' "$id" "$proof" "${2:-}" | tr -d $'\r')
+i,s=k.split("hskey-auth-",1)[1].split("-",1)
+if sys.argv[3]: i=sys.argv[3]
+d={"credential":{"kind":"authkey_proof","key_id":i,"proof":hashlib.sha256(s.encode()).hexdigest()}}
+if sys.argv[2]: d["tenant"]=sys.argv[2]
+sys.stdout.write(json.dumps(d))' "$1" "${2:-}" "${3:-}")
+  body=${body%$'\r'}
   printf %s "$body" | cp_ "curl -s -m 5 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 -o /tmp/boot.out -w '%{http_code} ' \
     -H 'Content-Type: application/json' --data-binary @- https://$BOOT_HOST:$BOOT_PORT/v1/bootstrap; cat /tmp/boot.out; rm -f /tmp/boot.out"
 }
