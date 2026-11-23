@@ -246,6 +246,14 @@ Cache-Control: no-store
 
 ## 8. Câu hỏi mở cho chủ dự án (tối đa 5)
 
+**Quyết định của chủ dự án (2026-11-23):**
+- **Q1 — phương án C:** `key_id` + `sha256(secret)`; không tra ẩn danh theo slug; `tenant` chỉ để đối chiếu. Mọi trường hợp không hợp lệ trả cùng một 404.
+- **Q2 — thêm `MOVING` trong P11:** migration nối cuối (SQLite + PostgreSQL) và hằng `types.TailnetMoving`; chưa có đường nào đặt `MOVING` cho tới P12b.
+- **Q3 — từ chối** key đã thu hồi / hết hạn / single-use đã dùng (cùng luật với đăng ký). Re-bootstrap sau move (P12b) cần key reusable hoặc key mới.
+- **Q4 — hostname public** cho E2E. Đụng VPS / firewall / DNS, nên theo AGENTS rule 3 diff chính xác (port, rule forward, bản ghi DNS) phải được chủ dự án duyệt **trước** khi áp dụng; tới lúc đó chỉ chạy nội bộ.
+- **Q5 — chưa hỏi:** mặc định theo ADR 0006: đi qua PgBouncer khi lab có, đọc primary, không replica, không cache. Lab hiện tại: cluster E2E trên mc-cp dùng SQLite, nên bootstrap đọc cùng DB đó ở chế độ chỉ đọc trên mc-cp.
+
+
 1. **Mô hình credential:** chọn phương án C (key_id + `sha256(secret)`) làm mặc định, **không** cho tra ẩn danh theo slug, `tenant` chỉ là trường đối chiếu tùy chọn? Hay phương án B (gửi nguyên pre-auth key)?
 2. **`MOVING`:** schema và `types.TailnetStatus` chưa có `MOVING`. P11 thêm migration nối cuối (và hằng) ngay, hay P11 chỉ test nhánh MOVING bằng store giả và để P12b thêm migration? (F06 đầy đủ trên DB thật cần migration.)
 3. **Key không còn hiệu lực:** bootstrap từ chối (404 đồng nhất) key đã thu hồi / hết hạn / single-use đã dùng? Hệ quả: re-bootstrap sau move (P12b) cần key reusable hoặc key mới — chấp nhận?
