@@ -316,8 +316,11 @@ Binary build trên mc-ci ở `d1d4154` (code không đổi tới `ae281f4`): clu
 
 **Lỗi ở lần 1–4 nằm ở harness, không ở bootstrap:**
 - `python3` trên Windows in ra `
-`, nên `secret` dính `` và proof tính trên `secret+`. Bootstrap từ chối đúng như thiết kế.
-- `tr -d $''` trong Git Bash không loại được ký tự này (đã kiểm bằng `od -c`).
+`, nên `secret` dính `
+` và proof tính trên `secret+
+`. Bootstrap từ chối đúng như thiết kế.
+- `tr -d $'
+'` trong Git Bash không loại được ký tự này (đã kiểm bằng `od -c`).
 - Sửa ở `ae281f4`: một bước Python dựng cả body và tự tính proof bằng `hashlib`, nên không biến shell nào giữ secret.
 
 Các ca E2E:
@@ -330,7 +333,10 @@ Các ca E2E:
 
 ### 10.4 Full race, suite cluster
 
-(cập nhật khi chạy xong)
+| Lệnh | Commit | Exit | Ghi chú |
+|---|---|---|---|
+| `go test -race -count=1 -tags p05cluster -run Cluster ./hscontrol/servertest/` (mc-ci) | `ae281f4` | 0 | 112 s |
+| `nix shell … -c go test -race -count=1 -p 8 -timeout 90m ./hscontrol/... ./internal/... ./cmd/...` (mc-ci) | `ae281f4` | **0** | 33 package ok (thêm `internal/bootstrap`) |
 
 ### 10.5 Known limitations
 
