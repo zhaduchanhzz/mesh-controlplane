@@ -42,6 +42,12 @@ CAPVER=${CAPVER:-116}
 KEEP=${KEEP:-0}
 OBSERVE_S=${OBSERVE_S:-5}
 LABEL=mesh-e2e=p05
+# P11: set BOOT_BIN to a mesh-bootstrap binary to run the bootstrap cases
+# (B01-B06). It serves on mc-cp loopback only (no firewall change); the
+# onboarding requests run on mc-cp with curl --resolve.
+BOOT_BIN=${BOOT_BIN:-}
+BOOT_HOST=${BOOT_HOST:-boot.cp.gta5web.online}
+BOOT_PORT=${BOOT_PORT:-8444}
 
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
 SHA=$(git -C "$REPO" rev-parse --short HEAD)
@@ -77,6 +83,7 @@ CLEAN_OK=1
 cleanup() {
   [ "$KEEP" = 1 ] && { log "KEEP=1: leaving clients and cluster running"; return; }
   log "cleanup"
+  [ -n "$BOOT_BIN" ] && cp_ "sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null; sudo rm -f /usr/local/bin/mesh-bootstrap; true"
   ci_ "docker ps -aq --filter label=$LABEL | xargs -r docker rm -f >/dev/null; \
        docker volume ls -q --filter label=$LABEL | xargs -r docker volume rm >/dev/null; \
        test -z \"\$(docker ps -aq --filter label=$LABEL)\"" || CLEAN_OK=0
@@ -586,6 +593,103 @@ t_lifecycle() {
     || record S18 FAIL "${problems#; }"
 }
 
+# ------------------------------------------------------------- P11 -------
+# boot_req KEYFILE [TENANT] [KEYID_OVERRIDE]: POST /v1/bootstrap on mc-cp
+# loopback with the key's identifier and SHA-256 proof (the secret never
+# leaves this host); prints "<status> <body>". Bodies are not logged with
+# the proof.
+boot_req() {
+  local id secret proof body
+  read -r id secret < <(python3 -c 'import sys
+k=open(sys.argv[1]).read().strip()
+r=k.split("hskey-auth-",1)[1]
+i,s=r.split("-",1)
+print(i,s)' "$1")
+  [ -n "${3:-}" ] && id=$3
+  proof=$(printf %s "$secret" | sha256sum | cut -d' ' -f1)
+  body=$(python3 -c 'import json,sys
+d={"credential":{"kind":"authkey_proof","key_id":sys.argv[1],"proof":sys.argv[2]}}
+if sys.argv[3]: d["tenant"]=sys.argv[3]
+print(json.dumps(d))' "$id" "$proof" "${2:-}")
+  printf %s "$body" | cp_ "curl -s -m 5 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 -o /tmp/boot.out -w '%{http_code} ' \
+    -H 'Content-Type: application/json' --data-binary @- https://$BOOT_HOST:$BOOT_PORT/v1/bootstrap; cat /tmp/boot.out; rm -f /tmp/boot.out"
+}
+
+t_bootstrap() {
+  local problems="" r code url first="" k
+  scp -q -i "$SSH_KEY" -o BatchMode=yes "$BOOT_BIN" "$CP_SSH:/tmp/mesh-bootstrap" || { record B01 FAIL "could not copy mesh-bootstrap"; return; }
+  cp_ "set -e
+    sudo install -m 0755 /tmp/mesh-bootstrap /usr/local/bin/mesh-bootstrap && rm -f /tmp/mesh-bootstrap
+    sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null || true
+    sudo systemd-run --quiet --unit=mesh-bootstrap-e2e --uid=headscale --gid=headscale \
+      /usr/local/bin/mesh-bootstrap -config /etc/headscale/cluster/config.yaml -listen 127.0.0.1:$BOOT_PORT \
+      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST" \
+    || { record B01 FAIL "could not start mesh-bootstrap"; return; }
+  for k in $(seq 1 20); do
+    code=$(cp_ "curl -s -o /dev/null -w '%{http_code}' -m 3 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 https://$BOOT_HOST:$BOOT_PORT/health" || true)
+    [ "$code" = 200 ] && break
+    sleep 1
+  done
+  cp_ "sudo journalctl -u mesh-bootstrap-e2e --no-pager -n 20" 2>&1 | redact >"$ART_DIR/logs/bootstrap-start.log"
+  [ "$code" = 200 ] || { record B01 FAIL "bootstrap not healthy ($code)"; return; }
+
+  # B01 (F06): a valid key of ACTIVE tailnet b gets this cluster's URL, only.
+  # (a was moved to the unregistered mc-cp-c2 by F03: see B06.)
+  r=$(boot_req "$TMPD/key-b" b)
+  printf 'B01 %s\n' "$r" >>"$ART_DIR/logs/bootstrap-responses.txt"
+  code=${r%% *}
+  url=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1].split(" ",1)[1]); print(d["control_url"] if set(d)=={"control_url","issued_at"} else "EXTRA:"+",".join(sorted(d)))' "$r" 2>/dev/null)
+  { [ "$code" = 200 ] && [ "$url" = "$URL" ]; } && record B01 PASS "valid key of b -> $url (control_url and issued_at only)" \
+    || record B01 FAIL "got [$r]"
+
+  # B02 (I15, I08): refusals are identical: suspended tenant c, key of a
+  # naming tenant b, key of b naming a, an unknown key identifier.
+  problems=""
+  for k in "$TMPD/key-c|" "$TMPD/key-a|b" "$TMPD/key-b|a" "$TMPD/key-b||000000000000"; do
+    r=$(boot_req "${k%%|*}" "$(cut -d'|' -f2 <<<"$k")" "$(cut -d'|' -f3 <<<"$k")")
+    printf 'B02 %s\n' "$r" >>"$ART_DIR/logs/bootstrap-responses.txt"
+    [ "${r%% *}" = 404 ] || problems="$problems; not 404 [$r]"
+    [ -z "$first" ] && first=$r
+    [ "$r" = "$first" ] || problems="$problems; differs [$r] vs [$first]"
+    grep -q "cp.gta5web" <<<"$r" && problems="$problems; leaks a URL"
+  done
+  [ -z "$problems" ] && record B02 PASS "suspended, unknown key, key of a naming b, key of b naming a: one identical 404" \
+    || record B02 FAIL "${problems#; }"
+
+  # B03: onboarding with the returned URL enrolls a real client into b.
+  start_ts p05-boot1 >/dev/null
+  r=0; ci_ "docker exec -i p05-boot1 timeout 45 tailscale up --login-server=$url --auth-key=file:/dev/stdin --hostname=p05-boot1" \
+    <"$TMPD/key-b" >>"$ART_DIR/logs/p05-boot1.cli.log" 2>&1 || r=$?
+  k=$(server_field b p05-boot1 id)
+  { [ "$r" = 0 ] && wait_state p05-boot1 Running 20 && [ -n "$k" ]; } \
+    && record B03 PASS "tailscale up --login-server=<bootstrap URL> enrolled p05-boot1 into b" \
+    || record B03 FAIL "rc=$r node=[$k] state=$(state p05-boot1)"
+  save_logs p05-boot1
+
+  # B04 (I09, rule 9): no debug/metrics/openapi; another Host -> 421.
+  problems=""
+  for k in /metrics /debug/pprof/ /v1/openapi /; do
+    code=$(cp_ "curl -s -o /dev/null -w '%{http_code}' -m 3 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 https://$BOOT_HOST:$BOOT_PORT$k")
+    [ "$code" = 404 ] || problems="$problems; $k=$code"
+  done
+  code=$(cp_ "curl -s -o /dev/null -w '%{http_code}' -m 3 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 -H 'Host: $HOST' https://$BOOT_HOST:$BOOT_PORT/health")
+  [ "$code" = 421 ] || problems="$problems; Host $HOST=$code"
+  [ -z "$problems" ] && record B04 PASS "only /v1/bootstrap and /health; debug/metrics/openapi 404; foreign Host 421" \
+    || record B04 FAIL "${problems#; }"
+
+  # B06 (F06): a, moved by F03 to mc-cp-c2 (not registered), is 503 to a
+  # valid key holder and never gets this cluster's URL.
+  r=$(boot_req "$TMPD/key-a" a)
+  printf 'B06 %s\n' "$r" >>"$ART_DIR/logs/bootstrap-responses.txt"
+  { [ "${r%% *}" = 503 ] && ! grep -q "cp.gta5web" <<<"$r"; } \
+    && record B06 PASS "moved tenant a (owner cluster not registered): 503 to the key holder, no URL" \
+    || record B06 FAIL "got [$r]"
+
+  cp_ "sudo journalctl -u mesh-bootstrap-e2e --no-pager" 2>&1 | redact >"$ART_DIR/logs/bootstrap.log"
+  grep -qE '[0-9a-f]{64}' "$ART_DIR/logs/bootstrap.log" && record B05 FAIL "bootstrap log holds a 64-hex value (proof?)" \
+    || record B05 PASS "bootstrap log holds no proof or key"
+}
+
 # ---------------------------------------------------------------- main ---
 T0=$(date +%s)
 log "P05 E2E $RUN_ID at $SHA -> $URL (artifacts: ${ART_DIR#"$REPO"/})"
@@ -601,6 +705,7 @@ t_scope
 t_restart
 t_p10
 t_lifecycle
+[ -n "$BOOT_BIN" ] && t_bootstrap
 for c in p05-a1 p05-a2 p05-b1 p05-b4; do save_logs $c; done
 cp_ "sudo journalctl -u headscale-cluster --since -$(( $(date +%s) - T0 + 5 ))s --no-pager" 2>&1 | redact >"$ART_DIR/logs/cluster.log"
 cleanup
