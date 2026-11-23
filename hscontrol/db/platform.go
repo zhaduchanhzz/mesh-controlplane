@@ -48,6 +48,7 @@ func v01Migrations() []*gormigrate.Migration {
 		},
 		nodeKeyPairMigration(),
 		registryMigration(),
+		movingMigration(),
 	}
 }
 

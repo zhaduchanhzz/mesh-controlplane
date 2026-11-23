@@ -14,7 +14,8 @@ CREATE TABLE tailnets(
   config_revision bigint NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  deleted_at timestamptz
+  deleted_at timestamptz,
+  moving_to_cluster_id text
 );
 CREATE UNIQUE INDEX idx_tailnets_slug ON tailnets(slug);
 CREATE INDEX idx_tailnets_owner ON tailnets(owner_cluster_id, status);
