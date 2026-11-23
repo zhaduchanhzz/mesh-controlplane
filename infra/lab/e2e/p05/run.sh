@@ -561,18 +561,28 @@ t_lifecycle() {
   # (4) a new tenant e2; e's node, restarted, does not come back anywhere.
   cp_ "$HSC tailnet create --slug e2 >/dev/null && $HSC tailnet status --slug e2 --set ACTIVE" || problems="$problems; could not create e2"
   for i in $(seq 1 20); do mint e2 e2e-e2 "$TMPD/key-e2" 2>/dev/null && break; sleep 1; done
+  # The oracle is what the server serves, not the client's BackendState:
+  # tailscaled >= 1.104 caches the netmap on disk and reports Running from
+  # that cache after a restart without any answer from control (seen on
+  # 876b60f: "loaded netmap from disk cache; 0 peers", state Running, every
+  # request refused). Served = a netmap fetched from control after restart.
+  local rts el
+  rts=$(ci_ "date -u +%Y-%m-%dT%H:%M:%SZ")
   ci_ "docker restart p05-e1 >/dev/null" || problems="$problems; could not restart e1"
   r=0; start_ts p05-e2 && ts_auth p05-e2 up "$TMPD/key-e2" p05-e2 || r=$?
   [ $r = 0 ] || problems="$problems; e2 registration rc=$r"
   sleep 15
   st=$(state p05-e1)
-  [ "$st" != Running ] || problems="$problems; deleted tenant's node e1 is Running again"
+  el=$(ci_ "docker logs --since $rts p05-e1 2>&1")
+  grep -q 'control-netmap .*cached=false' <<<"$el" && problems="$problems; deleted tenant's node e1 got a netmap from control after restart"
+  grep -qE 'fetch failed 401|only registers nodes with an auth key|invalid pre auth key' <<<"$el"     || problems="$problems; no refusal of e1 seen after restart"
+  [ "$(peers p05-e1)" = "" ] || problems="$problems; e1 lists peers after restart"
   n=$(server_nodes e2 | python3 -c 'import json,sys; print(" ".join(sorted(x["hostname"] for x in json.load(sys.stdin))))')
   [ "$n" = p05-e2 ] || problems="$problems; nodes of e2 = [$n]"
   case " $(peers p05-e2) " in *p05-e1*) problems="$problems; e2 sees e1" ;; esac
   printf 'e1 state after restart: %s\ne2 nodes: %s\n' "$st" "$n" >>"$ART_DIR/logs/S18.txt"
   save_logs p05-e1; save_logs p05-e2
-  [ -z "$problems" ] && record S18 PASS "revoked key and key of deleted tenant refused; DELETING terminal, slug not reusable; deleted node not served after restart (state=$st); new tenant e2 has only its own node" \
+  [ -z "$problems" ] && record S18 PASS "revoked key and key of deleted tenant refused; DELETING terminal, slug not reusable; deleted node not served after restart (no netmap from control, refused; client state=$st from its disk cache); new tenant e2 has only its own node" \
     || record S18 FAIL "${problems#; }"
 }
 
