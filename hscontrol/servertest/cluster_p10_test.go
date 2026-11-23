@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -156,6 +159,55 @@ func TestClusterQuotaRefusesNewDevices(t *testing.T) {
 
 	// B counts its own devices.
 	enroll(t, b, "bob", "quota-b1", "quota-b2")
+}
+
+// A device that is a node of tailnet A is still a new device for tailnet B
+// (review of P10, finding A2): registering into B with B's auth key and
+// OldNodeKey = its node key in A must count against B's quota. Before the
+// fix, knownNode accepted a (machine key, node key) pair found in any
+// tailnet and skipped B's quota.
+func TestClusterQuotaNotBypassedByNodeOfOtherTailnet(t *testing.T) {
+	tc := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
+	tc.SetPolicy(t, tenantA, allowAll)
+	tc.SetPolicy(t, tenantB, allowAll)
+	tc.SetClusterQuota(t, 1)
+
+	a, b := tc.Tenant(t, tenantA), tc.Tenant(t, tenantB)
+	keyA, keyB := mintKey(t, a, "alice"), mintKey(t, b, "carol")
+	enroll(t, b, "bob", "quota-b1") // B is full (limit 1)
+
+	device := key.NewMachine()
+	sess := servertest.NewRawNoiseSession(t, tc.URL, tc.NoiseKey(t), device)
+
+	nkA := key.NewNode().Public()
+	resp, rr, err := sess.Register(ctx(t), &tailcfg.RegisterRequest{
+		NodeKey:  nkA,
+		Auth:     &tailcfg.RegisterResponseAuth{AuthKey: keyA},
+		Hostinfo: &tailcfg.Hostinfo{Hostname: "device-in-a"},
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, resp.OK() && rr.MachineAuthorized && rr.Error == "", "control: the device registers in A (%d %s)", resp.Status, resp.Body)
+
+	// A new Noise session with the same machine key, as a real client opens
+	// one per profile: the first session is bound to A and refuses B.
+	sessB := servertest.NewRawNoiseSession(t, tc.URL, tc.NoiseKey(t), device)
+
+	before := tc.NodeRows(t)
+	nkB := key.NewNode().Public()
+	resp, rr, err = sessB.Register(ctx(t), &tailcfg.RegisterRequest{
+		NodeKey:    nkB,
+		OldNodeKey: nkA,
+		Auth:       &tailcfg.RegisterResponseAuth{AuthKey: keyB},
+		Hostinfo:   &tailcfg.Hostinfo{Hostname: "device-into-b"},
+	}, nil)
+	require.NoError(t, err)
+
+	refused := !resp.OK() || rr.Error != "" || !rr.MachineAuthorized
+	assert.True(t, refused, "B is full: a node of A must not enroll into B by naming its A node key as OldNodeKey (%d %s)", resp.Status, resp.Body)
+	assert.Equal(t, before, tc.NodeRows(t), "no node was created")
+
+	_, ok := b.State().GetNodeByNodeKey(nkB)
+	assert.False(t, ok, "no node in B")
 }
 
 // A tailnet whose owner cluster is not registered cannot enroll new devices:

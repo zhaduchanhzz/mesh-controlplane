@@ -287,3 +287,36 @@ func TestPlatformPostgresSimpleProtocol(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, id, got)
 }
+
+// TestPlatformDeletingIsTerminal (S18): a tailnet in DELETING cannot be set
+// back to ACTIVE, PENDING or SUSPENDED; setting DELETING again succeeds; a
+// tailnet of another cluster is still "not owned".
+func TestPlatformDeletingIsTerminal(t *testing.T) {
+	for _, b := range backends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			p := openPlatform(t, b.cfg(t, "", ""))
+
+			id := platformTailnet(t, p, "local", types.TailnetActive, false)
+			require.NoError(t, p.SetTailnetStatus(id, types.TailnetSuspended))
+			require.NoError(t, p.SetTailnetStatus(id, types.TailnetActive), "control: ACTIVE <-> SUSPENDED")
+			require.NoError(t, p.SetTailnetStatus(id, types.TailnetDeleting))
+			require.NoError(t, p.SetTailnetStatus(id, types.TailnetDeleting), "DELETING again is a no-op")
+
+			for _, st := range []types.TailnetStatus{types.TailnetActive, types.TailnetPending, types.TailnetSuspended} {
+				err := p.SetTailnetStatus(id, st)
+				require.ErrorIs(t, err, ErrTailnetDeleting, "DELETING -> %s must be refused", st)
+			}
+
+			var got types.Tailnet
+			require.NoError(t, p.db.Where("id = ?", id.String()).Take(&got).Error)
+			assert.Equal(t, types.TailnetDeleting, got.Status)
+
+			owned, err := p.OwnedTailnets("local")
+			require.NoError(t, err)
+			assert.Empty(t, owned, "a DELETING tailnet is not served")
+
+			other := platformTailnet(t, p, "cluster-2", types.TailnetActive, false)
+			require.ErrorIs(t, p.SetTailnetStatus(other, types.TailnetActive), ErrTailnetNotOwned)
+		})
+	}
+}

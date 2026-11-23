@@ -441,7 +441,7 @@ func (c *Cluster) runtimeForRegister(req tailcfg.RegisterRequest, mk key.Machine
 			return nil, err
 		}
 
-		if !c.knownNode(mk, req) {
+		if !c.knownNode(id, mk, req) {
 			err = c.checkQuota(id)
 			if err != nil {
 				return nil, err
@@ -460,10 +460,12 @@ func (c *Cluster) runtimeForRegister(req tailcfg.RegisterRequest, mk key.Machine
 	return c.runtimeFor(id, err)
 }
 
-// knownNode reports whether the registering device is already a node
-// (re-login, key rotation): only new devices count against the quota.
-func (c *Cluster) knownNode(mk key.MachinePublic, req tailcfg.RegisterRequest) bool {
-	if _, err := c.platform.TailnetForNode(mk, req.NodeKey); err == nil { //nolint:noinlineerr
+// knownNode reports whether the registering device is already a node of
+// tailnet id (re-login, key rotation): only new devices count against the
+// quota. A node of another tailnet is a new device for id (P10 review A2: a
+// node of A naming its A key as OldNodeKey must not skip B's quota).
+func (c *Cluster) knownNode(id tailnet.ID, mk key.MachinePublic, req tailcfg.RegisterRequest) bool {
+	if got, err := c.platform.TailnetForNode(mk, req.NodeKey); err == nil && got == id { //nolint:noinlineerr
 		return true
 	}
 
@@ -471,9 +473,9 @@ func (c *Cluster) knownNode(mk key.MachinePublic, req tailcfg.RegisterRequest) b
 		return false
 	}
 
-	_, err := c.platform.TailnetForNode(mk, req.OldNodeKey)
+	got, err := c.platform.TailnetForNode(mk, req.OldNodeKey)
 
-	return err == nil
+	return err == nil && got == id
 }
 
 // checkQuota refuses a new device when tailnet id reached its limit, or when
