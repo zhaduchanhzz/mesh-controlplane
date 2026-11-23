@@ -37,6 +37,7 @@ var (
 	clusterRegClass     string
 	clusterRegMax       int64
 	clusterRegEndpoint  string
+	clusterKeyID        uint64
 )
 
 var errClusterIDRequired = errors.New("--cluster-id is required")
@@ -52,12 +53,13 @@ func init() {
 	tailnetAuthKeyCmd.Flags().DurationVar(&clusterKeyExpiry, "expiration", time.Hour, "key lifetime")
 	tailnetAuthKeyCmd.Flags().BoolVar(&clusterKeyReusable, "reusable", false, "key can register several nodes")
 	tailnetAuthKeyCmd.Flags().BoolVar(&clusterKeyEphemeral, "ephemeral", false, "nodes are ephemeral")
+	tailnetAuthKeyRevokeCmd.Flags().Uint64Var(&clusterKeyID, "id", 0, "ID of the pre-auth key (from `tailnet authkey`)")
 	tailnetReassignCmd.Flags().StringVar(&clusterMoveTo, "to", "", "cluster that takes ownership (this cluster again = new epoch)")
 	clusterRegisterCmd.Flags().StringVar(&clusterRegClass, "class", "shared", "shard class: shared or dedicated")
 	clusterRegisterCmd.Flags().Int64Var(&clusterRegMax, "max-devices", 5000, "device budget of the cluster")
 	clusterRegisterCmd.Flags().StringVar(&clusterRegEndpoint, "endpoint", "", "endpoint URL (default: server_url)")
 
-	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetAuthKeyCmd, tailnetNodesCmd, tailnetReassignCmd)
+	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetAuthKeyCmd, tailnetAuthKeyRevokeCmd, tailnetNodesCmd, tailnetReassignCmd)
 	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, tailnetCmd)
 	rootCmd.AddCommand(clusterCmd)
 }
@@ -252,7 +254,23 @@ var tailnetAuthKeyCmd = &cobra.Command{
 				return err
 			}
 
-			return printJSON(map[string]any{"key": pak.Key, "user": user.Name, "expiration": exp.UTC()})
+			return printJSON(map[string]any{"id": pak.ID, "key": pak.Key, "user": user.Name, "expiration": exp.UTC()})
+		})
+	},
+}
+
+var tailnetAuthKeyRevokeCmd = &cobra.Command{
+	Use:   "authkey-revoke",
+	Short: "Revoke pre-auth key --id of ACTIVE tailnet --slug (nodes already registered with it stay)",
+	RunE: func(_ *cobra.Command, _ []string) error {
+		if clusterKeyID == 0 {
+			return errors.New("--id is required")
+		}
+
+		// The tenant handle is scoped to --slug: a key ID of another tailnet
+		// is not found here.
+		return withTenant(func(_ tailnet.ID, hs *db.HSDatabase) error {
+			return hs.RevokePreAuthKey(clusterKeyID)
 		})
 	},
 }

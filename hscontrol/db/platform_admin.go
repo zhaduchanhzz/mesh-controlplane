@@ -89,8 +89,17 @@ func (p *Platform) TailnetBySlug(slug string) (types.Tailnet, error) {
 	return tns[0], nil
 }
 
+// ErrTailnetDeleting is returned when a status change would take a tailnet
+// out of DELETING. DELETING is terminal (S18): a deleted tenant, its keys and
+// its nodes must never be served again, so it cannot be reactivated, and its
+// slug stays taken (a new tenant gets a new slug and a new ID).
+var ErrTailnetDeleting = errors.New("tailnet is being deleted; DELETING is terminal")
+
 // SetTailnetStatus changes the status of a tailnet this cluster owns. A
 // running cluster process picks the change up within its reconcile interval.
+// A tailnet in DELETING keeps that status (setting DELETING again is a no-op
+// success); any other target fails with [ErrTailnetDeleting]. The check is in
+// the UPDATE itself, so a concurrent reactivation cannot slip in.
 func (p *Platform) SetTailnetStatus(id tailnet.ID, status types.TailnetStatus) error {
 	switch status {
 	case types.TailnetPending, types.TailnetActive, types.TailnetSuspended, types.TailnetDeleting:
@@ -101,18 +110,31 @@ func (p *Platform) SetTailnetStatus(id tailnet.ID, status types.TailnetStatus) e
 	ctx, cancel := p.lookupContext()
 	defer cancel()
 
-	res := p.db.WithContext(ctx).Model(&types.Tailnet{}).
-		Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster).
-		Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()})
+	q := p.db.WithContext(ctx).Model(&types.Tailnet{}).
+		Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster)
+	if status != types.TailnetDeleting {
+		q = q.Where("status <> ?", types.TailnetDeleting)
+	}
+
+	res := q.Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()})
 	if res.Error != nil {
 		return fmt.Errorf("updating tailnet %s: %w", id, res.Error)
 	}
 
-	if res.RowsAffected != 1 {
-		return fmt.Errorf("%w: tailnet %s", ErrTailnetNotOwned, id)
+	if res.RowsAffected == 1 {
+		return nil
 	}
 
-	return nil
+	var cur types.Tailnet
+
+	err := p.db.WithContext(ctx).
+		Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster).
+		Take(&cur).Error
+	if err == nil && cur.Status == types.TailnetDeleting {
+		return fmt.Errorf("%w: tailnet %s", ErrTailnetDeleting, id)
+	}
+
+	return fmt.Errorf("%w: tailnet %s", ErrTailnetNotOwned, id)
 }
 
 // ReassignTailnet hands tailnet id from this cluster to cluster to (which may

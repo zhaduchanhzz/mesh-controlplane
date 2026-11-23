@@ -17,6 +17,10 @@
 #
 # P08 (C03): the listener answers only its own hostname (421 otherwise).
 #
+# P09a (S01, S03, S16, S18): B under allow then deny-all while A keeps a
+# wildcard; whole-cluster restart without re-login; key revocation and tenant
+# delete/recreate.
+#
 # P10 scenarios (L01, F01-F03) change tailnets while the cluster runs: a live
 # tailnet, an owner_epoch bump, suspend/resume and a move to another cluster.
 #
@@ -195,6 +199,18 @@ cluster_log_has() {
   grep -q "$1" <<<"$out"
 }
 drop_ts() { ci_ "docker rm -f $1 >/dev/null 2>&1; docker volume rm $1 >/dev/null 2>&1; true"; }
+ALLOW_ALL='{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}'
+DENY_ALL='{"grants":[]}'
+# set_policy SLUG POLICY: store a policy as the operator; the running cluster
+# reloads it when policy_revision moves (P10).
+set_policy() {
+  local pf=/var/lib/headscale/cluster-e2e/policy.hujson
+  printf '%s\n' "$2" | cp_ "sudo install -o headscale -g headscale -m 0640 /dev/stdin $pf && $HSC tailnet policy --slug $1 --file $pf; rc=\$?; sudo rm -f $pf; exit \$rc"
+}
+# Hostnames by tailnet: A = p05-a*, p05-d-a (R04); B = p05-b*, p05-d-b (R04).
+has_a_host() { grep -qE '(^| )(p05-a[0-9]+|p05-d-a)( |$)' <<<"$1"; }
+has_b_host() { grep -qE '(^| )(p05-b[0-9]+|p05-d-b)( |$)' <<<"$1"; }
+health_code() { curl -s -o /dev/null -w '%{http_code}' -m 5 "$URL/health" || true; }
 
 # --------------------------------------------------------------- tests ---
 t_http() {
@@ -332,6 +348,82 @@ t_refusals() {
   save_logs p05-x
 }
 
+# ------------------------------------------------- S01/S03, S16 (P09a) ---
+# S01: inside B, b1 <-> b4 under an allow policy (peers + data plane), and
+# neither tailnet sees the other.
+# S03: A keeps its wildcard policy, B switches to {"grants":[]}: B's nodes
+# lose each other, A is unaffected and still sees nothing of B. B's allow
+# policy is restored afterwards for the P10 cases.
+t_scope() {
+  local r=0 problems="" pb1 pb4 pa ib4 i
+  start_ts p05-b4 && ts_auth p05-b4 up "$TMPD/key-b" p05-b4 || r=$?
+  if [ $r != 0 ]; then
+    record S01 FAIL "b4 registration rc=$r"; record S03 FAIL "not run: S01 setup failed"; return
+  fi
+  wait_peer p05-b1 p05-b4 30 || problems="$problems; b1 does not see b4"
+  wait_peer p05-b4 p05-b1 30 || problems="$problems; b4 does not see b1"
+  sleep "$OBSERVE_S"
+  pb1=$(peers p05-b1); pb4=$(peers p05-b4); pa="$(peers p05-a1) $(peers p05-a2)"
+  has_a_host "$pb1 $pb4" && problems="$problems; B sees A: [$pb1 | $pb4]"
+  has_b_host "$pa" && problems="$problems; A sees B: [$pa]"
+  ib4=$(selfip p05-b4)
+  ci_ "docker exec p05-b1 tailscale ping -c 5 --timeout 5s $ib4" >"$ART_DIR/logs/S01-ping.log" 2>&1 \
+    || problems="$problems; b1 cannot ping b4"
+  [ -z "$problems" ] && record S01 PASS "B: b1<->b4 peers and ping under allow; no A host in B, no B host in A" \
+    || record S01 FAIL "${problems#; }"
+
+  problems=""
+  if ! set_policy b "$DENY_ALL"; then record S03 FAIL "could not store the deny policy of B"; return; fi
+  for i in $(seq 1 30); do pb1=$(peers p05-b1); pb4=$(peers p05-b4); [ -z "$pb1$pb4" ] && break; sleep 1; done
+  [ -z "$pb1$pb4" ] || problems="$problems; B still sees peers under deny: [$pb1 | $pb4]"
+  pa=$(peers p05-a1)
+  case " $pa " in *" p05-a2 "*) ;; *) problems="$problems; a1 lost a2 [$pa]" ;; esac
+  has_b_host "$pa $(peers p05-a2)" && problems="$problems; A sees B under A's wildcard"
+  if ci_ "docker exec p05-b1 tailscale ping -c 2 --timeout 3s $ib4" >"$ART_DIR/logs/S03-ping.log" 2>&1; then
+    problems="$problems; b1 still pings b4 under deny"
+  fi
+  [ -z "$problems" ] && record S03 PASS "A wildcard, B grants=[]: B nodes see and reach no peer (${i}s); A unaffected, sees no B host" \
+    || record S03 FAIL "${problems#; }"
+
+  set_policy b "$ALLOW_ALL" && wait_peer p05-b1 p05-b4 30 || log "warning: B allow policy not visible on b1 within 30s"
+}
+
+# S16: restart the whole cluster process (same DB, same Noise key). Clients
+# reconnect by themselves: same node key, IP and node ID, no new node, no
+# cross-tailnet peer. A node that joins after the restart is seen by a1,
+# which proves a1's map stream is served by the new process.
+t_restart() {
+  local problems="" before after code i c r=0
+  local who="p05-a1 p05-a2 p05-b1 p05-b4"
+  snap() {
+    for c in $who; do printf '%s key=%s ip=%s\n' $c "$(nodekey $c)" "$(selfip $c)"; done
+    for c in a b; do
+      server_nodes $c | python3 -c 'import json,sys; [print(n["id"], n["hostname"], n["ipv4"], n["node_key"]) for n in sorted(json.load(sys.stdin), key=lambda n: n["id"])]'
+    done
+  }
+  before=$(snap)
+  local t0; t0=$(date +%s)
+  if ! cp_ "sudo systemctl restart headscale-cluster"; then record S16 FAIL "systemctl restart failed"; return; fi
+  for i in $(seq 1 30); do code=$(health_code); [ "$code" = 200 ] && break; sleep 1; done
+  [ "$code" = 200 ] || problems="$problems; /health $code after restart"
+  for c in $who; do wait_state $c Running 60 || problems="$problems; $c not Running"; done
+  after=$(snap)
+  if [ "$before" != "$after" ]; then
+    problems="$problems; identity changed (logs/S16-diff.txt)"
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >"$ART_DIR/logs/S16-diff.txt"
+  fi
+  start_ts p05-a4 && ts_auth p05-a4 up "$TMPD/key-a" p05-a4 || r=$?
+  [ $r = 0 ] || problems="$problems; a4 registration after restart rc=$r"
+  wait_peer p05-a1 p05-a4 45 || problems="$problems; a1 does not see a4 (stream not re-established)"
+  wait_peer p05-b1 p05-b4 30 || problems="$problems; b1 lost b4"
+  has_b_host "$(peers p05-a1)" && problems="$problems; A sees B after restart"
+  has_a_host "$(peers p05-b1)" && problems="$problems; B sees A after restart"
+  printf '%s\n' "$before" | wc -l >"$ART_DIR/logs/S16-identities-count.txt"
+  [ -z "$problems" ] && record S16 PASS "cluster restart: 4 clients back without re-login, same node key/IP/NodeID, no new node; a1 sees a4 joined after ($(( $(date +%s) - t0 ))s)" \
+    || record S16 FAIL "${problems#; }"
+  save_logs p05-a4; save_logs p05-b4
+}
+
 # ------------------------------------------------------------------ P10 ---
 t_p10() {
   local pf=/var/lib/headscale/cluster-e2e/policy.hujson i t0
@@ -422,6 +514,68 @@ t_p10() {
   local c; for c in p05-d1 p05-d2 p05-a3 p05-b2 p05-b3; do save_logs $c; done
 }
 
+# ---------------------------------------------------------- S18 (P09a) ---
+# S18: revoke a key; delete a tenant (DELETING, terminal) and create a new
+# one. Old keys and old nodes never come back: a revoked key or a key of the
+# deleted tenant registers nothing, DELETING cannot be undone, the slug
+# cannot be reused, and the deleted tenant's node, restarted, is not served
+# and does not appear in the new tenant.
+t_lifecycle() {
+  local problems="" kid i r=0 n st
+  if ! cp_ "$HSC tailnet create --slug e >/dev/null && $HSC tailnet status --slug e --set ACTIVE"; then
+    record S18 FAIL "could not create/activate tailnet e"; return
+  fi
+  for i in $(seq 1 20); do mint e e2e-e "$TMPD/key-e" 2>/dev/null && break; sleep 1; done
+  kid=$(cp_ "$HSC tailnet authkey --slug e --user e2e-e --expiration 30m" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); open(sys.argv[1],"w").write(d["key"]+"\n"); print(d["id"])' "$TMPD/key-e-rev")
+  chmod 600 "$TMPD/key-e-rev"
+  [ -n "$kid" ] && cp_ "$HSC tailnet authkey-revoke --slug e --id $kid" || problems="$problems; revoke failed (id=[$kid])"
+
+  # (1) revoked key: refused, no node (fresh device).
+  start_ts p05-y3 >/dev/null; r=0
+  ts_auth p05-y3 up "$TMPD/key-e-rev" p05-y-revoked || r=$?
+  n=$(server_field e p05-y-revoked id)
+  { [ $r != 0 ] && [ -z "$n" ]; } || problems="$problems; revoked key registered (rc=$r node=[$n])"
+  printf 'revoked key: %s\n' "$(oneline <"$TMPD/last.out")" >>"$ART_DIR/logs/S18.txt"
+  save_logs p05-y3; drop_ts p05-y3
+
+  # A live node of e, then delete e.
+  r=0; start_ts p05-e1 && ts_auth p05-e1 up "$TMPD/key-e" p05-e1 || r=$?
+  [ $r = 0 ] || problems="$problems; e1 registration rc=$r"
+  cp_ "$HSC tailnet status --slug e --set DELETING" || problems="$problems; could not set DELETING"
+  sleep 4
+  local jl; jl=$(cp_ "sudo journalctl -u headscale-cluster --since -60s --no-pager" 2>/dev/null | grep 'retiring tailnet runtime')
+  grep -qE 'slug[=":]+e([" ,}]|$)' <<<"$jl" || problems="$problems; runtime of e not retired"
+
+  # (2) DELETING is terminal and the slug is not reusable.
+  cp_ "$HSC tailnet status --slug e --set ACTIVE" >/dev/null 2>"$TMPD/reactivate.err" \
+    && problems="$problems; DELETING -> ACTIVE accepted"
+  cp_ "$HSC tailnet create --slug e" >/dev/null 2>&1 && problems="$problems; slug e created again"
+
+  # (3) the deleted tenant's key registers nothing (fresh device).
+  start_ts p05-y4 >/dev/null; r=0
+  ts_auth p05-y4 up "$TMPD/key-e" p05-y-deleted || r=$?
+  { [ $r != 0 ] && grep -q 'invalid pre auth key' "$TMPD/last.out"; } || problems="$problems; key of deleted e not refused (rc=$r)"
+  save_logs p05-y4; drop_ts p05-y4
+
+  # (4) a new tenant e2; e's node, restarted, does not come back anywhere.
+  cp_ "$HSC tailnet create --slug e2 >/dev/null && $HSC tailnet status --slug e2 --set ACTIVE" || problems="$problems; could not create e2"
+  for i in $(seq 1 20); do mint e2 e2e-e2 "$TMPD/key-e2" 2>/dev/null && break; sleep 1; done
+  ci_ "docker restart p05-e1 >/dev/null" || problems="$problems; could not restart e1"
+  r=0; start_ts p05-e2 && ts_auth p05-e2 up "$TMPD/key-e2" p05-e2 || r=$?
+  [ $r = 0 ] || problems="$problems; e2 registration rc=$r"
+  sleep 15
+  st=$(state p05-e1)
+  [ "$st" != Running ] || problems="$problems; deleted tenant's node e1 is Running again"
+  n=$(server_nodes e2 | python3 -c 'import json,sys; print(" ".join(sorted(x["hostname"] for x in json.load(sys.stdin))))')
+  [ "$n" = p05-e2 ] || problems="$problems; nodes of e2 = [$n]"
+  case " $(peers p05-e2) " in *p05-e1*) problems="$problems; e2 sees e1" ;; esac
+  printf 'e1 state after restart: %s\ne2 nodes: %s\n' "$st" "$n" >>"$ART_DIR/logs/S18.txt"
+  save_logs p05-e1; save_logs p05-e2
+  [ -z "$problems" ] && record S18 PASS "revoked key and key of deleted tenant refused; DELETING terminal, slug not reusable; deleted node not served after restart (state=$st); new tenant e2 has only its own node" \
+    || record S18 FAIL "${problems#; }"
+}
+
 # ---------------------------------------------------------------- main ---
 T0=$(date +%s)
 log "P05 E2E $RUN_ID at $SHA -> $URL (artifacts: ${ART_DIR#"$REPO"/})"
@@ -433,8 +587,11 @@ t_http
 t_isolation
 t_profiles
 t_refusals
+t_scope
+t_restart
 t_p10
-for c in p05-a1 p05-a2 p05-b1; do save_logs $c; done
+t_lifecycle
+for c in p05-a1 p05-a2 p05-b1 p05-b4; do save_logs $c; done
 cp_ "sudo journalctl -u headscale-cluster --since -$(( $(date +%s) - T0 + 5 ))s --no-pager" 2>&1 | redact >"$ART_DIR/logs/cluster.log"
 cleanup
 log "done in $(( $(date +%s) - T0 ))s: $FAILS FAIL, cleanup_ok=$CLEAN_OK"
