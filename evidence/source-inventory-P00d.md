@@ -223,7 +223,14 @@ Không thấy state nào trên đường peer map/fan-out dùng chung giữa run
 - `TestUpdateChangesCoversEveryNodeField` buộc phân loại field mới.
 - Config: thêm key thì cập nhật `TestConfigFields`, `default.go`, validate, rồi `go generate` cho docs; không sửa tay file generated.
 
-## 5. Đề xuất (chờ chủ dự án xác nhận)
+## 5. Đề xuất và quyết định
+
+**Quyết định của chủ dự án (2026-11-23), áp dụng cho §5.1–§5.3:**
+- **Q1 — chấp nhận:** khi filter đã biên dịch được chứng minh không đổi, đường tăng dần gửi `NodeAdded(X)` (delta một peer) thay cho `PolicyChange` khi node join. Coi là trong phạm vi: cùng các trường MapResponse, chỉ là loại change hẹp hơn.
+- **Q2 — chấp nhận §5.1:** `tuning.incremental_netmap.{enabled=false, reconcile_interval=60s, full_map_interval=15m}`.
+- **Q3 — chấp nhận §5.2:** M06 ≤ 10 s ở mọi lần thử, qua đường delta/policy (hai interval đặt 1 h khi chạy M06).
+- **Q4 — chấp nhận §5.3:** bước đầu chỉ join node mới và xóa node, phạm vi hẹp; autogroup:self, via, route/exit/capability để ticket sau. Mọi trường hợp khác full rebuild.
+
 
 ### 5.1 [Đề xuất] Tên và giá trị mặc định của công tắc
 
@@ -306,10 +313,10 @@ Lưu ý phạm vi: với allow_all, mọi node đều "bị ảnh hưởng" bở
 - A7: Không có ticker full map định kỳ nào khác ngoài các đường đã liệt kê (chỉ grep `FullUpdate()`/`FullSelf(` trong code không phải test).
 
 **Câu hỏi cho chủ dự án:**
-- Q1: Khi filter không đổi, gửi `NodeAdded(X)` thay `PolicyChange` cho join có được coi là "chọn người nhận" (trong phạm vi) không? Không có thay đổi này thì ô allow_all gần như không đổi.
-- Q2: Tên key và mặc định §5.1.
-- Q3: Bound M06 10 s và điều kiện "không nhờ full map/đối chiếu".
-- Q4: Phạm vi bước đầu §5.3 (join/xóa, chỉ policy global, không route/exit), autogroup:self để ticket sau.
+- Q1 (**đã chốt: có**, xem §5): Khi filter không đổi, gửi `NodeAdded(X)` thay `PolicyChange` cho join có được coi là "chọn người nhận" (trong phạm vi) không? Không có thay đổi này thì ô allow_all gần như không đổi.
+- Q2 (**đã chốt**: như §5.1): Tên key và mặc định §5.1.
+- Q3 (**đã chốt**: như §5.2): Bound M06 10 s và điều kiện "không nhờ full map/đối chiếu".
+- Q4 (**đã chốt**: như §5.3): Phạm vi bước đầu §5.3 (join/xóa, chỉ policy global, không route/exit), autogroup:self để ticket sau.
 
 **Điều bất ngờ:**
 - S1: `change.IsFull()` không xét `TargetNode`, nên `AddWork(change.FullSelf(id))` sẽ khiến `addToBatch` ép full map cho **mọi** node của runtime, không chỉ `id`. Hôm nay `FullSelf` chỉ đi qua `MapResponseFromChange` (đồng bộ, initial map) nên không lộ. Full map định kỳ hoặc fallback của đối chiếu **không được** đi qua đường này.
