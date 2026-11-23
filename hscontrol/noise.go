@@ -365,6 +365,13 @@ func (ns *noiseServer) C2NResponseHandler(
 		return
 	}
 
+	release, err := ns.enter()
+	if err != nil {
+		ns.refuseRoute(writer, err)
+		return
+	}
+	defer release()
+
 	nodeID, ok := ns.headscale.state.C2NTarget(c2nID)
 	if !ok {
 		http.Error(writer, "unknown or expired c2n request", http.StatusNotFound)
@@ -377,7 +384,7 @@ func (ns *noiseServer) C2NResponseHandler(
 		return
 	}
 
-	err := machineKeyMismatch(nv, ns.machineKey)
+	err = machineKeyMismatch(nv, ns.machineKey)
 	if err != nil {
 		httpError(writer, err)
 		return
@@ -485,6 +492,13 @@ func (ns *noiseServer) SSHActionHandler(
 		ns.refuseRoute(writer, err)
 		return
 	}
+
+	release, err := ns.enter()
+	if err != nil {
+		ns.refuseRoute(writer, err)
+		return
+	}
+	defer release()
 
 	// Authenticate the Noise session: the destination node is the
 	// tailscaled instance asking us whether to permit an incoming SSH
@@ -860,6 +874,13 @@ func (ns *noiseServer) PollNetMapHandler(
 		return
 	}
 
+	release, err := ns.enter()
+	if err != nil {
+		ns.refuseRoute(writer, err)
+		return
+	}
+	defer release()
+
 	nv, err := ns.getAndValidateNode(mapRequest)
 	if err != nil {
 		// A deleted node gets a bare 404, as Tailscale's control server sends;
@@ -954,6 +975,13 @@ func (ns *noiseServer) SetDNSHandler(writer http.ResponseWriter, req *http.Reque
 		ns.refuseRoute(writer, err)
 		return
 	}
+
+	release, err := ns.enter()
+	if err != nil {
+		ns.refuseRoute(writer, err)
+		return
+	}
+	defer release()
 
 	challenges := ns.headscale.challenges
 	if challenges == nil {
@@ -1128,6 +1156,13 @@ func (ns *noiseServer) RegistrationHandler(
 		}
 	}
 
+	release, err := ns.enter()
+	if err != nil {
+		ns.refuseRoute(writer, err)
+		return
+	}
+	defer release()
+
 	statusCode := http.StatusOK
 	registerResponse := func() *tailcfg.RegisterResponse { //nolint:contextcheck
 		if decodeErr != nil {
@@ -1171,7 +1206,7 @@ func (ns *noiseServer) RegistrationHandler(
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(statusCode)
 
-	err := json.NewEncoder(writer).Encode(registerResponse)
+	err = json.NewEncoder(writer).Encode(registerResponse)
 	if err != nil {
 		log.Error().Caller().Err(err).Msg("noise registration handler: failed to encode RegisterResponse")
 		return

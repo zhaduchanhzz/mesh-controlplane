@@ -3,6 +3,8 @@
 package servertest_test
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,6 +210,69 @@ func TestClusterQuotaNotBypassedByNodeOfOtherTailnet(t *testing.T) {
 
 	_, ok := b.State().GetNodeByNodeKey(nkB)
 	assert.False(t, ok, "no node in B")
+}
+
+// Concurrent enrollments must not exceed the limit (review of P10, finding
+// A3): the quota is checked inside the transaction that inserts the node, so
+// N devices racing for the last free places yield exactly limit nodes. Before
+// the fix the check ran in its own short transaction ahead of the insert and
+// every racer could see a free place.
+func TestClusterQuotaExactUnderConcurrentEnrollment(t *testing.T) {
+	const limit, racers = 3, 10
+
+	tc := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: tenantA})
+	tc.SetPolicy(t, tenantA, allowAll)
+	tc.SetClusterQuota(t, limit)
+
+	a := tc.Tenant(t, tenantA)
+	keyA := mintKey(t, a, "alice")
+
+	var (
+		wg       sync.WaitGroup
+		start    = make(chan struct{})
+		mu       sync.Mutex
+		accepted int
+		refusals []string
+	)
+
+	for i := range racers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			sess := servertest.NewRawNoiseSession(t, tc.URL, tc.NoiseKey(t), key.NewMachine())
+			<-start
+
+			resp, rr, err := sess.Register(ctx(t), &tailcfg.RegisterRequest{
+				NodeKey:  key.NewNode().Public(),
+				Auth:     &tailcfg.RegisterResponseAuth{AuthKey: keyA},
+				Hostinfo: &tailcfg.Hostinfo{Hostname: fmt.Sprintf("race-%d", i)},
+			}, nil)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case err != nil:
+				refusals = append(refusals, err.Error())
+			case resp.OK() && rr.MachineAuthorized && rr.Error == "":
+				accepted++
+			default:
+				refusals = append(refusals, fmt.Sprintf("%d %s", resp.Status, rr.Error))
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, limit, len(tc.NodeRows(t)), "nodes in A after %d concurrent enrollments (limit %d)", racers, limit)
+	assert.Equal(t, limit, accepted, "accepted registrations; refusals: %v", refusals)
+
+	for _, r := range refusals {
+		assert.Contains(t, r, "device limit", "a refusal names the limit")
+	}
 }
 
 // A tailnet whose owner cluster is not registered cannot enroll new devices:

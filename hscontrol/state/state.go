@@ -215,6 +215,10 @@ type State struct {
 	// cfg holds the current Headscale configuration
 	cfg *types.Config
 
+	// enrollGate, when set, admits each new node inside its insert
+	// transaction (see SetEnrollGate).
+	enrollGate atomic.Pointer[EnrollGate]
+
 	// nodeStore provides an in-memory cache for nodes.
 	nodeStore *NodeStore
 
@@ -516,6 +520,14 @@ func policyPeersFunc(pm policy.PolicyManager) PeersFunc {
 
 		return pm.BuildPeerMap(slice)
 	}
+}
+
+// Closed reports whether Close has been called.
+func (s *State) Closed() bool {
+	s.authCacheMu.Lock()
+	defer s.authCacheMu.Unlock()
+
+	return s.authCacheClosed
 }
 
 // Close gracefully shuts down the [State] instance and releases all resources.
@@ -2819,6 +2831,23 @@ func (s *State) applyAuthNodeUpdate(params authNodeUpdateParams) (types.NodeView
 
 // createAndSaveNewNode creates a new node, allocates IPs, saves to DB, and adds to [NodeStore].
 // It preserves netinfo from an existing node if one is provided (for faster DERP connectivity).
+// EnrollGate admits or refuses a new device inside the transaction that
+// inserts its node row; a non-nil error rolls the registration back and is
+// returned to the caller.
+type EnrollGate func(tx *gorm.DB) error
+
+// SetEnrollGate installs gate for every new node of this State (a cluster
+// installs the per-tailnet device quota, P10 review A3). nil removes it.
+func (s *State) SetEnrollGate(gate EnrollGate) {
+	if gate == nil {
+		s.enrollGate.Store(nil)
+
+		return
+	}
+
+	s.enrollGate.Store(&gate)
+}
+
 func (s *State) createAndSaveNewNode(params newNodeParams) (types.NodeView, error) {
 	// Preserve NetInfo from existing node if available
 	if params.Hostinfo != nil {
@@ -2947,6 +2976,15 @@ func (s *State) createAndSaveNewNode(params newNodeParams) (types.NodeView, erro
 
 	// New node - database first to get ID, then [NodeStore]
 	savedNode, err := hsdb.Write(s.db.DB, func(tx *gorm.DB) (*types.Node, error) {
+		// A new device is admitted in the transaction that inserts it, so a
+		// limit holds under concurrent enrollments (P10 review A3).
+		if gate := s.enrollGate.Load(); gate != nil {
+			err := (*gate)(tx)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		// Omit the AuthKey association: only auth_key_id is persisted here, the
 		// credential row is owned by the credential CRUD and must not be
 		// upserted from this node's (possibly stale) in-memory copy (#2862).

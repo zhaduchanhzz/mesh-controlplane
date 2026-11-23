@@ -124,6 +124,31 @@ func (ns *noiseServer) bindForNode(nk key.NodePublic) error {
 	return ns.bind(h)
 }
 
+// enter admits the current request into the bound runtime's in-flight gate
+// (P10 review B1); call it after a successful bind or requireBound and defer
+// the returned release. A retired runtime refuses (errRuntimeRetired), so no
+// handler starts on a runtime whose State is about to close. In a
+// single-tailnet process it is a no-op.
+func (ns *noiseServer) enter() (func(), error) {
+	if ns.router == nil {
+		return func() {}, nil
+	}
+
+	ns.bindMu.Lock()
+	h := ns.headscale
+	ns.bindMu.Unlock()
+
+	if h == nil {
+		return nil, errSessionUnbound
+	}
+
+	if h.retired.Load() || !h.inflight.enter() {
+		return nil, errRuntimeRetired
+	}
+
+	return h.inflight.leave, nil
+}
+
 // requireBound refuses requests that need a tenant before one is resolved.
 func (ns *noiseServer) requireBound() error {
 	ns.bindMu.Lock()

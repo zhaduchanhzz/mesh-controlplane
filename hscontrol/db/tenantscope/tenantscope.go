@@ -253,6 +253,9 @@ func confineUpsert(db *gorm.DB, f *schema.Field, id tailnet.ID) {
 	db.Statement.Clauses["ON CONFLICT"] = c
 }
 
+// activeStatus is types.TailnetActive; the plugin does not import types.
+const activeStatus = "ACTIVE"
+
 // checkFence verifies, in the statement's transaction, that the fence of the
 // context still owns the scope's tailnet.
 func checkFence(db *gorm.DB) {
@@ -272,17 +275,22 @@ func checkFence(db *gorm.DB) {
 		return
 	}
 
-	q := `SELECT owner_cluster_id, owner_epoch FROM tailnets WHERE id = ?`
+	// Status and deletion are part of the fence (P10 review A1): suspending or
+	// deleting a tailnet does not bump its epoch, so a runtime not retired
+	// yet, or a request still in flight, must be stopped here.
+	q := `SELECT owner_cluster_id, owner_epoch, status, deleted_at IS NULL FROM tailnets WHERE id = ?`
 	if db.Dialector.Name() == "postgres" {
-		q = `SELECT owner_cluster_id, owner_epoch FROM tailnets WHERE id = $1 FOR SHARE`
+		q = `SELECT owner_cluster_id, owner_epoch, status, deleted_at IS NULL FROM tailnets WHERE id = $1 FOR SHARE`
 	}
 
 	var (
-		owner string
-		epoch int64
+		owner  string
+		epoch  int64
+		status string
+		live   bool
 	)
 
-	err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, q, s.ID().String()).Scan(&owner, &epoch)
+	err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, q, s.ID().String()).Scan(&owner, &epoch, &status, &live)
 	if err != nil {
 		_ = db.AddError(fmt.Errorf("%w: reading owner of %s: %w", ErrFenced, s.ID(), err))
 
@@ -292,5 +300,12 @@ func checkFence(db *gorm.DB) {
 	if owner != f.Cluster() || epoch < 0 || tailnet.Epoch(epoch) != f.Epoch() {
 		_ = db.AddError(fmt.Errorf("%w: tailnet %s is owned by %q at epoch %d, writer holds %q at epoch %d",
 			ErrFenced, s.ID(), owner, epoch, f.Cluster(), f.Epoch()))
+
+		return
+	}
+
+	if status != activeStatus || !live {
+		_ = db.AddError(fmt.Errorf("%w: tailnet %s is %s (deleted=%t), not ACTIVE",
+			ErrFenced, s.ID(), status, !live))
 	}
 }

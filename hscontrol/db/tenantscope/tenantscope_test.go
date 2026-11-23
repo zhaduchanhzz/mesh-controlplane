@@ -40,9 +40,11 @@ type item struct {
 // tailnetRow is the platform table the fence reads (no tailnet_id column, so
 // the plugin itself does not scope it).
 type tailnetRow struct {
-	ID             string `gorm:"primaryKey"`
-	OwnerClusterID string `gorm:"column:owner_cluster_id;not null"`
-	OwnerEpoch     int64  `gorm:"column:owner_epoch;not null"`
+	ID             string     `gorm:"primaryKey"`
+	OwnerClusterID string     `gorm:"column:owner_cluster_id;not null"`
+	OwnerEpoch     int64      `gorm:"column:owner_epoch;not null"`
+	Status         string     `gorm:"column:status;not null;default:ACTIVE"`
+	DeletedAt      *time.Time `gorm:"column:deleted_at"`
 }
 
 func (tailnetRow) TableName() string { return "tailnets" }
@@ -136,7 +138,7 @@ func openDB(t *testing.T) *gorm.DB {
 		t.Fatal(err)
 	}
 	for _, tn := range []string{idA, idB} {
-		if err := db.Create(&tailnetRow{ID: tn, OwnerClusterID: testCluster, OwnerEpoch: testEpoch}).Error; err != nil {
+		if err := db.Create(&tailnetRow{ID: tn, OwnerClusterID: testCluster, OwnerEpoch: testEpoch, Status: "ACTIVE"}).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
