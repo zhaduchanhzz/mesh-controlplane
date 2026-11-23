@@ -176,7 +176,12 @@ func publicAuth(route string) string {
 	}
 }
 
-// noiseRoutes reads the routes NoiseUpgradeHandler registers from noise.go.
+const noiseRouterFunc = "serveNoiseSession"
+
+// noiseRoutes reads the routes the Noise session router registers from
+// noise.go. Since P05 the router is built in serveNoiseSession (called by
+// both Headscale.NoiseUpgradeHandler and the cluster), not in
+// NoiseUpgradeHandler itself.
 func noiseRoutes(t *testing.T) []endpointRoute {
 	t.Helper()
 
@@ -187,12 +192,12 @@ func noiseRoutes(t *testing.T) []endpointRoute {
 	var fn *ast.FuncDecl
 
 	for _, d := range file.Decls {
-		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "NoiseUpgradeHandler" {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == noiseRouterFunc {
 			fn = f
 		}
 	}
 
-	require.NotNil(t, fn, "NoiseUpgradeHandler not found in noise.go")
+	require.NotNil(t, fn, noiseRouterFunc+" not found in noise.go")
 
 	methods := map[string]string{
 		"Get": http.MethodGet, "Post": http.MethodPost, "Put": http.MethodPut, "Patch": http.MethodPatch,
