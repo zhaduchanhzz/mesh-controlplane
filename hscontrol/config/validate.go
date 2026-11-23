@@ -224,6 +224,14 @@ func Validate(c *types.Config) error {
 		})
 	}
 
+	if n := c.Tuning.MaxPeerEntries; n < 0 {
+		v.Add(&types.ConfigError{
+			Reason:  "tuning.max_peer_entries must not be negative",
+			Current: []types.KV{{Key: "tuning.max_peer_entries", Value: n}},
+			Hint:    "set to 0 for no bound, or a positive number (default: 1000000)",
+		})
+	}
+
 	validateDERP(c, v)
 	validateDatabase(c, v)
 	validateTailSQL(c, v)

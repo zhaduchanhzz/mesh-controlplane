@@ -3402,6 +3402,7 @@ Holds performance settings that rarely need changing.
       register_cache_max_entries: 1024
       node_store_batch_size: 100
       node_store_batch_timeout: 500ms
+      max_peer_entries: 1000000
     ```
 
 ### `tuning.batch_change_delay` { #tuning.batch_change_delay data-toc-label="batch_change_delay" }
@@ -3591,6 +3592,33 @@ The longest a partial batch of node changes waits before the rebuild; must be po
 
     ```nix
     services.headscale.settings.tuning.node_store_batch_timeout = "1s";
+    ```
+
+### `tuning.max_peer_entries` { #tuning.max_peer_entries data-toc-label="max_peer_entries" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `1000000`
+- **Env:** `HEADSCALE_TUNING_MAX_PEER_ENTRIES`
+
+Bounds the peer relationships of a tailnet: the sum, over its nodes, of the peers each node is sent. A new node is refused while the tailnet is at the bound. 1000000 is a full mesh of 1000 nodes; 0 means no bound. Policy changes are not refused.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      max_peer_entries: 4000000
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_MAX_PEER_ENTRIES=4000000
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.max_peer_entries = 4000000;
     ```
 
 ## Removed keys { #removed-keys }

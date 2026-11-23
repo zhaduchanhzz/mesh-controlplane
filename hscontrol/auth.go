@@ -495,7 +495,11 @@ func (h *Headscale) handleRegisterWithAuthKey(
 		// Quota refused in the node insert transaction (cluster, P10 review
 		// A3): same text as the early check in session routing.
 		if errors.Is(err, placement.ErrQuotaExceeded) {
-			return nil, NewHTTPError(http.StatusForbidden, "this tailnet has reached its device limit", nil)
+			return nil, NewHTTPError(http.StatusForbidden, quotaRefusal(err), nil)
+		}
+
+		if errors.Is(err, state.ErrPeerEntriesLimit) {
+			return nil, NewHTTPError(http.StatusForbidden, peerLimitRefusal, nil)
 		}
 
 		if perr, ok := errors.AsType[types.PAKError](err); ok {

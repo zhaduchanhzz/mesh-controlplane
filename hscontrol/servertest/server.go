@@ -60,6 +60,7 @@ type serverConfig struct {
 	certProvider          hsdns.Provider
 	prefixV4              netip.Prefix
 	policyEmptyDenies     bool
+	maxPeerEntries        int64
 }
 
 func defaultServerConfig() *serverConfig {
@@ -93,6 +94,12 @@ func WithBatcherWorkers(n int) ServerOption {
 // WithNodeStoreBatchTimeout overrides the server's default write-batch wait.
 func WithNodeStoreBatchTimeout(d time.Duration) ServerOption {
 	return func(c *serverConfig) { c.nodeStoreBatchTimeout = d }
+}
+
+// WithMaxPeerEntries sets tuning.max_peer_entries (P10d); zero keeps the
+// default.
+func WithMaxPeerEntries(n int64) ServerOption {
+	return func(c *serverConfig) { c.maxPeerEntries = n }
 }
 
 // WithEphemeralTimeout sets the ephemeral node inactivity timeout.
@@ -193,6 +200,10 @@ func NewServer(tb testing.TB, opts ...ServerOption) *TestServer {
 
 	if sc.nodeStoreBatchTimeout > 0 {
 		cfg.Tuning.NodeStoreBatchTimeout = sc.nodeStoreBatchTimeout
+	}
+
+	if sc.maxPeerEntries > 0 {
+		cfg.Tuning.MaxPeerEntries = sc.maxPeerEntries
 	}
 
 	// Off unless an option sets them: tests get no DNS they did not ask

@@ -149,6 +149,7 @@ func TestConfigFields(t *testing.T) {
 		"tuning.register_cache_max_entries",
 		"tuning.node_store_batch_size",
 		"tuning.node_store_batch_timeout",
+		"tuning.max_peer_entries",
 	}
 	// dns.extra_records is a list, a leaf like any other.
 	wantOpen := []string{"dns.nameservers.split", "dns.challenge.provider", "oidc.extra_params"}

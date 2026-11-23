@@ -131,6 +131,7 @@ var configFieldDocs = map[string]string{
 	"TaildropConfig.Enabled":                              "Gives every node the file-sharing capability. False omits it from the baseline; a policy `nodeAttrs` grant can still give it.",
 	"Tuning.BatchChangeDelay":                             "How often queued changes are sent to clients as one update; must be positive.",
 	"Tuning.BatcherWorkers":                               "The number of workers building map updates for connected clients. Zero picks the number from the CPU count.",
+	"Tuning.MaxPeerEntries":                               "Bounds the peer relationships of a tailnet: the sum, over its nodes, of the peers each node is sent. A new node is refused while the tailnet is at the bound. 1000000 is a full mesh of 1000 nodes; 0 means no bound. Policy changes are not refused.",
 	"Tuning.NodeMapSessionBufferedChanSize":               "How many map updates are queued per connected client.",
 	"Tuning.NodeStoreBatchSize":                           "How many node changes are batched before the in-memory node state, peer relationships included, is rebuilt; must be positive. Higher values save CPU on bulk changes but delay each change until its batch is full or `tuning.node_store_batch_timeout` passes.",
 	"Tuning.NodeStoreBatchTimeout":                        "The longest a partial batch of node changes waits before the rebuild; must be positive. Lower values answer single changes faster at the cost of more rebuilds.",

@@ -3781,8 +3781,16 @@ func compatView(cfg *types.Config) compatConfig {
 		}
 	}
 
-	tuning := compatTuning(cfg.Tuning)
-	tuning.BatcherWorkers = cfg.Tuning.BatcherWorkerCount()
+	tn := cfg.Tuning
+	tuning := compatTuning{
+		BatchChangeDelay:               tn.BatchChangeDelay,
+		NodeMapSessionBufferedChanSize: tn.NodeMapSessionBufferedChanSize,
+		BatcherWorkers:                 tn.BatcherWorkerCount(),
+		RegisterCacheExpiration:        tn.RegisterCacheExpiration,
+		RegisterCacheMaxEntries:        tn.RegisterCacheMaxEntries,
+		NodeStoreBatchSize:             tn.NodeStoreBatchSize,
+		NodeStoreBatchTimeout:          tn.NodeStoreBatchTimeout,
+	}
 
 	// Today's loader read an empty list as nil and an unset map as empty.
 	trusted := cfg.TrustedProxies
