@@ -46,6 +46,10 @@ var ErrSSHMachineKeyMismatch = errors.New(
 	"ssh action: noise session machine key does not match dst node",
 )
 
+// sshDstRefused is the one answer to an SSH action whose dst is not the
+// calling machine's node, whether or not that node exists.
+const sshDstRefused = "dst node is not this machine"
+
 // ErrSSHAuthSessionNotBound is returned when an SSH action follow-up
 // references an auth session that is not bound to an SSH check pair.
 var ErrSSHAuthSessionNotBound = errors.New(
@@ -489,11 +493,14 @@ func (ns *noiseServer) SSHActionHandler(
 	// throwaway machine key and pollute lastSSHAuth for arbitrary
 	// (src, dst) pairs, defeating SSH check-mode's stolen-key
 	// protections.
+	// A missing dst and a dst of another machine get the same status and
+	// body (P08a N5): otherwise any Noise session could probe which node
+	// IDs exist (IDs are global and sequential). The log keeps the cause.
 	dstNode, ok := ns.headscale.state.GetNodeByID(dstNodeID)
 	if !ok {
 		httpError(writer, NewHTTPError(
-			http.StatusNotFound,
-			"dst node not found",
+			http.StatusUnauthorized,
+			sshDstRefused,
 			fmt.Errorf("%w: %d", ErrSSHDstNodeNotFound, dstNodeID),
 		))
 
@@ -503,7 +510,7 @@ func (ns *noiseServer) SSHActionHandler(
 	if dstNode.MachineKey() != ns.machineKey {
 		httpError(writer, NewHTTPError(
 			http.StatusUnauthorized,
-			"machine key does not match dst node",
+			sshDstRefused,
 			fmt.Errorf(
 				"%w: machine key %s, dst node %d",
 				ErrSSHMachineKeyMismatch, ns.machineKey.ShortString(), dstNodeID,

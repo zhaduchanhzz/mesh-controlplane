@@ -2,6 +2,7 @@ package hscontrol
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,26 +178,37 @@ func (h *Headscale) handleVerifyRequest(
 		return NewHTTPError(http.StatusBadRequest, "Bad Request: invalid JSON", fmt.Errorf("parsing DERP client request: %w", err))
 	}
 
-	// Every DERP connect lands here, unauthenticated, so use the NodeKey
-	// index rather than scanning every node.
+	// Every DERP connect lands here, so use the NodeKey index rather than
+	// scanning every node. The state is this runtime's only: a node of
+	// another tailnet is unknown here.
 	nv, ok := h.state.GetNodeByNodeKey(derpAdmitClientRequest.NodePublic)
 
+	// An expired node is not admitted (P08, S15): the relay must not outlive
+	// the node's authorisation. Deleted nodes are gone from the index.
 	resp := &tailcfg.DERPAdmitClientResponse{
-		Allow: ok && nv.Valid(),
+		Allow: ok && nv.Valid() && !nv.IsExpired(),
 	}
 
 	return json.NewEncoder(writer).Encode(resp)
 }
 
-// VerifyHandler answers a DERP server's client-verification POST
-// ([tailcfg.DERPAdmitClientRequest]). A client is admitted while its NodeKey
-// belongs to a registered node; expiry, tags and ephemerality do not gate it.
+// VerifyHandler answers an external DERP server's client-verification POST
+// ([tailcfg.DERPAdmitClientRequest]). The DERP server must send the
+// derp.verify_secret_path secret as ?secret= (P08, F2): without it every
+// caller gets the same 403, so the endpoint tells nobody whether a node key
+// is registered. A client is admitted while its NodeKey belongs to a live,
+// unexpired node of this runtime.
 func (h *Headscale) VerifyHandler(
 	writer http.ResponseWriter,
 	req *http.Request,
 ) {
 	if req.Method != http.MethodPost {
 		httpError(writer, errMethodNotAllowed)
+		return
+	}
+
+	if !h.verifyCallerAuthenticated(req) {
+		http.Error(writer, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -214,6 +226,18 @@ func (h *Headscale) VerifyHandler(
 		httpError(writer, err)
 		return
 	}
+}
+
+// verifyCallerAuthenticated reports whether req carries the external DERP
+// verify secret. No secret configured: nobody is.
+func (h *Headscale) verifyCallerAuthenticated(req *http.Request) bool {
+	if len(h.verifySecret) == 0 {
+		return false
+	}
+
+	got := []byte(req.URL.Query().Get("secret"))
+
+	return subtle.ConstantTimeCompare(got, h.verifySecret) == 1
 }
 
 // KeyHandler provides the Headscale pub key

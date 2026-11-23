@@ -28,6 +28,10 @@ var (
 	errInvalidPKCEMethod        = errors.New("pkce.method must be either 'plain' or 'S256'")
 	errTrustedProxyZeroRange    = errors.New("0.0.0.0/0 and ::/0 are not allowed")
 	errURLSyntax                = errors.New("invalid URL syntax")
+	errOperatorCIDRTailscale    = errors.New("overlaps the Tailscale address space of tenant nodes")
+
+	tailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10")
+	tailscaleULA   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
 )
 
 // Validate reports every rule c breaks, in one error. It reads no file and
@@ -683,6 +687,33 @@ func validatePrefixes(c *types.Config, v *configValidator) {
 				Current: []types.KV{{Key: "trusted_proxies", Value: c.TrustedProxies}},
 				Detail:  err.Error(),
 				Hint:    "use specific proxy CIDRs; catch-all ranges are not allowed",
+				Cause:   err,
+			})
+
+			break
+		}
+	}
+
+	// The metrics/debug listener trusts these peers as operators (P08,
+	// S14): never a catch-all range, never the Tailscale address space that
+	// tenant nodes live in.
+	for i, p := range c.MetricsOperatorCIDRs {
+		var err error
+
+		switch {
+		case p.Bits() == 0:
+			err = errTrustedProxyZeroRange
+		case p.Overlaps(tailscaleCGNAT) || p.Overlaps(tailscaleULA):
+			err = errOperatorCIDRTailscale
+		}
+
+		if err != nil {
+			err = fmt.Errorf("metrics_operator_cidrs[%d] %q: %w", i, p.String(), err)
+			v.Add(&types.ConfigError{
+				Reason:  "metrics_operator_cidrs contains a CIDR that is not an operator network",
+				Current: []types.KV{{Key: "metrics_operator_cidrs", Value: c.MetricsOperatorCIDRs}},
+				Detail:  err.Error(),
+				Hint:    "list the operator hosts or management network only",
 				Cause:   err,
 			})
 

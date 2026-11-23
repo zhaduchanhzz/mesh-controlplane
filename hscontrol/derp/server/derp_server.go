@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -59,16 +61,23 @@ type DERPServer struct {
 	tailscaleDERP *derpserver.Server
 }
 
+// NewDERPServer builds the embedded DERP server. With verify_clients on,
+// verifyURL must be the runtime's own URL from [RegisterVerifyHandler].
 func NewDERPServer(
 	serverURL string,
 	derpKey key.NodePrivate,
 	cfg *types.DERPConfig,
+	verifyURL string,
 ) (*DERPServer, error) {
 	log.Trace().Caller().Msg("creating new embedded DERP server")
 	server := derpserver.New(derpKey, util.TSLogfWrapper()) // nolint // zerolinter complains
 
 	if cfg.Server.VerifyClients {
-		server.SetVerifyClientURL(DerpVerifyScheme + "://verify")
+		if verifyURL == "" {
+			return nil, errNoVerifyHandler
+		}
+
+		server.SetVerifyClientURL(verifyURL)
 		server.SetVerifyClientURLFailOpen(false)
 	}
 
@@ -396,20 +405,48 @@ func (d *DERPServer) ListenSTUN(ctx context.Context) (*stunserver.STUNServer, er
 	return srv, nil
 }
 
-func NewDERPVerifyTransport(handleVerifyRequest func(*http.Request, io.Writer) error) *DERPVerifyTransport {
-	return &DERPVerifyTransport{
-		handleVerifyRequest: handleVerifyRequest,
+// The embedded DERP server verifies clients by POSTing to a URL through
+// http.DefaultClient (tailscale derpserver). The scheme handler is therefore
+// process global and registered once; each runtime gets its own host under
+// that scheme, so two runtimes in one process never answer for each other
+// (P08, P08a F3/N2: the old fixed URL panicked on the second runtime and let
+// the first answer for every DERP).
+var (
+	verifyOnce     sync.Once
+	verifyHandlers sync.Map // host → func(*http.Request, io.Writer) error
+)
+
+var errNoVerifyHandler = errors.New("no DERP verify handler for this runtime")
+
+// RegisterVerifyHandler routes DERP verify requests for a new, unique URL to
+// handle and returns that URL and a function that removes the route. A
+// request for a removed or unknown URL fails, and the DERP server (fail open
+// off) refuses the client.
+func RegisterVerifyHandler(handle func(*http.Request, io.Writer) error) (verifyURL string, unregister func()) {
+	verifyOnce.Do(func() {
+		t := http.DefaultTransport.(*http.Transport) //nolint:forcetypeassert
+		t.RegisterProtocol(DerpVerifyScheme, verifyDispatcher{})
+	})
+
+	host := strings.ToLower(rand.Text())
+	verifyHandlers.Store(host, handle)
+
+	return DerpVerifyScheme + "://" + host + "/verify", func() { verifyHandlers.Delete(host) }
+}
+
+type verifyDispatcher struct{}
+
+func (verifyDispatcher) RoundTrip(req *http.Request) (*http.Response, error) {
+	h, ok := verifyHandlers.Load(req.URL.Host)
+	if !ok {
+		return nil, errNoVerifyHandler
 	}
-}
 
-type DERPVerifyTransport struct {
-	handleVerifyRequest func(*http.Request, io.Writer) error
-}
+	handle := h.(func(*http.Request, io.Writer) error) //nolint:forcetypeassert
 
-func (t *DERPVerifyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	buf := new(bytes.Buffer)
 
-	err := t.handleVerifyRequest(req, buf)
+	err := handle(req, buf)
 	if err != nil {
 		log.Error().Caller().Err(err).Msg("failed to handle client verify request")
 

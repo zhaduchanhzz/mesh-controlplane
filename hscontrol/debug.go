@@ -23,35 +23,6 @@ import (
 	"tailscale.com/tsweb"
 )
 
-// protectedDebugHandler wraps an [http.Handler] with an access check that
-// allows requests from loopback, Tailscale CGNAT IPs, and private
-// (RFC 1918 / RFC 4193) addresses. This extends [tsweb.Protected] which
-// only allows loopback and Tailscale IPs.
-func protectedDebugHandler(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tsweb.AllowDebugAccess(r) {
-			h.ServeHTTP(w, r)
-
-			return
-		}
-
-		// [tsweb.AllowDebugAccess] rejects X-Forwarded-For and non-TS IPs.
-		// Additionally allow private/LAN addresses so operators can reach
-		// debug endpoints from their local network without tailscaled.
-		ipStr, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			ip, parseErr := netip.ParseAddr(ipStr)
-			if parseErr == nil && ip.IsPrivate() {
-				h.ServeHTTP(w, r)
-
-				return
-			}
-		}
-
-		http.Error(w, "debug access denied", http.StatusForbidden)
-	})
-}
-
 // writeJSON marshals v with indentation and writes it as a 200 JSON response.
 func writeJSON(w http.ResponseWriter, v any) {
 	b, err := json.MarshalIndent(v, "", "  ")
@@ -269,13 +240,12 @@ func (h *Headscale) debugHTTPServer() *http.Server {
 		_, _ = w.Write([]byte(templates.PingPage(query, result, nodes).Render())) //nolint:gosec // G705: templ component auto-escapes
 	}))
 
-	// [statsviz.Register] would mount handlers directly on the raw mux,
-	// bypassing the access gate. Build the server by hand and wrap
-	// each handler with [protectedDebugHandler].
+	// The whole listener sits behind [operatorOnly] (P08), statsviz
+	// included; it used to admit any private address on its own.
 	statsvizSrv, err := statsviz.NewServer()
 	if err == nil {
-		debugMux.Handle("/debug/statsviz/", protectedDebugHandler(statsvizSrv.Index()))
-		debugMux.Handle("/debug/statsviz/ws", protectedDebugHandler(statsvizSrv.Ws()))
+		debugMux.Handle("/debug/statsviz/", statsvizSrv.Index())
+		debugMux.Handle("/debug/statsviz/ws", statsvizSrv.Ws())
 		debug.URL("/debug/statsviz", "Statsviz (visualise go metrics)")
 	}
 
@@ -284,7 +254,7 @@ func (h *Headscale) debugHTTPServer() *http.Server {
 
 	debugHTTPServer := &http.Server{
 		Addr:         string(h.cfg.MetricsAddr),
-		Handler:      securityHeaders(h.debugHostGuard(debugMux)),
+		Handler:      securityHeaders(operatorOnly(h.cfg.MetricsOperatorCIDRs, h.debugHostGuard(debugMux))),
 		ReadTimeout:  types.HTTPTimeout,
 		WriteTimeout: 0,
 	}
