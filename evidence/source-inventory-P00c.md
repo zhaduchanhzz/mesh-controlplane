@@ -54,8 +54,8 @@ Về revocation/stale peer map: vì snapshot chứa write, không có peer map c
 | cùng lệnh, `-count=3000` | `2ef3c84` | 0 | 28.4 s |
 | `go build ./...` | `2ef3c84` | 0 | |
 | `go vet ./...` | `2ef3c84` | 0 | |
-| `go test -race -count=1 -p 8 ./hscontrol/state/ ./hscontrol/mapper/ ./hscontrol/db/... ./hscontrol/policy/...` | `2ef3c84` | chưa có | đang chạy lúc commit; kết quả ghi ở `~/src/p00c-rescue/race-main.log`, chưa được ghi vào đây |
-| `go test -race -count=1 -tags p05cluster -run Cluster ./hscontrol/servertest/` | `2ef3c84` | chưa có | xếp sau lệnh trên; chưa chạy xong lúc commit |
+| `go test -race -count=1 -p 8 ./hscontrol/state/ ./hscontrol/mapper/ ./hscontrol/db/... ./hscontrol/policy/...` | `2ef3c84` | 0 | 9 gói ok; `policy/v2` 501 s, `state` 256 s, `db` 180 s, `mapper` 116 s |
+| `go test -race -count=1 -tags p05cluster -run Cluster ./hscontrol/servertest/` | `2ef3c84` | 0 | `servertest` ok, 65 s |
 
 Log trên mc-ci: `~/src/p00c-rescue/{red,green,green3000,race-main,race-cluster}.log` (không commit).
 
