@@ -294,3 +294,15 @@ Khác:
 - **Benchmark:** không áp dụng.
 - **Known limitations / security blockers:** F2, N1, N2, N3 (và N4 khi bật tailsql) là blocker cho gate N1 (P09). Router Noise liệt kê bằng AST; debug liệt kê bằng trang chỉ mục + danh sách tĩnh pprof. Chưa có test cho N4, N5, N7. `gofmt`/lint chưa chạy trên Windows (CRLF), xem §6.
 - **Reviewer approval:** chưa.
+
+## 8. Cập nhật bởi P08 (allowlist `hscontrol/testdata/p08a_endpoint_allowlist.txt`)
+
+Bảng §3 giữ nguyên làm hồ sơ P08a. Các thay đổi P08 so với bảng đó (chi tiết và lệnh test: `evidence/source-inventory-P08.md`):
+
+| Thay đổi | Trước (P08a) | Sau (P08) |
+|---|---|---|
+| Mọi route của listener debug (`metrics_listen_addr`), kể cả `/metrics` và statsviz | `tsweb-protected` / `private-ip` / `none` | `operator-only`: `operatorOnly` bọc cả listener; chỉ loopback hoặc `metrics_operator_cidrs`; dải Tailscale không bao giờ là operator (F1, N1, N3) |
+| `public POST /verify` | `none` | `verify-secret`: cần secret trong `derp.verify_secret_path`; không cấu hình thì mọi caller nhận cùng 403; node hết hạn không được admit (F2) |
+| Listener public của cluster (`headscale cluster serve`) | chưa có trong inventory | Thêm 11 dòng `cluster …`: chỉ route không gắn tenant và `/ts2021`; mọi route sau guard Host/SNI (421). `/register/{auth_id}`, `/auth/{auth_id}` = `disabled-404`. Không có API admin, debug, metrics |
+| Listener metrics của cluster | chưa có | Chỉ `GET /metrics`, sau `operatorOnly`; không có trang debug (test `TestP08ClusterMetricsOperatorsOnly`, không liệt kê trong allowlist vì không phải router chi) |
+| Router Noise | đọc từ `NoiseUpgradeHandler` | đọc từ `serveNoiseSession` (P05 đã chuyển router sang hàm này); tập route không đổi |
