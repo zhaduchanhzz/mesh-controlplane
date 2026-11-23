@@ -154,10 +154,61 @@ func BenchmarkFenceWrite(b *testing.B) {
 	}
 }
 
-// BenchmarkFenceOwnerMoveUnderLoad measures the latency of the ownership
-// move (UPDATE tailnets ... owner_epoch + 1) while writers of that tailnet
-// hold FOR SHARE on the row. Each iteration is one move; the writers' fence
-// follows the new epoch so they keep writing.
+// writeLoad runs n writers updating their own row of tailnet A as fast as
+// they can, each with the fence of the current epoch. stop ends them and
+// returns the number of writes that committed.
+func writeLoad(tb testing.TB, db *gorm.DB, ownerID uint64, n int, epoch *atomic.Int64) (stop func() int64) {
+	tb.Helper()
+
+	var (
+		done  atomic.Bool
+		wrote atomic.Int64
+		wg    sync.WaitGroup
+	)
+
+	for w := range n {
+		it := item{Name: "w", OwnerID: ownerID}
+		if err := db.WithContext(ctxFor(tb, idA)).Create(&it).Error; err != nil {
+			tb.Fatal(err)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; !done.Load(); i++ {
+				ctx := fencedCtx(tb, idA, testCluster, tailnet.Epoch(epoch.Load()))
+				err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
+					Update("name", fmt.Sprintf("%d-%d", w, i)).Error
+				if err == nil {
+					wrote.Add(1)
+				}
+				// ErrFenced right after a move is the fence working.
+			}
+		}()
+	}
+
+	return func() int64 {
+		done.Store(true)
+		wg.Wait()
+
+		return wrote.Load()
+	}
+}
+
+// moveEpoch is an ownership change as production does it: LockOwnership,
+// then the UPDATE of the tailnets row, in one transaction.
+func moveEpoch(db *gorm.DB, next int64) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := LockOwnership(tx, idA); err != nil {
+			return err
+		}
+
+		return tx.Exec(`UPDATE tailnets SET owner_epoch = ? WHERE id = ?`, next, idA).Error
+	})
+}
+
+// BenchmarkFenceOwnerMoveUnderLoad measures the latency of an ownership
+// change while writers of that tailnet run back to back. Before P10c (plain
+// UPDATE against FOR SHARE) one move took 26-136 s with 8 writers.
 func BenchmarkFenceOwnerMoveUnderLoad(b *testing.B) {
 	for _, writers := range []int{0, 8, 32} {
 		b.Run(fmt.Sprintf("writers=%d", writers), func(b *testing.B) {
@@ -166,49 +217,22 @@ func BenchmarkFenceOwnerMoveUnderLoad(b *testing.B) {
 				b.Skip("FOR SHARE is PostgreSQL only")
 			}
 
-			var (
-				epoch atomic.Int64
-				stop  atomic.Bool
-				wrote atomic.Int64
-				wg    sync.WaitGroup
-			)
+			var epoch atomic.Int64
 			epoch.Store(testEpoch)
-
-			for w := range writers {
-				it := item{Name: "w", OwnerID: ownerID}
-				if err := db.WithContext(ctxFor(b, idA)).Create(&it).Error; err != nil {
-					b.Fatal(err)
-				}
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for i := 0; !stop.Load(); i++ {
-						ctx := fencedCtx(b, idA, testCluster, tailnet.Epoch(epoch.Load()))
-						err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
-							Update("name", fmt.Sprintf("%d-%d", w, i)).Error
-						if err == nil {
-							wrote.Add(1)
-						}
-						// ErrFenced right after a move is the fence working.
-					}
-				}()
-			}
+			stop := writeLoad(b, db, ownerID, writers, &epoch)
 			time.Sleep(200 * time.Millisecond) // writers running
 
-			b.ResetTimer()
 			start := time.Now()
 			for b.Loop() {
 				next := epoch.Load() + 1
-				if err := db.Exec(`UPDATE tailnets SET owner_epoch = ? WHERE id = ?`, next, idA).Error; err != nil {
+				if err := moveEpoch(db, next); err != nil {
 					b.Fatal(err)
 				}
 				epoch.Store(next)
 			}
 			elapsed := time.Since(start)
 			b.StopTimer()
-			stop.Store(true)
-			wg.Wait()
-			b.ReportMetric(float64(wrote.Load())/elapsed.Seconds(), "writes/s")
+			b.ReportMetric(float64(stop())/elapsed.Seconds(), "writes/s")
 		})
 	}
 }

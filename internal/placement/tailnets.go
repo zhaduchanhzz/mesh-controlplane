@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
@@ -123,6 +124,11 @@ func (r *Registry) setStatus(
 	detail := map[string]any{"status": to, "expected_epoch": expectedEpoch}
 
 	return mutate(ctx, r, op, action, id, detail, func(tx *gorm.DB) (types.Tailnet, string, error) {
+		err := tenantscope.LockOwnership(tx, id)
+		if err != nil {
+			return types.Tailnet{}, "", err
+		}
+
 		q := tx.Model(&types.Tailnet{}).
 			Where("id = ? AND owner_epoch = ? AND status IN ? AND deleted_at IS NULL", id, expectedEpoch, from)
 		if needPolicy {
@@ -193,6 +199,11 @@ func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string,
 	detail := map[string]any{"from_cluster": fromCluster, "from_epoch": fromEpoch, "to_cluster": toCluster}
 
 	return mutate(ctx, r, op, "MoveOwner", id, detail, func(tx *gorm.DB) (types.Tailnet, string, error) {
+		err := tenantscope.LockOwnership(tx, id)
+		if err != nil {
+			return types.Tailnet{}, "", err
+		}
+
 		target, err := lockClusters(tx, "UPDATE", "id = ?", toCluster)
 		if err != nil {
 			return types.Tailnet{}, "", err

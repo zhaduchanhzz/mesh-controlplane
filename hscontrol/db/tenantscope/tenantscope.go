@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -256,6 +257,50 @@ func confineUpsert(db *gorm.DB, f *schema.Field, id tailnet.ID) {
 // activeStatus is types.TailnetActive; the plugin does not import types.
 const activeStatus = "ACTIVE"
 
+// ownershipLockPrefix namespaces the per-tailnet advisory lock of the fence.
+const ownershipLockPrefix = "tenantscope/ownership/"
+
+// OwnershipLockTimeout bounds how long LockOwnership waits for the writes in
+// flight on the tailnet. New writes of that tailnet queue behind the waiting
+// change, so this is also the longest write stall it can cause.
+var OwnershipLockTimeout = 5 * time.Second
+
+// LockOwnership must be the first statement of every transaction that
+// updates a tailnets row (owner move, status change, policy revision) on
+// PostgreSQL (P10c, review B3).
+//
+// Every fenced write holds FOR SHARE on the tailnets row until it commits.
+// Row share locks do not queue: a new FOR SHARE joins the current holders
+// even while an UPDATE waits, so under a steady write load the UPDATE
+// starves (benchmark: 26-136 s per owner move with 8 writers). Fenced writes
+// therefore also take a shared advisory lock on the tailnet, and the change
+// takes it exclusive here. The heavyweight lock manager queues fairly: once
+// the change waits, new writes wait behind it; the change runs as soon as
+// the writes in flight commit, then they read the new owner, epoch and
+// status and fail with ErrFenced if it no longer allows them.
+//
+// FOR SHARE stays in the fence, so a change that forgets this call is still
+// correct (only starvable). The wait is bounded by OwnershipLockTimeout
+// (SET LOCAL lock_timeout, for the rest of the transaction). No-op on
+// SQLite, which serialises writers.
+func LockOwnership(tx *gorm.DB, id string) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+
+	err := tx.Exec(fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", OwnershipLockTimeout.Milliseconds())).Error
+	if err != nil {
+		return fmt.Errorf("setting lock_timeout: %w", err)
+	}
+
+	err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(? || ?, 0))`, ownershipLockPrefix, id).Error
+	if err != nil {
+		return fmt.Errorf("locking ownership of tailnet %s: %w", id, err)
+	}
+
+	return nil
+}
+
 // checkFence verifies, in the statement's transaction, that the fence of the
 // context still owns the scope's tailnet.
 func checkFence(db *gorm.DB) {
@@ -280,7 +325,11 @@ func checkFence(db *gorm.DB) {
 	// yet, or a request still in flight, must be stopped here.
 	q := `SELECT owner_cluster_id, owner_epoch, status, deleted_at IS NULL FROM tailnets WHERE id = ?`
 	if db.Dialector.Name() == "postgres" {
-		q = `SELECT owner_cluster_id, owner_epoch, status, deleted_at IS NULL FROM tailnets WHERE id = $1 FOR SHARE`
+		// The shared advisory lock is taken before the row lock (LockRows
+		// runs above the join): see LockOwnership for why both.
+		q = `SELECT t.owner_cluster_id, t.owner_epoch, t.status, t.deleted_at IS NULL
+			FROM pg_advisory_xact_lock_shared(hashtextextended('` + ownershipLockPrefix + `' || $1, 0)) AS l, tailnets t
+			WHERE t.id = $1 FOR SHARE OF t`
 	}
 
 	var (
