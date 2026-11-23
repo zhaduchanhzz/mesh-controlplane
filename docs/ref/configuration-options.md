@@ -160,6 +160,35 @@ The host:port serving `/metrics` and `/debug`; keep it private. Empty disables t
     services.headscale.settings.metrics_listen_addr = "127.0.0.1:9090";
     ```
 
+## `metrics_operator_cidrs` { #metrics_operator_cidrs data-toc-label="metrics_operator_cidrs" }
+
+- **Type:** [list of prefixes](#type-list)
+- **Default:** `[]`
+- **Env:** `HEADSCALE_METRICS_OPERATOR_CIDRS` ([space-separated or JSON array](#env))
+
+The networks whose peers, besides loopback, may use [`metrics_listen_addr`](#metrics_listen_addr). Empty admits loopback only. Private ranges are not trusted by default, `X-Forwarded-For` never is, and a range overlapping the Tailscale address space (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) is refused: tenant nodes own addresses there.
+
+=== "YAML"
+
+    ```yaml
+    metrics_operator_cidrs:
+      - 192.0.2.0/28
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_METRICS_OPERATOR_CIDRS='["192.0.2.0/28"]'
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.metrics_operator_cidrs = [
+      "192.0.2.0/28"
+    ];
+    ```
+
 ## `unix_socket` { #unix_socket data-toc-label="unix_socket" }
 
 - **Type:** [string](#type-string)
@@ -797,6 +826,7 @@ The DERP map: the relay servers clients use when they cannot connect directly, f
       paths: []
       auto_update_enabled: true
       update_frequency: 3h
+      verify_secret_path: ""
     ```
 
 ### `derp.server` { #derp.server data-toc-label="server" }
@@ -1214,6 +1244,33 @@ How often [`derp.auto_update_enabled`](#derp.auto_update_enabled) reloads the DE
 
     ```nix
     services.headscale.settings.derp.update_frequency = "24h";
+    ```
+
+### `derp.verify_secret_path` { #derp.verify_secret_path data-toc-label="verify_secret_path" }
+
+- **Type:** [string](#type-string)
+- **Default:** `""`
+- **Env:** `HEADSCALE_DERP_VERIFY_SECRET_PATH`
+
+A file holding the secret (at least 32 characters) an external DERP server must send to `/verify`, as `?secret=` in its `--verify-client-url`. Empty refuses every `/verify` call: the endpoint would otherwise tell anyone whether a node key is registered. The embedded DERP server does not use it.
+
+=== "YAML"
+
+    ```yaml
+    derp:
+      verify_secret_path: /etc/headscale/derp_verify_secret
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DERP_VERIFY_SECRET_PATH=/etc/headscale/derp_verify_secret
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.derp.verify_secret_path = "/etc/headscale/derp_verify_secret";
     ```
 
 ## `database` { #database data-toc-label="database" }

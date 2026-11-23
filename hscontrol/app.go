@@ -1,6 +1,7 @@
 package hscontrol
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/ecdsa"
@@ -117,6 +118,40 @@ type Headscale struct {
 	// bound to it, closed on retirement.
 	retired  atomic.Bool
 	sessions sync.Map // *noiseServer -> struct{}
+
+	// derpVerifyURL is this runtime's own embedded-DERP verify route (P08);
+	// derpVerifyUnregister removes it.
+	derpVerifyURL        string
+	derpVerifyUnregister func()
+
+	// verifySecret authenticates external DERP servers on the public
+	// /verify (derp.verify_secret_path). Nil refuses every call (P08, F2).
+	verifySecret []byte
+}
+
+// minVerifySecretLen is the shortest derp.verify_secret_path content
+// accepted: the secret is the only thing between the Internet and a node-key
+// existence oracle.
+const minVerifySecretLen = 32
+
+func readVerifySecret(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading derp.verify_secret_path: %w", err)
+	}
+
+	secret := bytes.TrimSpace(b)
+	if len(secret) < minVerifySecretLen {
+		return nil, fmt.Errorf("derp.verify_secret_path: secret must be at least %d characters", minVerifySecretLen)
+	}
+
+	return secret, nil
+}
+
+// DERPVerifyURL is the URL this runtime's embedded DERP server verifies
+// clients against; empty without verify_clients.
+func (h *Headscale) DERPVerifyURL() string {
+	return h.derpVerifyURL
 }
 
 var (
@@ -218,6 +253,13 @@ func newHeadscale(
 		)
 	}
 
+	if cfg.DERP.VerifySecretPath != "" {
+		app.verifySecret, err = readVerifySecret(cfg.AbsPath(cfg.DERP.VerifySecretPath))
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if len(cfg.TrustedProxies) > 0 {
 		app.realIPMiddleware, err = trustedProxyRealIP(cfg.TrustedProxies)
 		if err != nil {
@@ -308,17 +350,16 @@ func newHeadscale(
 		}
 
 		if cfg.DERP.Server.VerifyClients {
-			t := http.DefaultTransport.(*http.Transport) //nolint:forcetypeassert
-			t.RegisterProtocol(
-				derpServer.DerpVerifyScheme,
-				derpServer.NewDERPVerifyTransport(app.handleVerifyRequest),
-			)
+			// This runtime's own verify route (P08): never shared with
+			// another runtime in the process.
+			app.derpVerifyURL, app.derpVerifyUnregister = derpServer.RegisterVerifyHandler(app.handleVerifyRequest)
 		}
 
 		embeddedDERPServer, err := derpServer.NewDERPServer(
 			cfg.ServerURL,
 			key.NodePrivate(*derpServerKey),
 			&cfg.DERP,
+			app.derpVerifyURL,
 		)
 		if err != nil {
 			return nil, err

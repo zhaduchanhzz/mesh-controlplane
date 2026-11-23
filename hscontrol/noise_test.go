@@ -149,13 +149,25 @@ func TestMetricsRouterIsolation(t *testing.T) {
 		})
 	}
 
+	// The private listener answers operators only (P08, F1/N3): loopback by
+	// default. httptest's default RemoteAddr (192.0.2.1) is not an operator.
 	private := app.debugHTTPServer().Handler
+
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
 	rec := httptest.NewRecorder()
 	private.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "# HELP")
+
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	rec = httptest.NewRecorder()
+	private.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code,
+		"/metrics must refuse a caller that is not a configured operator")
+	assert.NotContains(t, rec.Body.String(), "# HELP")
 }
 
 // newNoiseRouterWithBodyLimit builds a chi router with the same body-limit
@@ -858,7 +870,9 @@ func TestSSHActionHandler_RejectsRogueMachineKey(t *testing.T) {
 }
 
 // TestSSHActionHandler_RejectsUnknownDst verifies that the handler
-// rejects a request for a dst_node_id that does not exist with 404.
+// rejects a request for a dst_node_id that does not exist exactly like a dst
+// that belongs to another machine (P08, N5): 401 "dst node is not this
+// machine", so the endpoint is not an oracle for which node IDs exist.
 func TestSSHActionHandler_RejectsUnknownDst(t *testing.T) {
 	t.Parallel()
 
@@ -874,8 +888,9 @@ func TestSSHActionHandler_RejectsUnknownDst(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ns.SSHActionHandler(rec, newSSHActionRequest(t, src.ID, 9999))
 
-	assert.Equal(t, http.StatusNotFound, rec.Code,
-		"unknown dst node id must be rejected with 404")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code,
+		"unknown dst node id must be rejected like a foreign dst (401)")
+	assert.Contains(t, rec.Body.String(), "dst node is not this machine")
 }
 
 // TestSSHActionFollowUp_RejectsBindingMismatch verifies that the

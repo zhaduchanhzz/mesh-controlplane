@@ -16,6 +16,13 @@ listen_addr: 0.0.0.0:8080
 # this listener.
 metrics_listen_addr: ""
 
+# The networks whose peers, besides loopback, may use `metrics_listen_addr`.
+# Empty admits loopback only. Private ranges are not trusted by default,
+# `X-Forwarded-For` never is, and a range overlapping the Tailscale address
+# space (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) is refused: tenant nodes own
+# addresses there.
+metrics_operator_cidrs: []
+
 # Where the server serves the API without authentication, for the CLI on the
 # same host. The CLI connects to it when `cli.address` is empty.
 unix_socket: /var/run/headscale/headscale.sock
@@ -170,6 +177,11 @@ derp:
   # How often `derp.auto_update_enabled` reloads the DERP map. Zero disables
   # reloading.
   update_frequency: 3h
+  # A file holding the secret (at least 32 characters) an external DERP server
+  # must send to `/verify`, as `?secret=` in its `--verify-client-url`. Empty
+  # refuses every `/verify` call: the endpoint would otherwise tell anyone
+  # whether a node key is registered. The embedded DERP server does not use it.
+  verify_secret_path: ""
 
 # Where headscale stores nodes, users and keys. SQLite is recommended;
 # PostgreSQL is supported for legacy deployments only. `database.sqlite` is read

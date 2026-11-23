@@ -15,6 +15,8 @@
 # piped to `tailscale up --auth-key=file:/dev/stdin`, never printed. Logs in
 # the artifact dir are redacted.
 #
+# P08 (C03): the listener answers only its own hostname (421 otherwise).
+#
 # P10 scenarios (L01, F01-F03) change tailnets while the cluster runs: a live
 # tailnet, an owner_epoch bump, suspend/resume and a move to another cluster.
 #
@@ -198,12 +200,42 @@ drop_ts() { ci_ "docker rm -f $1 >/dev/null 2>&1; docker volume rm $1 >/dev/null
 t_http() {
   local k1 k2 code
   k1=$(curl -s -m 10 "$URL/key?v=$CAPVER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["publicKey"])' 2>/dev/null)
-  # Same listener reached under another hostname: the key is per cluster.
-  k2=$(curl -s -m 10 --connect-to "$OTHER_HOST:$PORT:$HOST:$PORT" "https://$OTHER_HOST:$PORT/key?v=$CAPVER" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["publicKey"])' 2>/dev/null)
-  printf 'cluster noise key: %s\n' "${k1:0:13}…" >>"$ART_DIR/env.txt"
-  if [ -n "$k1" ] && [ "$k1" = "$k2" ]; then record C01 PASS "one Noise key for the cluster, independent of Host"
-  else record C01 FAIL "key c1=${k1:0:13} other=${k2:0:13}"; fi
+  k2=$(curl -s -m 10 "$URL/key?v=$CAPVER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["publicKey"])' 2>/dev/null)
+  printf 'cluster noise key: %s
+' "${k1:0:13}…" >>"$ART_DIR/env.txt"
+  # One key for the cluster; that every tenant uses it is shown by R01/R04
+  # (tailnets A and B register through the same URL). Since P08 the listener
+  # answers no other hostname, so Host independence is no longer probed here.
+  if [ -n "$k1" ] && [ "$k1" = "$k2" ]; then record C01 PASS "one Noise key for the cluster at $HOST"
+  else record C01 FAIL "key fetches differ or empty: ${k1:0:13} / ${k2:0:13}"; fi
+
+  # C03 (P08, S11c): only the cluster's own hostname is served. The other
+  # hostname reaches the same listener (wildcard cert, --connect-to); a raw IP
+  # sends no SNI. -k only where the certificate cannot match by construction.
+  local ip=${VPS_IP:-116.118.3.46} c3="" c
+  c=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$URL/health"); [ "$c" = 200 ] || c3="$c3 own-host=$c"
+  c=$(curl -s -o /dev/null -w '%{http_code}' -m 10 --connect-to "$OTHER_HOST:$PORT:$HOST:$PORT" "https://$OTHER_HOST:$PORT/health")
+  [ "$c" = 421 ] || c3="$c3 other-host=$c"
+  c=$(curl -s -o /dev/null -w '%{http_code}' -m 10 --connect-to "$OTHER_HOST:$PORT:$HOST:$PORT" "https://$OTHER_HOST:$PORT/key?v=$CAPVER")
+  [ "$c" = 421 ] || c3="$c3 other-host-key=$c"
+  c=$(curl -sk -o /dev/null -w '%{http_code}' -m 10 "https://$ip:$PORT/health"); [ "$c" = 421 ] || c3="$c3 raw-ip=$c"
+  c=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Host: $OTHER_HOST:$PORT" "$URL/health"); [ "$c" = 421 ] || c3="$c3 sni-own/host-other=$c"
+  c=$(curl -s -o /dev/null -w '%{http_code}' -m 10 --connect-to "$OTHER_HOST:$PORT:$HOST:$PORT" -H "Host: $HOST:$PORT" "https://$OTHER_HOST:$PORT/health")
+  [ "$c" = 421 ] || c3="$c3 sni-other/host-own=$c"
+  # C04 (P08, S14/AGENTS rule 9): cluster metrics listener (127.0.0.1:9095 in
+  # infra/lab/mc-cp/cluster/config.yaml) serves /metrics to loopback only and
+  # nothing else; it is not reachable from the LAN.
+  local c4="" m d l
+  m=$(cp_ "curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:9095/metrics")
+  d=$(cp_ "curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:9095/debug/")
+  l=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://${CP_SSH#*@}:9095/metrics" || true)
+  [ "$m" = 200 ] || c4="$c4 loopback-metrics=$m"
+  [ "$d" = 404 ] || c4="$c4 loopback-debug=$d"
+  case $l in 000) ;; *) c4="$c4 lan-metrics=$l" ;; esac
+  [ -z "$c4" ] && record C04 PASS "metrics on loopback only, /metrics only (debug 404, LAN unreachable)"     || record C04 FAIL "unexpected:$c4"
+
+  [ -z "$c3" ] && record C03 PASS "only $HOST is served: other host, raw IP and SNI != Host get 421"     || record C03 FAIL "unexpected:$c3"
+
   local bad="" p
   for p in /api/v1/node /api/v2/tailnet/-/devices /metrics /debug/ /swagger /register/xyz /oidc/callback; do
     code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$URL$p")

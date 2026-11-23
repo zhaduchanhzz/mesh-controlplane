@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +70,11 @@ func TestHandleVerifyRequest_OversizedBodyRejected(t *testing.T) {
 func TestVerifyHandler_SuccessSetsJSONContentType(t *testing.T) {
 	cfg := validConfig(t)
 
+	// /verify only answers a caller holding derp.verify_secret_path (P08, F2).
+	secret := strings.Repeat("s", minVerifySecretLen)
+	cfg.DERP.VerifySecretPath = filepath.Join(t.TempDir(), "verify.secret")
+	require.NoError(t, os.WriteFile(cfg.DERP.VerifySecretPath, []byte(secret+"\n"), 0o600))
+
 	h, err := NewHeadscale(&cfg)
 	require.NoError(t, err)
 
@@ -87,7 +94,7 @@ func TestVerifyHandler_SuccessSetsJSONContentType(t *testing.T) {
 	httpReq, err := http.NewRequestWithContext(
 		context.Background(),
 		http.MethodPost,
-		srv.URL+"/verify",
+		srv.URL+"/verify?secret="+secret,
 		bytes.NewReader(reqBody),
 	)
 	require.NoError(t, err)
@@ -104,10 +111,11 @@ func TestVerifyHandler_SuccessSetsJSONContentType(t *testing.T) {
 }
 
 // TestHandleVerifyRequest_AdmitsByNodeKey pins DERP admission to NodeKey
-// membership. The oracle is the full-list scan the handler used to run, so
-// the indexed lookup must agree with it on every row: expiry, tags and
-// ephemerality never gate admission, and a rotated-away or deleted key is
-// refused.
+// membership of a live node. The oracle is the full-list scan the handler
+// used to run, plus the expiry rule added in P08 (S15: the relay must not
+// outlive the node's authorisation), so the indexed lookup must agree with it
+// on every row: tags and ephemerality never gate admission; an expired,
+// rotated-away or deleted key is refused.
 func TestHandleVerifyRequest_AdmitsByNodeKey(t *testing.T) {
 	t.Parallel()
 
@@ -160,7 +168,7 @@ func TestHandleVerifyRequest_AdmitsByNodeKey(t *testing.T) {
 		{name: "ephemeral", key: ephemeral.NodeKey, want: true},
 		{name: "rotated/old", key: rotatedFrom, want: false},
 		{name: "rotated/new", key: rotated.NodeKey, want: true},
-		{name: "expired", key: expired.NodeKey, want: true},
+		{name: "expired", key: expired.NodeKey, want: false},
 		{name: "deleted", key: deleted.NodeKey, want: false},
 		{name: "unknown", key: key.NewNode().Public(), want: false},
 		{name: "zero", key: key.NodePublic{}, want: false},
@@ -187,7 +195,7 @@ func TestHandleVerifyRequest_AdmitsByNodeKey(t *testing.T) {
 			require.NoError(t, json.Unmarshal(out.Bytes(), &resp))
 
 			oracle := app.state.ListNodes().ContainsFunc(func(n types.NodeView) bool {
-				return n.NodeKey() == tt.key
+				return n.NodeKey() == tt.key && !n.IsExpired()
 			})
 
 			assert.Equal(t, tt.want, resp.Allow)
