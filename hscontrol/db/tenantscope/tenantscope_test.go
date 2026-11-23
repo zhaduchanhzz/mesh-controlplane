@@ -60,14 +60,14 @@ type global struct {
 	Name string
 }
 
-func ctxFor(t *testing.T, id string) context.Context {
+func ctxFor(t testing.TB, id string) context.Context {
 	t.Helper()
 
 	return fencedCtx(t, id, testCluster, testEpoch)
 }
 
 // scopeOnlyCtx carries a scope but no ownership fence.
-func scopeOnlyCtx(t *testing.T, id string) context.Context {
+func scopeOnlyCtx(t testing.TB, id string) context.Context {
 	t.Helper()
 	s, err := tailnet.NewScope(tailnet.MustParseID(id), tailnet.SourceInternalService, "test", 1)
 	if err != nil {
@@ -81,7 +81,7 @@ func scopeOnlyCtx(t *testing.T, id string) context.Context {
 	return ctx
 }
 
-func fencedCtx(t *testing.T, id, cluster string, epoch tailnet.Epoch) context.Context {
+func fencedCtx(t testing.TB, id, cluster string, epoch tailnet.Epoch) context.Context {
 	t.Helper()
 	f, err := tailnet.NewFence(cluster, epoch)
 	if err != nil {
@@ -98,7 +98,7 @@ func fencedCtx(t *testing.T, id, cluster string, epoch tailnet.Epoch) context.Co
 // dialector picks SQLite by default, or PostgreSQL when
 // MESH_TEST_POSTGRES_DSN is set (ADR 0005: production is shared PostgreSQL).
 // Each PostgreSQL test gets its own schema so runs do not interfere.
-func dialector(t *testing.T) gorm.Dialector {
+func dialector(t testing.TB) gorm.Dialector {
 	t.Helper()
 	dsn := os.Getenv("MESH_TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -122,7 +122,7 @@ func dialector(t *testing.T) gorm.Dialector {
 	return postgres.Open(dsn + " search_path=" + sch)
 }
 
-func openDB(t *testing.T) *gorm.DB {
+func openDB(t testing.TB) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(dialector(t), &gorm.Config{Logger: logger.Discard})
 	if err != nil {
