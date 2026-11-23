@@ -270,15 +270,75 @@ Cache-Control: no-store
 - **Lab:** DB E2E hiện là SQLite trên mc-cp; chưa có process cluster thứ hai; stage 2 Terraform còn topology cũ (`mc-edge`, `mc-shard-*`), chưa có `mc-bootstrap`. Đổi Terraform/firewall/forwarder đều cần duyệt.
 - **Proof SHA-256 là bearer token cho bootstrap:** lộ proof (log, proxy) cho phép người khác biết URL cluster của tenant đó (không đăng ký được). Chấp nhận được nếu không log proof.
 
-## 10. Mẫu báo cáo bằng chứng (điền khi có code)
+## 10. Bằng chứng (P11-2 … P11-4)
 
-- Repo commit before / after: `3269688` / chưa có
-- Verified source paths & symbols: §2
-- Design choice / ADR: ADR 0005 Bổ sung 2 §1; đề xuất §5 chờ Q1–Q5 (chưa cần ADR mới nếu chủ dự án chọn phương án C; nếu chọn A thì cần ADR vì trái I15)
-- Tests + exact commands + exit codes: chưa chạy
-- E2E artifacts / protocol map redacted: chưa có
-- Negative tenant isolation tests: kế hoạch §6
-- DB migrations and downgrade constraints: chỉ khi Q2 = thêm `MOVING` trong P11 (nối cuối, có `Rollback`, trong transaction)
-- Benchmark before/after: không phải hot path; chỉ đo timing phản hồi từ chối (I15)
-- Known limitations / security blockers: §9
-- Reviewer approval: chưa
+- **Repo commit before / after:** `3269688` (master) → `f55694b` (migration), merge `master` (P10d) `dc81bc2`, `6d4eb87` (bootstrap), `d1d4154` (binary + E2E), `0426bd7` / `ae281f4` (sửa harness E2E), commit evidence.
+- **Design choice:** phương án C (key_id + SHA-256 proof); `moving_to_cluster_id` thay cho status `MOVING` (§8). Public handler viết bằng `net/http`, không dùng Huma, vì phản hồi từ chối phải giống hệt nhau từng byte, kể cả header (không có body problem+json với `detail`). Chưa sinh spec OpenAPI; script onboarding dùng `curl`.
+
+### 10.1 Thay đổi
+
+| Path / symbol | Thay đổi |
+|---|---|
+| `hscontrol/db/moving.go` `movingMigration` (`202611232000-tailnets-moving-to`); `schema.sql`, `schema_postgres.sql`; `types.Tailnet.MovingToClusterID` | Cột `tailnets.moving_to_cluster_id text` (nullable), migration nối cuối trong transaction, có `Rollback` (`DROP COLUMN`) |
+| `hscontrol/db/readonly.go` `OpenReadOnly`, `LatestMigrationID`, `ErrSchemaNotCurrent` | Mở DB cho bên chỉ đọc: không tạo schema, không migrate, không đăng ký tenantscope. Từ chối file SQLite không tồn tại và DB thiếu migration cuối của binary. SQLite: `PRAGMA query_only = ON` |
+| `internal/bootstrap/bootstrap.go` `Service.Resolve`, `Request.Valid`, `proofMatches`, `ProofOf` | Tenant chỉ lấy từ credential đã kiểm. So proof bằng `subtle.ConstantTimeCompare`; key không tồn tại vẫn so với hash giả. Key thu hồi / hết hạn / single-use đã dùng / hash legacy, tailnet không ACTIVE / đã xóa, slug không khớp đều → `OutcomeRefused`. MOVING và cluster không dùng được (DISABLED / chưa đăng ký / không có endpoint) → 503, chỉ cho người có key hợp lệ |
+| `internal/bootstrap/store.go` `GormStore`, `lookupSQL` | Một câu đọc SQL thô đã review (`credentials` ⋈ `tailnets` ⟕ `clusters`, chỉ hàng của key được trình). PostgreSQL: transaction `READ ONLY`. Hơn một hàng → lỗi (fail closed) |
+| `internal/bootstrap/http.go` `Handler` | Chỉ phục vụ `POST /v1/bootstrap`, `GET /health`; mọi đường khác dùng chung body từ chối. Host lạ hoặc SNI ≠ Host → 421. Body ≤ 4 KiB, JSON chặt (`DisallowUnknownFields`, không cho dữ liệu thừa). Bucket toàn cục; bucket theo tenant chỉ trừ **sau** xác thực; bucket theo IP tùy chọn (mặc định tắt). Log chỉ có hash ngắn của key_id |
+| `cmd/mesh-bootstrap/main.go` | Binary: `-config` (chỉ `database.*`), `-listen`, `-tls-cert/-tls-key`, `-hostname`, các giới hạn. TLS ≥ 1.2, timeout đọc/ghi, header ≤ 16 KiB |
+| `infra/lab/e2e/p05/run.sh` `boot_req`, `t_bootstrap` | Ca B01–B06, chỉ chạy khi có `BOOT_BIN`. Bootstrap chạy trên loopback của mc-cp (không đổi firewall); request gửi bằng `curl --resolve` trên mc-cp |
+
+### 10.2 Test (mc-ci, Go 1.27.4)
+
+| Test | SQLite | PostgreSQL | Ánh xạ |
+|---|---|---|---|
+| `TestMigrationTailnetsMovingTo`: DB mới có cột; DB trước migration được nâng cấp khi mở, giữ dữ liệu, khớp `schema.sql` (squibble kiểm khi mở lại) | PASS | PASS | rule 11 |
+| `TestBootstrapStoreFollowsOwner`: key của acme ở c1 → URL c1; sau `MoveOwner` sang c2 → URL c2, không bao giờ c1; `moving_to_cluster_id` → MOVING; SUSPENDED → từ chối; handle chỉ đọc từ chối ghi | PASS | PASS | F06, I12 |
+| `TestOpenReadOnlyRefusesUnusableDatabase`: không tạo file; DB thiếu migration cuối → `ErrSchemaNotCurrent` | PASS | — | |
+| `TestBootstrapRefusalsIndistinguishable`: 16 lý do từ chối → cùng status, header, body; đường lạ cũng vậy | PASS (store giả) | | F06, I15, I08 |
+| `TestBootstrapActiveReturnsOwnerURL`, `…MovingAndUnavailableOnlyForCredentialed`, `…StoreFailureIsUnavailable`, `…MalformedNeverReachesStore`, `…NoDebugOrMetrics`, `…RateLimit`, `…NoSecretsInLogs` | PASS | | F06, I09, I10, rule 2, rule 9 |
+
+- Lệnh: `go test -race -count=3 ./internal/bootstrap/` exit 0; `go test -race -count=1 ./hscontrol/db/ ./internal/placement/...` exit 0.
+- **Mutation (thay cho RED vì package mới):**
+  - M1 bỏ kiểm `revoked` và slug không khớp → `TestBootstrapRefusalsIndistinguishable` FAIL.
+  - M2 đường từ chối trả URL → cùng test FAIL.
+  - M3 bỏ kiểm Host/SNI → `TestBootstrapNoDebugOrMetrics` FAIL.
+- Full race và suite cluster ở `ae281f4`: xem §10.4.
+
+### 10.3 E2E client thật (`tailscale/tailscale:v1.104.7`)
+
+Binary build trên mc-ci ở `d1d4154` (code không đổi tới `ae281f4`): cluster sha256 `5350075634e3a99c…`, bootstrap `5ca3d14595e7c893…`.
+
+| Lần | Harness | Artifact | Exit | Kết quả |
+|---|---|---|---|---|
+| 1–2 | `d1d4154` | `artifacts/d1d4154/P05/…T170915Z`, `…T171723Z` | 1 | B01, B03, B06 FAIL: key hợp lệ bị 404 |
+| 3–4 | `0426bd7` | `artifacts/0426bd7/P05/…T172603Z`, `…T173403Z` | 1 | như trên |
+| 5–6 | `ae281f4` | `artifacts/ae281f4/P05/e2e-20261123T174347Z/`, `…T175051Z/` | 0 | **25/25 PASS ×2** (19 ca cũ + B01–B06); `cleanup_ok=1`; 0 key chưa redact |
+
+**Lỗi ở lần 1–4 nằm ở harness, không ở bootstrap:**
+- `python3` trên Windows in ra `
+`, nên `secret` dính `` và proof tính trên `secret+`. Bootstrap từ chối đúng như thiết kế.
+- `tr -d $''` trong Git Bash không loại được ký tự này (đã kiểm bằng `od -c`).
+- Sửa ở `ae281f4`: một bước Python dựng cả body và tự tính proof bằng `hashlib`, nên không biến shell nào giữ secret.
+
+Các ca E2E:
+- **B01:** key của b → `https://c1.cp.gta5web.online:8443`, body chỉ có `control_url` và `issued_at`.
+- **B02:** tenant c đang SUSPENDED, key của a ghi tenant b, key của b ghi tenant a, key_id lạ → cùng một 404, không có URL.
+- **B03:** `tailscale up --login-server=<URL từ bootstrap>` đăng ký được node vào b.
+- **B04:** `/metrics`, `/debug/pprof/`, `/v1/openapi`, `/` → 404; Host của cluster tới bootstrap → 421.
+- **B05:** log bootstrap không có chuỗi hex 64 ký tự (proof) hay key.
+- **B06:** tenant a đã bị F03 chuyển sang `mc-cp-c2` (chưa đăng ký) → 503 cho người có key, không có URL.
+
+### 10.4 Full race, suite cluster
+
+(cập nhật khi chạy xong)
+
+### 10.5 Known limitations
+
+- **Đường public chưa có:** E2E chỉ chạy loopback trên mc-cp. Hostname public (`boot.cp.gta5web.online:8444`) cần chủ dự án duyệt diff VPS và firewall mc-cp (AGENTS rule 3).
+- Qua `systemd-socket-proxyd` của VPS, bootstrap chỉ thấy địa chỉ proxy; bucket theo IP để tắt.
+- Chưa đo timing từ chối (`TestBootstrapRefusalTiming`) và chưa có test hai process cluster trên cùng PostgreSQL (F07 với hai cluster thật, cần lab giai đoạn 2). F07 trong một process đã có từ P10 (`TestClusterOwnershipMoveRetiresRuntime`).
+- Trên PostgreSQL, handle chỉ đọc chỉ được bảo đảm trong transaction `READ ONLY` của lookup. Production nên dùng role DB chỉ có `SELECT` trên `credentials`, `tailnets`, `clusters`, `migrations`.
+- `clusterRegisterCmd` không ghi `noise_public_key`; bootstrap không trả Noise key (MVP).
+- Client có URL cũ sau khi tenant chuyển cluster nhận "invalid pre auth key" (đúng I15). Thông báo gợi ý re-bootstrap để P12b.
+- Chưa có spec OpenAPI cho API bootstrap.
+- **Reviewer approval:** chưa. Mô hình xác thực caller cần người duyệt bảo mật xác nhận.
