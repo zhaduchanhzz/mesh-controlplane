@@ -90,7 +90,7 @@ func (p *Platform) TailnetBySlug(slug string) (types.Tailnet, error) {
 }
 
 // SetTailnetStatus changes the status of a tailnet this cluster owns. A
-// running cluster process picks the change up on restart (live reload: P10).
+// running cluster process picks the change up within its reconcile interval.
 func (p *Platform) SetTailnetStatus(id tailnet.ID, status types.TailnetStatus) error {
 	switch status {
 	case types.TailnetPending, types.TailnetActive, types.TailnetSuspended, types.TailnetDeleting:
@@ -106,6 +106,58 @@ func (p *Platform) SetTailnetStatus(id tailnet.ID, status types.TailnetStatus) e
 		Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()})
 	if res.Error != nil {
 		return fmt.Errorf("updating tailnet %s: %w", id, res.Error)
+	}
+
+	if res.RowsAffected != 1 {
+		return fmt.Errorf("%w: tailnet %s", ErrTailnetNotOwned, id)
+	}
+
+	return nil
+}
+
+// ReassignTailnet hands tailnet id from this cluster to cluster to (which may
+// be this cluster again) at fromEpoch+1, as a compare-and-swap on
+// (owner_cluster_id, owner_epoch): it fails unless this cluster owns it at
+// fromEpoch, so the epoch only grows and two callers cannot both win.
+// Operator tool for the lab; the placement API (P10) does the same move.
+func (p *Platform) ReassignTailnet(id tailnet.ID, fromEpoch uint64, to string) (uint64, error) {
+	if to == "" {
+		return 0, errors.New("target cluster must not be empty")
+	}
+
+	ctx, cancel := p.lookupContext()
+	defer cancel()
+
+	res := p.db.WithContext(ctx).Model(&types.Tailnet{}).
+		Where("id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND deleted_at IS NULL", id.String(), p.cluster, fromEpoch).
+		Updates(map[string]any{
+			"owner_cluster_id": to,
+			"owner_epoch":      gorm.Expr("owner_epoch + 1"),
+			"updated_at":       time.Now().UTC(),
+		})
+	if res.Error != nil {
+		return 0, fmt.Errorf("reassigning tailnet %s: %w", id, res.Error)
+	}
+
+	if res.RowsAffected != 1 {
+		return 0, fmt.Errorf("%w: tailnet %s is not owned by %s at epoch %d", ErrTailnetNotOwned, id, p.cluster, fromEpoch)
+	}
+
+	return fromEpoch + 1, nil
+}
+
+// BumpPolicyRevision records that the policy of tailnet id changed in the
+// database. A running cluster reloads the policy of a runtime whose loaded
+// revision differs (reconcile).
+func (p *Platform) BumpPolicyRevision(id tailnet.ID) error {
+	ctx, cancel := p.lookupContext()
+	defer cancel()
+
+	res := p.db.WithContext(ctx).Model(&types.Tailnet{}).
+		Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster).
+		Updates(map[string]any{"policy_revision": gorm.Expr("policy_revision + 1"), "updated_at": time.Now().UTC()})
+	if res.Error != nil {
+		return fmt.Errorf("bumping policy revision of %s: %w", id, res.Error)
 	}
 
 	if res.RowsAffected != 1 {

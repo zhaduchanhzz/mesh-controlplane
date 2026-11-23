@@ -206,6 +206,18 @@ func scopeTo(raw *gorm.DB, tn types.Tailnet, cluster string) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	// Writes are fenced on the ownership this handle was loaded with (I12):
+	// once the tailnet moves to another cluster or epoch they roll back.
+	fence, err := tailnet.NewFence(cluster, tailnet.Epoch(tn.OwnerEpoch))
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, err = tailnet.WithFence(ctx, fence)
+	if err != nil {
+		return nil, err
+	}
+
 	return raw.WithContext(ctx), nil
 }
 
@@ -290,6 +302,13 @@ func (hsdb *HSDatabase) ScopedContext(parent context.Context) context.Context {
 	ctx, err := tailnet.WithScope(parent, s)
 	if err != nil {
 		return parent
+	}
+
+	// Carry the ownership fence too, or writes on ctx fail with ErrNoFence.
+	if f, ok := tailnet.FenceFromContext(hsdb.DB.Statement.Context); ok {
+		if fctx, err := tailnet.WithFence(ctx, f); err == nil {
+			ctx = fctx
+		}
 	}
 
 	return ctx

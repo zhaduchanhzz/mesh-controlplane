@@ -235,6 +235,17 @@ func bindRuntime(base *hsdb.HSDatabase, id, cluster string) (*runtime, error) {
 		return nil, err
 	}
 
+	// Writes are fenced on ownership (P10), as in the runtime.
+	fence, err := tailnet.NewFence(cluster, tailnet.Epoch(tn.OwnerEpoch))
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, err = tailnet.WithFence(ctx, fence)
+	if err != nil {
+		return nil, err
+	}
+
 	// Only the exported DB field is set: every HSDatabase method used here
 	// reads hsdb.DB alone. The pool and the tenantscope plugin are shared.
 	return &runtime{id: id, epoch: tn.OwnerEpoch, cluster: cluster, h: &hsdb.HSDatabase{DB: base.DB.WithContext(ctx)}}, nil
