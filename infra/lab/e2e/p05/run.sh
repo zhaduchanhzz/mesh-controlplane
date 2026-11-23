@@ -43,11 +43,14 @@ KEEP=${KEEP:-0}
 OBSERVE_S=${OBSERVE_S:-5}
 LABEL=mesh-e2e=p05
 # P11: set BOOT_BIN to a mesh-bootstrap binary to run the bootstrap cases
-# (B01-B06). It serves on mc-cp loopback only (no firewall change); the
-# onboarding requests run on mc-cp with curl --resolve.
+# (B01-B06). It listens on mc-cp's wg-mesh address and is reached over the
+# public path https://$BOOT_HOST:$BOOT_PORT (VPS socket proxy -> wg-mesh ->
+# mc-cp, owner-approved 2026-11-24); requests come from this host.
 BOOT_BIN=${BOOT_BIN:-}
 BOOT_HOST=${BOOT_HOST:-boot.cp.gta5web.online}
 BOOT_PORT=${BOOT_PORT:-8444}
+BOOT_LISTEN=${BOOT_LISTEN:-10.99.77.2:8444}
+BOOT_URL="https://$BOOT_HOST:$BOOT_PORT"
 
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
 SHA=$(git -C "$REPO" rev-parse --short HEAD)
@@ -594,10 +597,10 @@ t_lifecycle() {
 }
 
 # ------------------------------------------------------------- P11 -------
-# boot_req KEYFILE [TENANT] [KEYID_OVERRIDE]: POST /v1/bootstrap on mc-cp
-# loopback with the key's identifier and SHA-256 proof (the secret never
-# leaves this host); prints "<status> <body>". Bodies are not logged with
-# the proof.
+# boot_req KEYFILE [TENANT] [KEYID_OVERRIDE]: POST $BOOT_URL/v1/bootstrap
+# over the public path with the key's identifier and SHA-256 proof (the
+# secret never leaves this host); prints "<status> <body>". Bodies are not
+# logged with the proof.
 boot_req() {
   local body
   # One python step builds the body: the proof is computed over the secret
@@ -611,8 +614,11 @@ d={"credential":{"kind":"authkey_proof","key_id":i,"proof":hashlib.sha256(s.enco
 if sys.argv[2]: d["tenant"]=sys.argv[2]
 sys.stdout.write(json.dumps(d))' "$1" "${2:-}" "${3:-}")
   body=${body%$'\r'}
-  printf %s "$body" | cp_ "curl -s -m 5 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 -o /tmp/boot.out -w '%{http_code} ' \
-    -H 'Content-Type: application/json' --data-binary @- https://$BOOT_HOST:$BOOT_PORT/v1/bootstrap; cat /tmp/boot.out; rm -f /tmp/boot.out"
+  local out=$TMPD/boot.out code
+  code=$(printf %s "$body" | curl -s -m 10 -o "$out" -w '%{http_code}' \
+    -H 'Content-Type: application/json' --data-binary @- "$BOOT_URL/v1/bootstrap")
+  printf '%s %s' "$code" "$(cat "$out" 2>/dev/null)"
+  rm -f "$out"
 }
 
 t_bootstrap() {
@@ -622,11 +628,11 @@ t_bootstrap() {
     sudo install -m 0755 /tmp/mesh-bootstrap /usr/local/bin/mesh-bootstrap && rm -f /tmp/mesh-bootstrap
     sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null || true
     sudo systemd-run --quiet --unit=mesh-bootstrap-e2e --uid=headscale --gid=headscale \
-      /usr/local/bin/mesh-bootstrap -config /etc/headscale/cluster/config.yaml -listen 127.0.0.1:$BOOT_PORT \
+      /usr/local/bin/mesh-bootstrap -config /etc/headscale/cluster/config.yaml -listen $BOOT_LISTEN \
       -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST" \
     || { record B01 FAIL "could not start mesh-bootstrap"; return; }
   for k in $(seq 1 20); do
-    code=$(cp_ "curl -s -o /dev/null -w '%{http_code}' -m 3 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 https://$BOOT_HOST:$BOOT_PORT/health" || true)
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$BOOT_URL/health" || true)
     [ "$code" = 200 ] && break
     sleep 1
   done
@@ -669,10 +675,10 @@ t_bootstrap() {
   # B04 (I09, rule 9): no debug/metrics/openapi; another Host -> 421.
   problems=""
   for k in /metrics /debug/pprof/ /v1/openapi /; do
-    code=$(cp_ "curl -s -o /dev/null -w '%{http_code}' -m 3 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 https://$BOOT_HOST:$BOOT_PORT$k")
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$BOOT_URL$k")
     [ "$code" = 404 ] || problems="$problems; $k=$code"
   done
-  code=$(cp_ "curl -s -o /dev/null -w '%{http_code}' -m 3 --resolve $BOOT_HOST:$BOOT_PORT:127.0.0.1 -H 'Host: $HOST' https://$BOOT_HOST:$BOOT_PORT/health")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "Host: $HOST" "$BOOT_URL/health")
   [ "$code" = 421 ] || problems="$problems; Host $HOST=$code"
   [ -z "$problems" ] && record B04 PASS "only /v1/bootstrap and /health; debug/metrics/openapi 404; foreign Host 421" \
     || record B04 FAIL "${problems#; }"
