@@ -36,6 +36,8 @@ INCREMENTAL=${INCREMENTAL:-1}
 ROUNDS=${ROUNDS:-5}
 BOUND_S=${BOUND_S:-10}
 KEEP=${KEEP:-0}
+# python3, or python where only that exists (Windows runners).
+PY=${PY:-$(python3 -c 1 >/dev/null 2>&1 && echo python3 || echo python)}
 LABEL=mesh-e2e=p00d
 UNIT=headscale-p00d-e2e
 CONF=/etc/headscale/p00d-e2e/config.yaml
@@ -283,7 +285,7 @@ run_rounds() {
   # Verdicts: every removal within BOUND_S, every time.
   local sc
   for sc in revoke revoke-m2 userdel policy; do
-    python3 - "$ART_DIR/m06.tsv" "$sc" "$BOUND_S" "$ROUNDS" >"$TMPD/verdict" <<'PY'
+    "$PY" - "$ART_DIR/m06.tsv" "$sc" "$BOUND_S" "$ROUNDS" >"$TMPD/verdict" <<'PY'
 import sys, statistics
 path, sc, bound, rounds = sys.argv[1], sys.argv[2], float(sys.argv[3]), int(sys.argv[4])
 vals = [l.split('\t')[3].strip() for l in open(path) if l.split('\t')[0] == sc]
@@ -294,7 +296,10 @@ mx = max(nums) if nums else float('nan')
 ok = len(vals) >= rounds and not bad
 print(('PASS' if ok else 'FAIL') + f'\tn={len(vals)} p50={p50:.2f}s max={mx:.2f}s bound={bound:.0f}s' + (f' over={bad}' if bad else ''))
 PY
-    record "$sc" "$(cut -f1 "$TMPD/verdict")" "$(cut -f2 "$TMPD/verdict")"
+    # A verdict that did not come out (no interpreter, bad data) is a FAIL.
+    local st; st=$(cut -f1 "$TMPD/verdict" | tr -d '')
+    case $st in PASS | FAIL) ;; *) st=FAIL ;; esac
+    record "$sc" "$st" "$(cut -f2 "$TMPD/verdict" | tr -d '')"
   done
 }
 
