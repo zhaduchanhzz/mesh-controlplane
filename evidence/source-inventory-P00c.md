@@ -131,3 +131,27 @@ Merge `37f8f2c` = `master` `df7a4b8` (đã có P08, P09a, P10, P10b, P10c) + nh�
 | E2E `infra/lab/e2e/p05/run.sh`, binary `37f8f2c` (CGO_ENABLED=0, sha256 `2b1ec3ced400c4d3…`) | mc-cp | 0, 0 | **19/19 PASS ×2**: `artifacts/37f8f2c/P05/e2e-20261123T122016Z/`, `…T122630Z/`; `cleanup_ok=1`, 0 key chưa redact |
 
 Trạng thái vẫn là `Implemented` (chưa `Reviewed`). Số đo capacity §6 vẫn là của cây trước khi port, chưa đo lại trên `master`; đó là điều kiện để đóng N0 và là chuẩn so sánh cho P00d.
+
+## 9. Đo lại capacity trên `master` (2026-11-23)
+
+Mục đích: xác nhận số đo §6 (cây trước khi port) còn đúng sau khi P00c được gộp vào `master` có P04–P10c. Đây cũng là số "before" của P00d.
+
+- **Binary:** before = `df7a4b8` (`master` ngay trước merge P00c, sha256 `7235af135011a578…`); after = `3269688` (`master` sau merge, sha256 `95aa54ff96bf3082…`). Cả hai build `CGO_ENABLED=0` trên mc-bench, Go 1.27.4.
+- **Snapshot:** seed lại bằng `tools/capseed` của `master` (sha256 `f4c3e375d0972b44…`), vì schema đã đổi từ P05/P10: 5 000 node (500 user, 32,5 s), 10 000 node (1 000 user, 119 s). Snapshot cũ giữ ở `mc-bench:~/p00c/snap-82f9b36/`.
+- **Harness:** `tools/capload/run-seeded.sh LABEL N POLICY 500` của `master`; `capload` build từ `3269688` (sha256 `732fb7eef61fde82…`). Server mc-bench (8 vCPU / 24 GiB), tải mc-ci, `HOLD=60s`, `DEADLINE=20m`, kết nối 256 song song. Một mẫu mỗi ô; before/after chạy xen kẽ theo từng ô.
+- **Raw:** `mc-ci:~/src/p00c/results/m-*/`, `mc-bench:~/p00c/results/m-*/` (không commit).
+
+| Ô | connect: ok / wall | register 500: ok / wall | Server peak RSS | CPU s (cả lần chạy) |
+|---|---|---|---:|---:|
+| 5k personal_devices, before | 5 000 / 19,3 s | **257/500** / 204 s | 1,59 GB | 650 |
+| 5k personal_devices, after | 5 000 / 18,8 s | **500/500** / 14,1 s | 1,60 GB | 329 |
+| 10k personal_devices, before | 10 000 / 75,7 s | **0/500** / 240 s (hết hạn pha) | 2,97 GB | 1 227 |
+| 10k personal_devices, after | 10 000 / 74,4 s | **500/500** / 37,9 s | 2,95 GB | 1 063 |
+| 10k isolated, before | 10 000 / 74,8 s | 500/500 / 86,6 s | 2,93 GB | 1 043 |
+| 10k isolated, after | 10 000 / 72,9 s | 500/500 / 29,2 s | 2,88 GB | 992 |
+| 10k allow_all, after | **6 161/10 000** / 1 200 s | 0/500 / 240 s | **23,3 GB** (VM 24 GiB) | 9 081 |
+
+Kết luận (số đo, không phải tuyên bố capacity):
+- Cải thiện của P00c giữ nguyên trên `master`: pha đăng ký thêm trên nền 5k/10k từ 0–257/500 lên 500/500. Pha kết nối lại không đổi, như §6.
+- 10k allow_all vẫn không đạt (6 161/10 000 trong 20 phút, gần hết RAM), giống §6 (6 180, 23,5 GB). Đây là phạm vi P00d (map đầy đủ O(n) mỗi node và fan-out).
+- Trạng thái P00c vẫn `Implemented`, chưa `Reviewed`; một mẫu mỗi ô.

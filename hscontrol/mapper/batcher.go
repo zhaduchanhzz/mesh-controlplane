@@ -734,6 +734,12 @@ func (b *Batcher) queueWork(w work) {
 
 // addToBatch adds changes to the pending batch.
 func (b *Batcher) addToBatch(changes ...change.Change) {
+	// P00d: removals reach every node that was sent the deleted peer, not
+	// only its peers in the adjacency.
+	if b.incrementalNetmap() {
+		changes = b.removalsFromSent(changes)
+	}
+
 	// Clean up any nodes being permanently removed from the system.
 	//
 	// This handles the case where a node is deleted from state but the batcher

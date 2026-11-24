@@ -98,7 +98,7 @@ var (
 	nodeStoreSnapshotBuilds = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: prometheusNamespace,
 		Name:      "nodestore_snapshot_builds_total",
-		Help:      "Snapshot builds by how peer adjacency was obtained: recomputed through the policy or reused from the previous snapshot.",
+		Help:      "Snapshot builds by how peer adjacency was obtained: recomputed through the policy, patched for joined and removed nodes (incremental), or reused from the previous snapshot.",
 	}, []string{"peers"})
 )
 
@@ -118,6 +118,14 @@ type NodeStore struct {
 
 	peersFunc  PeersFunc
 	writeQueue chan work
+	// incPeers, when set, builds adjacency in place of peersFunc and may
+	// patch the previous snapshot's for a batch of joins and removals
+	// (P00d, tuning.incremental_netmap). Set before Start: the writer
+	// reads it without a lock.
+	incPeers IncrementalPeersFunc
+	// fullPeers, when set, is the full build reconciliation compares with
+	// (P00d); see [NodeStore.SetReconcilePeers].
+	fullPeers peerBuilder
 	// reservedLabel reports labels held outside the NodeStore; nil reserves
 	// none. Set before Start: the writer reads it without a lock.
 	reservedLabel func(string) bool
@@ -212,6 +220,10 @@ type Snapshot struct {
 	peersByNode map[types.NodeID][]types.NodeID
 	// peerEntries is the sum of len(peersByNode[id]) (P10d).
 	peerEntries int64
+	// rulesGen is the policy rules generation peersByNode was built at;
+	// 0 when [NodeStore.incPeers] is unset (P00d).
+	rulesGen uint64
+
 	nodesByUser map[types.UserID][]types.NodeView
 	allNodes    []types.NodeView
 
@@ -227,6 +239,26 @@ type Snapshot struct {
 // This will typically be used to calculate which nodes can see each other
 // based on the current policy.
 type PeersFunc func(nodes []types.NodeView) map[types.NodeID][]types.NodeID
+
+// IncrementalPeersFunc builds adjacency for nodes and returns it with the
+// policy rules generation it holds for. With try set, joined and removed
+// are the only differences from the previous snapshot, whose adjacency
+// (prevPeers, built at prevGen) it may patch instead of building in full;
+// incremental reports whether it did. See
+// [policy.PolicyManager.IncrementalPeerMap] (P00d).
+type IncrementalPeersFunc func(
+	nodes []types.NodeView,
+	prevPeers map[types.NodeID][]types.NodeID,
+	prevGen uint64,
+	joined, removed []types.NodeID,
+	try bool,
+) (peers map[types.NodeID][]types.NodeID, gen uint64, incremental bool)
+
+// SetIncrementalPeers makes the writer build adjacency with fn (P00d). Call
+// before [NodeStore.Start].
+func (s *NodeStore) SetIncrementalPeers(fn IncrementalPeersFunc) {
+	s.incPeers = fn
+}
 
 // work represents a single operation to be performed on the [NodeStore].
 type work struct {
@@ -250,6 +282,8 @@ type work struct {
 	// pre, when non-nil, receives each updated node as it was before its
 	// update function ran.
 	pre map[types.NodeID]types.NodeView
+	// For reconcilePeerMaps (P00d).
+	reconcileResult chan ReconcileResult
 }
 
 // updateChanges reports whether an in-place update moved a peer-visibility
@@ -515,7 +549,7 @@ func (s *NodeStore) processWrite() {
 			// A peer-map rebuild is applied at once, with the writes queued
 			// before it, in order: its caller (a user or policy change)
 			// waits for it and gains nothing from the batch wait.
-			if len(batch) >= s.batchSize || w.op == rebuildPeerMaps {
+			if len(batch) >= s.batchSize || w.op == rebuildPeerMaps || w.op == reconcilePeerMaps {
 				s.applyBatch(batch)
 				batch = batch[:0]
 
@@ -571,6 +605,16 @@ func (s *NodeStore) applyBatch(batch []work) {
 	relationChanged := false
 	electionChanged := false
 
+	// P00d: a batch whose only relation changes are new nodes and removed
+	// ones may patch the previous adjacency. Any other relation write, or a
+	// node touched twice, needs the full build.
+	nodeSetOnly := true
+	touched := make(map[types.NodeID]bool)
+
+	var joined, removed []types.NodeID
+
+	reconcile := false
+
 	for i := range batch {
 		w := &batch[i]
 		switch w.op {
@@ -579,6 +623,14 @@ func (s *NodeStore) applyBatch(batch []work) {
 			n.GivenName = resolveGivenName(nodes, n.ID, n.GivenName, s.reservedLabel)
 
 			nodes[w.nodeID] = n
+
+			if _, existed := prev.nodesByID[w.nodeID]; existed || touched[w.nodeID] {
+				nodeSetOnly = false
+			} else {
+				joined = append(joined, w.nodeID)
+			}
+
+			touched[w.nodeID] = true
 
 			relationChanged = true
 			electionChanged = true
@@ -608,6 +660,10 @@ func (s *NodeStore) applyBatch(batch []work) {
 				relation, election := updateChanges(&pre, &n)
 				relationChanged = relationChanged || relation
 				electionChanged = electionChanged || election
+
+				if relation {
+					nodeSetOnly = false
+				}
 			}
 		case del:
 			delete(nodes, w.nodeID)
@@ -615,6 +671,15 @@ func (s *NodeStore) applyBatch(batch []work) {
 			if w.peers != nil {
 				*w.peers = slices.Clone(prev.peersByNode[w.nodeID])
 			}
+
+			if _, existed := prev.nodesByID[w.nodeID]; !existed || touched[w.nodeID] {
+				nodeSetOnly = false
+			} else {
+				removed = append(removed, w.nodeID)
+			}
+
+			touched[w.nodeID] = true
+
 			relationChanged = true
 			electionChanged = true
 		case setName:
@@ -639,26 +704,53 @@ func (s *NodeStore) applyBatch(batch []work) {
 
 			n.GivenName = w.name
 			nodes[w.nodeID] = n
+			nodeSetOnly = false
 			relationChanged = true
 			electionChanged = true
 		case rebuildPeerMaps:
 			// rebuildPeerMaps doesn't modify nodes, it just forces the snapshot rebuild
 			// below to recalculate peer relationships using the current peersFunc
+			nodeSetOnly = false
 			relationChanged = true
 			electionChanged = true
+		case reconcilePeerMaps:
+			// Checked against the snapshot this batch publishes, below.
+			reconcile = true
 		}
 	}
 
 	// A relation change recomputes adjacency; anything else reuses the
 	// previous peer IDs and re-elects routes only if an election input moved.
-	if relationChanged {
-		nodeStoreSnapshotBuilds.WithLabelValues("recomputed").Inc()
-	} else {
-		nodeStoreSnapshotBuilds.WithLabelValues("reused").Inc()
+	build := legacyBuild(s.peersFunc)
+	incremental := false
+
+	if s.incPeers != nil {
+		try := nodeSetOnly && len(joined)+len(removed) > 0
+		build = func(all []types.NodeView) (map[types.NodeID][]types.NodeID, uint64) {
+			peers, gen, inc := s.incPeers(all, prev.peersByNode, prev.rulesGen, joined, removed, try)
+			incremental = inc
+
+			return peers, gen
+		}
 	}
 
-	newSnap := snapshotFromNodes(nodes, s.peersFunc, prev, !relationChanged, !electionChanged)
+	newSnap := snapshotFromNodesWith(nodes, build, prev, !relationChanged, !electionChanged)
+
+	var reconciled ReconcileResult
+	if reconcile {
+		reconciled = s.reconcileSnapshot(&newSnap)
+	}
+
 	s.data.Store(&newSnap)
+
+	switch {
+	case !relationChanged:
+		nodeStoreSnapshotBuilds.WithLabelValues("reused").Inc()
+	case incremental:
+		nodeStoreSnapshotBuilds.WithLabelValues("incremental").Inc()
+	default:
+		nodeStoreSnapshotBuilds.WithLabelValues("recomputed").Inc()
+	}
 
 	// Update node count gauge
 	nodeStoreNodesCount.Set(float64(len(nodes)))
@@ -677,6 +769,14 @@ func (s *NodeStore) applyBatch(batch []work) {
 
 		if w.op == rebuildPeerMaps {
 			close(w.rebuildResult)
+
+			continue
+		}
+
+		if w.op == reconcilePeerMaps {
+			w.reconcileResult <- reconciled
+
+			close(w.reconcileResult)
 
 			continue
 		}
@@ -769,6 +869,27 @@ func snapshotFromNodes(
 	prev *Snapshot,
 	reusePeers, reuseRoutes bool,
 ) Snapshot {
+	return snapshotFromNodesWith(nodes, legacyBuild(peersFunc), prev, reusePeers, reuseRoutes)
+}
+
+// peerBuilder builds adjacency for a snapshot's nodes and returns the rules
+// generation it holds for.
+type peerBuilder func(allNodes []types.NodeView) (map[types.NodeID][]types.NodeID, uint64)
+
+// legacyBuild is the full build through peersFunc, at generation 0.
+func legacyBuild(peersFunc PeersFunc) peerBuilder {
+	return func(allNodes []types.NodeView) (map[types.NodeID][]types.NodeID, uint64) {
+		return peersFunc(allNodes), 0
+	}
+}
+
+// snapshotFromNodesWith is [snapshotFromNodes] with the adjacency from build.
+func snapshotFromNodesWith(
+	nodes map[types.NodeID]types.Node,
+	build peerBuilder,
+	prev *Snapshot,
+	reusePeers, reuseRoutes bool,
+) Snapshot {
 	timer := prometheus.NewTimer(nodeStoreSnapshotBuildDuration)
 	defer timer.ObserveDuration()
 
@@ -802,13 +923,14 @@ func snapshotFromNodes(
 	var (
 		peerIDsByNode map[types.NodeID][]types.NodeID
 		peerEntries   int64
+		rulesGen      uint64
 	)
 
 	if reusePeers {
-		peerIDsByNode, peerEntries = prev.peersByNode, prev.peerEntries
+		peerIDsByNode, peerEntries, rulesGen = prev.peersByNode, prev.peerEntries, prev.rulesGen
 	} else {
 		peersTimer := prometheus.NewTimer(nodeStorePeersCalculationDuration)
-		peerIDsByNode = peersFunc(allNodes)
+		peerIDsByNode, rulesGen = build(allNodes)
 
 		peersTimer.ObserveDuration()
 
@@ -825,6 +947,7 @@ func snapshotFromNodes(
 		nodesByMachineKey: make(map[key.MachinePublic]map[types.UserID]types.NodeView),
 		peersByNode:       peerIDsByNode,
 		peerEntries:       peerEntries,
+		rulesGen:          rulesGen,
 		nodesByUser:       make(map[types.UserID][]types.NodeView),
 		routes:            routes,
 		isPrimaryRoute:    isPrimaryRoute,

@@ -27,7 +27,7 @@ s() { ssh -i "$key" -o BatchMode=yes "$server" "$@"; }
 l() { ssh -i "$key" -o BatchMode=yes "$load" "$@"; }
 
 t0=$(date +%s)
-s "bash ~/p00c/src/tools/capload/server.sh start $sdir $policy $addr $snap"
+s "MAX_PEER_ENTRIES=${MAX_PEER_ENTRIES:-1000000} INCREMENTAL=${INCREMENTAL:-0} RECONCILE_INTERVAL=${RECONCILE_INTERVAL:-1m} FULL_MAP_INTERVAL=${FULL_MAP_INTERVAL:-15m} HS=${HS:-\$HOME/p00c/bin/headscale} bash ~/p00c/src/tools/capload/server.sh start $sdir $policy $addr $snap"
 l "rm -rf $ldir && mkdir -p $ldir && chmod 700 $ldir"
 l "umask 077 && cat > $ldir/users.keys" < <(s "cat $snap/users.keys")
 l "umask 077 && cat > $ldir/nodes.keys" < <(s "cat $snap/nodes.keys")
