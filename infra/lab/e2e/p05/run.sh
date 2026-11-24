@@ -51,10 +51,31 @@ BOOT_HOST=${BOOT_HOST:-boot.cp.gta5web.online}
 BOOT_PORT=${BOOT_PORT:-8444}
 BOOT_LISTEN=${BOOT_LISTEN:-10.99.77.2:8444}
 BOOT_URL="https://$BOOT_HOST:$BOOT_PORT"
+# DB=postgres runs the cluster on the lab's long-lived PostgreSQL behind
+# PgBouncer on mc-db (ADR 0005, ADR 0006; infra/lab/db), in a database of its
+# own, e2e_<run>, created for this run and dropped at cleanup; the long-lived
+# `meshlab` database is never touched. The headscale role's password comes
+# from %USERPROFILE%/.mesh-lab/mc-db.env. DB=pgcontainer starts throwaway
+# PostgreSQL + PgBouncer containers instead (pg.sh, PG_SSH). DB=sqlite
+# (default) keeps the E2E database file.
+DB=${DB:-sqlite}
+MC_DB_ENV=${MC_DB_ENV:-$HOME/.mesh-lab/mc-db.env}
+case $DB in
+pgcontainer)
+  PG_SSH=${PG_SSH:-mesh@192.168.1.242}
+  PG_LISTEN=${PG_LISTEN:-192.168.1.242:6432}
+  ;;
+*)
+  PG_SSH=${PG_SSH:-mesh@192.168.1.243}
+  PG_LISTEN=${PG_LISTEN:-192.168.1.243:6432}
+  ;;
+esac
 
 REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
 SHA=$(git -C "$REPO" rev-parse --short HEAD)
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+PG_DB=headscale
+[ "$DB" = postgres ] && PG_DB=e2e_$(tr 'A-Z' 'a-z' <<<"$RUN_ID")
 ART_DIR=$REPO/artifacts/$SHA/P05/e2e-$RUN_ID
 mkdir -p "$ART_DIR/logs"
 TMPD=$(mktemp -d) && chmod 700 "$TMPD"
@@ -71,6 +92,7 @@ oneline() { tr '\n' ' ' | cut -c1-160; }
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$ART_DIR/run.log" >&2; }
 ssh_() { local h=$1; shift; ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$h" "$@"; }
 cp_() { ssh_ "$CP_SSH" "$@"; }
+pg_() { ssh_ "$PG_SSH" "$@"; }
 ci_() { ssh_ "$CI_SSH" "$@"; }
 
 FAILS=0
@@ -87,6 +109,21 @@ cleanup() {
   [ "$KEEP" = 1 ] && { log "KEEP=1: leaving clients and cluster running"; return; }
   log "cleanup"
   [ -n "$BOOT_BIN" ] && cp_ "sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null; sudo rm -f /usr/local/bin/mesh-bootstrap; true"
+  if [ "$DB" != sqlite ]; then
+    cp_ "sudo systemctl stop headscale-cluster mesh-bootstrap-e2e 2>/dev/null; sudo rm -f /etc/headscale/cluster/pg.pass; ! sudo test -e /etc/headscale/cluster/pg.pass" \
+      || { log "pg.pass not removed on mc-cp"; CLEAN_OK=0; }
+  fi
+  case $DB in
+  pgcontainer)
+    pg_ "bash ~/p05-pg.sh down && rm -f ~/p05-pg.sh" || { log "PostgreSQL/PgBouncer containers not removed"; CLEAN_OK=0; }
+    ;;
+  postgres)
+    # Only this run's own database; the name check keeps meshlab safe.
+    [[ $PG_DB =~ ^e2e_[0-9a-z]+$ ]] && pg_ "sudo docker exec mc-pg dropdb -U postgres --if-exists --force $PG_DB && \
+      ! sudo docker exec mc-pg psql -At -U postgres -c \"SELECT 1 FROM pg_database WHERE datname = '$PG_DB'\" | grep -q 1" \
+      && log "dropped database $PG_DB on mc-db" || { log "database $PG_DB not dropped on mc-db"; CLEAN_OK=0; }
+    ;;
+  esac
   ci_ "docker ps -aq --filter label=$LABEL | xargs -r docker rm -f >/dev/null; \
        docker volume ls -q --filter label=$LABEL | xargs -r docker volume rm >/dev/null; \
        test -z \"\$(docker ps -aq --filter label=$LABEL)\"" || CLEAN_OK=0
@@ -113,8 +150,42 @@ setup() {
     log "building linux/amd64 binary at $SHA"
     (cd "$REPO" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$bin" ./cmd/headscale) || return 1
   fi
-  log "installing binary, config and unit on mc-cp"
-  scp -q -i "$SSH_KEY" -o BatchMode=yes "$bin" "$REPO/infra/lab/mc-cp/cluster/config.yaml" \
+  local cfg=$REPO/infra/lab/mc-cp/cluster/config.yaml
+  case $DB in
+  pgcontainer)
+    log "starting PostgreSQL + PgBouncer on $PG_SSH ($PG_LISTEN)"
+    head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32 >"$TMPD/pg.pass"
+    chmod 600 "$TMPD/pg.pass"
+    [ "$(wc -c <"$TMPD/pg.pass")" -eq 32 ] || return 1
+    scp -q -i "$SSH_KEY" -o BatchMode=yes "$REPO/infra/lab/e2e/p05/pg.sh" "$PG_SSH:p05-pg.sh" || return 1
+    pg_ "bash ~/p05-pg.sh up $PG_LISTEN" <"$TMPD/pg.pass" | tee -a "$ART_DIR/env.txt" || return 1
+    ;;
+  postgres)
+    log "creating database $PG_DB on mc-db ($PG_LISTEN)"
+    # The password goes from the env file to a mode-600 file, never through
+    # the command line or the log.
+    ( set +x; . "$MC_DB_ENV"; printf '%s' "$MC_DB_APP_PASSWORD" ) >"$TMPD/pg.pass" || return 1
+    chmod 600 "$TMPD/pg.pass"
+    [ -s "$TMPD/pg.pass" ] || return 1
+    pg_ "sudo docker exec mc-pg createdb -U postgres -O headscale $PG_DB && \
+      echo \"postgres \$(sudo docker exec mc-pg postgres --version | awk '{print \$3}'), pgbouncer \$(sudo docker exec mc-pgb pgbouncer --version 2>/dev/null | head -1 | awk '{print \$NF}') on $PG_LISTEN, database $PG_DB\"" \
+      | tee -a "$ART_DIR/env.txt" || return 1
+    ;;
+  esac
+  if [ "$DB" != sqlite ]; then
+    # The same config, its database section on PostgreSQL via PgBouncer.
+    mkdir -p "$TMPD/cfg"
+    awk -v host="${PG_LISTEN%:*}" -v port="${PG_LISTEN##*:}" -v db="$PG_DB" '
+      /^database:/ { print "database:\n  type: postgres\n  postgres:\n    host: " host "\n    port: " port \
+        "\n    name: " db "\n    user: headscale\n    pass: file:/etc/headscale/cluster/pg.pass\n    ssl: disable"; skip = 1; next }
+      skip && /^[^ ]/ { skip = 0 }
+      !skip { print }' "$cfg" >"$TMPD/cfg/config.yaml"
+    cfg=$TMPD/cfg/config.yaml
+    cp_ "sudo install -d -o root -g headscale -m 0750 /etc/headscale/cluster && \
+      sudo install -o root -g headscale -m 0640 /dev/stdin /etc/headscale/cluster/pg.pass" <"$TMPD/pg.pass" || return 1
+  fi
+  log "installing binary, config and unit on mc-cp (database: $DB)"
+  scp -q -i "$SSH_KEY" -o BatchMode=yes "$bin" "$cfg" \
     "$REPO/infra/lab/mc-cp/headscale-cluster.service" "$CP_SSH:/tmp/" || return 1
   cp_ "set -e
     sudo install -m 0755 /tmp/$(basename "$bin") /usr/local/bin/headscale-cluster
@@ -757,7 +828,7 @@ log "P05 E2E $RUN_ID at $SHA -> $URL (artifacts: ${ART_DIR#"$REPO"/})"
 if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
   log "setup failed (see logs/setup.log)"; cleanup; exit 2
 fi
-{ echo "image: $IMAGE"; echo "commit: $SHA"; echo "cluster: $CLUSTER_ID"; } >>"$ART_DIR/env.txt"
+{ echo "image: $IMAGE"; echo "commit: $SHA"; echo "cluster: $CLUSTER_ID"; echo "database: $DB"; } >>"$ART_DIR/env.txt"
 t_http
 t_isolation
 t_dns
