@@ -59,11 +59,20 @@ EOF
 		-e POSTGRES_USER=headscale -e POSTGRES_DB=headscale \
 		-e POSTGRES_PASSWORD_FILE=/run/p05/pass -e POSTGRES_INITDB_ARGS=--auth=scram-sha-256 \
 		-v "$DIR/pass:/run/p05/pass:ro" "$PG_IMAGE" >/dev/null
-	for _ in $(seq 1 60); do
-		docker exec p05-pg pg_isready -U headscale -d headscale >/dev/null 2>&1 && break
+	# Over TCP: the image's first start runs a temporary server on the unix
+	# socket only (initdb scripts), then restarts; a socket check can pass
+	# against it and fail right after. Two passes in a row, a second apart.
+	ready=0
+	for _ in $(seq 1 90); do
+		if docker exec p05-pg pg_isready -h 127.0.0.1 -U headscale -d headscale >/dev/null 2>&1; then
+			ready=$((ready + 1))
+			[ "$ready" -ge 2 ] && break
+		else
+			ready=0
+		fi
 		sleep 1
 	done
-	docker exec p05-pg pg_isready -U headscale -d headscale >/dev/null
+	[ "$ready" -ge 2 ] || { echo "postgres not ready" >&2; exit 1; }
 	docker run -d --name p05-pgb --label "$LABEL" --network "$NET" -p "$listen:6432" \
 		-v "$DIR/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro" \
 		-v "$DIR/userlist.txt:/etc/pgbouncer/userlist.txt:ro" "$PGB_IMAGE" >/dev/null
