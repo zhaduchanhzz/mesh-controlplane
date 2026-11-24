@@ -89,10 +89,14 @@ logtail:
 cli:
   timeout: 300s
 EOF
-	# P00d: INCREMENTAL=1 turns the incremental netmap on.
+	# P00d: INCREMENTAL=1 turns the incremental netmap on; MAX_PEER_ENTRIES
+	# overrides tuning.max_peer_entries (P10d; 0 = no bound) for cells that
+	# grow past it.
+	printf 'tuning:
+  max_peer_entries: %s
+' "${MAX_PEER_ENTRIES:-1000000}" >>"$dir/config.yaml"
 	if [ "${INCREMENTAL:-0}" = 1 ]; then
 		cat >>"$dir/config.yaml" <<EOF
-tuning:
   incremental_netmap:
     enabled: true
     reconcile_interval: ${RECONCILE_INTERVAL:-1m}
