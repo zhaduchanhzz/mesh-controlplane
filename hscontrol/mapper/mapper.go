@@ -462,9 +462,22 @@ func filterByVisible[T any](
 	return filtered
 }
 
+// dumpSubdir is the directory level a MapResponse dump goes under before
+// the node's: the tailnet's ID in cluster mode, so the dumps of different
+// tenants never share a directory (P07); none for a single tailnet, as
+// upstream.
+func (m *mapper) dumpSubdir() string {
+	if m == nil || m.cfg == nil || m.cfg.ClusterID == "" || m.state == nil {
+		return ""
+	}
+
+	return m.state.TailnetID()
+}
+
 func writeDebugMapResponse(
 	resp *tailcfg.MapResponse,
 	t debugType,
+	subdir string,
 	nodeID types.NodeID,
 ) {
 	body, err := json.MarshalIndent(resp, "", "  ")
@@ -473,7 +486,7 @@ func writeDebugMapResponse(
 	}
 
 	perms := fs.FileMode(debugMapResponsePerm)
-	mPath := path.Join(debugDumpMapResponsePath, fmt.Sprintf("%d", nodeID))
+	mPath := path.Join(debugDumpMapResponsePath, subdir, fmt.Sprintf("%d", nodeID))
 
 	err = os.MkdirAll(mPath, perms)
 	if err != nil {

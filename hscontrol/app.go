@@ -517,9 +517,7 @@ func (h *Headscale) scheduledTasks(ctx context.Context) {
 			haProber.ProbeOnce(ctx, h.Change)
 
 		case <-reconcileChan:
-			if diverged := h.state.ReconcilePeerMaps(); len(diverged) > 0 {
-				h.mapBatcher.SendFullMaps(diverged)
-			}
+			h.ReconcileNetmap()
 		}
 	}
 }
@@ -1636,4 +1634,17 @@ func (h *Headscale) startRuntime(ctx context.Context, errorGroup *errgroup.Group
 	go h.scheduledTasks(ctx)
 
 	return stop, nil
+}
+
+// ReconcileNetmap checks this runtime's incremental netmap against a full
+// build and sends a full map to the nodes whose peers differed (P00d);
+// nothing while the incremental netmap is off. Run every
+// tuning.incremental_netmap.reconcile_interval.
+func (h *Headscale) ReconcileNetmap() []types.NodeID {
+	diverged := h.state.ReconcilePeerMaps()
+	if len(diverged) > 0 {
+		h.mapBatcher.SendFullMaps(diverged)
+	}
+
+	return diverged
 }
