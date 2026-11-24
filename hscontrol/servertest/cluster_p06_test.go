@@ -565,9 +565,9 @@ func p06ForeignTokens(t *testing.T, theirs, ours *servertest.TestServer) tokens 
 			out.strs = append(out.strs, nv.Hostname())
 		}
 
-		if !ourNames[nv.GivenName()] {
-			out.strs = append(out.strs, nv.GivenName()+"."+servertest.ClusterBaseDomain)
-		}
+		// Their FQDN is under their tailnet's own domain (ADR 0008), so it
+		// must never appear on our side even when the names match.
+		out.strs = append(out.strs, nv.GivenName()+"."+theirs.App.BaseDomain())
 
 		for _, ip := range nv.IPsAsString() {
 			if !slices.Contains(ourIPs, ip) {

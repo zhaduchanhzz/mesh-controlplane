@@ -980,3 +980,9 @@ func (c *Cluster) closeRuntimes() {
 		}
 	}
 }
+
+// BaseDomain is the MagicDNS domain of h's tailnet: <slug>.<cluster base>
+// in cluster mode (ADR 0008), dns.base_domain otherwise.
+func (h *Headscale) BaseDomain() string {
+	return h.cfg.DNSConfig.BaseDomain
+}

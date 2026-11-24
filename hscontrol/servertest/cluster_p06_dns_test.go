@@ -21,7 +21,7 @@ import (
 	"tailscale.com/types/netmap"
 )
 
-func tailnetDomain(slug string) string { return slug + "." + servertest.ClusterBaseDomain }
+func tailnetDomain(slug string) string { return servertest.ClusterTailnetDomain(slug) }
 
 func resolverAddrs(nm *netmap.NetworkMap) []string {
 	var out []string

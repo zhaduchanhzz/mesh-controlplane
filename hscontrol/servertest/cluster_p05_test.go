@@ -79,8 +79,8 @@ func TestClusterTwoTailnetsPeersIsolated(t *testing.T) {
 		}
 	}
 
-	aTokens := tenantTokens(t, a, "tenant-a-user")
-	bTokens := tenantTokens(t, b, "tenant-b-user")
+	aTokens := tenantTokens(t, a, tenantA, "tenant-a-user")
+	bTokens := tenantTokens(t, b, tenantB, "tenant-b-user")
 
 	bOnly := exclusive(bTokens, aTokens)
 	require.NotEmpty(t, bOnly.ips, "B must hold addresses A does not, or the IP leak check on A is vacuous")
@@ -485,11 +485,15 @@ func TestClusterOverlapAndConfigIndependence(t *testing.T) {
 	bLaptop, bPhone := bClients[0], bClients[1]
 
 	t.Run("names_and_ipam_independent", func(t *testing.T) {
-		for _, c := range slices.Concat(aClients, bClients) {
-			nm := c.Netmap()
-			want := c.Name + "." + servertest.ClusterBaseDomain + "."
-			assert.Equal(t, want, nm.SelfNode.Name(),
-				"%s: the same hostname in another tailnet must not force a suffixed name", c.Name)
+		for slug, group := range map[string][]*servertest.TestClient{tenantA: aClients, tenantB: bClients} {
+			for _, c := range group {
+				nm := c.Netmap()
+				// P06 / ADR 0008: each tailnet names its nodes under its own
+				// domain; same hostname in A and B, no suffix in either.
+				want := c.Name + "." + servertest.ClusterTailnetDomain(slug) + "."
+				assert.Equal(t, want, nm.SelfNode.Name(),
+					"%s: the same hostname in another tailnet must not force a suffixed name", c.Name)
+			}
 		}
 
 		assert.Equal(t, aLaptop.Netmap().SelfNode.Addresses().AsSlice(), bLaptop.Netmap().SelfNode.Addresses().AsSlice(),
@@ -536,7 +540,7 @@ func TestClusterOverlapAndConfigIndependence(t *testing.T) {
 		require.NoError(t, err)
 		tc.Runtime(t, tenantA).Change(c)
 
-		wantA := "phone-renamed." + servertest.ClusterBaseDomain + "."
+		wantA := "phone-renamed." + servertest.ClusterTailnetDomain(tenantA) + "."
 		aLaptop.WaitForCondition(t, "A's laptop sees the renamed phone", clusterWait, func(nm *netmap.NetworkMap) bool {
 			return slices.ContainsFunc(nm.Peers, func(p tailcfg.NodeView) bool { return p.Name() == wantA })
 		})
@@ -545,7 +549,7 @@ func TestClusterOverlapAndConfigIndependence(t *testing.T) {
 
 		bPeer, ok := bLaptop.PeerByName("phone")
 		require.True(t, ok)
-		assert.Equal(t, "phone."+servertest.ClusterBaseDomain+".", bPeer.Name(), "B's phone keeps its name")
+		assert.Equal(t, "phone."+servertest.ClusterTailnetDomain(tenantB)+".", bPeer.Name(), "B's phone keeps its name")
 	})
 
 	t.Run("policy_change_in_B_is_silent_in_A", func(t *testing.T) {
@@ -760,7 +764,7 @@ type tokens struct {
 }
 
 // tenantTokens lists every identifier of s's nodes and of user.
-func tenantTokens(t *testing.T, s *servertest.TestServer, user string) tokens {
+func tenantTokens(t *testing.T, s *servertest.TestServer, slug, user string) tokens {
 	t.Helper()
 
 	out := tokens{strs: []string{user}}
@@ -768,7 +772,7 @@ func tenantTokens(t *testing.T, s *servertest.TestServer, user string) tokens {
 	for _, nv := range s.State().ListNodes().All() {
 		out.strs = append(out.strs,
 			nv.NodeKey().String(), nv.MachineKey().String(), nv.DiscoKey().String(),
-			nv.Hostname(), nv.GivenName()+"."+servertest.ClusterBaseDomain)
+			nv.Hostname(), nv.GivenName()+"."+servertest.ClusterTailnetDomain(slug))
 		out.ips = append(out.ips, nv.IPsAsString()...)
 	}
 

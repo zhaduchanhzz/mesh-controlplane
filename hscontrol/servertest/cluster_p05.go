@@ -46,6 +46,10 @@ import (
 // ClusterBaseDomain is the MagicDNS base domain of every [TestCluster].
 const ClusterBaseDomain = "mesh.test"
 
+// ClusterTailnetDomain is the MagicDNS domain of tailnet slug in a
+// [TestCluster]: <slug>.<ClusterBaseDomain> (P06, ADR 0008).
+func ClusterTailnetDomain(slug string) string { return slug + "." + ClusterBaseDomain }
+
 // TailnetSeed describes one row of the tailnets table written before the
 // cluster starts, as the future CreateTailnet/registry (P10) will.
 type TailnetSeed struct {
