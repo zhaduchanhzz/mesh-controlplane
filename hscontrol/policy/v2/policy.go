@@ -117,6 +117,14 @@ type PolicyManager struct {
 	// NodeStore writer) applied the SetNodes.
 	nodesGen atomic.Uint64
 
+	// rulesGen counts the changes that are not local; see
+	// [PolicyManager.RulesGeneration] (P00d).
+	rulesGen atomic.Uint64
+
+	// localNodeChanges is set by [WithLocalNodeChanges] and never changes
+	// after construction.
+	localNodeChanges bool
+
 	// nodeAttrsPending mirrors len(nodeAttrsChanged) > 0 so the drain,
 	// called on every dispatched change, skips pm.mu when idle.
 	nodeAttrsPending atomic.Bool
@@ -479,6 +487,10 @@ func (pm *PolicyManager) updateLocked() (bool, error) {
 		pm.sshRules = nil
 		pm.filterRulesMap.Clear()
 		pm.matchersForNodeMap.Clear()
+	}
+
+	if needsUpdate {
+		pm.rulesGen.Add(1)
 	}
 
 	// If nothing changed, no need to update nodes
@@ -1283,6 +1295,10 @@ func (pm *PolicyManager) SetUsers(users []types.User) (bool, bool, error) {
 		log.Error().Err(err).Msg("ambiguous policy users after updating users")
 	}
 
+	// Users feed alias resolution, SSH and per-node rules outside the
+	// hashes updateLocked compares: never a local change.
+	pm.rulesGen.Add(1)
+
 	// SSH rules and per-node filters embed user identity outside the filter
 	// hash, so a user change needs a client refresh even when it did not move.
 	if pm.userChangeNeedsPolicyRefreshLocked(hadPerNodeFilter) {
@@ -1330,6 +1346,10 @@ func (pm *PolicyManager) SetNodes(nodes views.Slice[types.NodeView]) (bool, erro
 	pm.nodes = nodes
 	pm.nodesByID = nodeIDViewMap(nodes)
 
+	// Read before the recompile: a change that flips the per-node path is
+	// not local even when the hashes stay (P00d).
+	wasLocalSafe := pm.localNodeChanges && pm.localSafeLocked()
+
 	// When policy-affecting node properties change, we must recompile filters because:
 	// 1. User/group aliases (like "user1@") resolve to node IPs
 	// 2. Tag aliases (like "tag:server") match nodes based on their tags
@@ -1360,6 +1380,15 @@ func (pm *PolicyManager) SetNodes(nodes views.Slice[types.NodeView]) (bool, erro
 			pm.filterRulesMap.Clear()
 			pm.matchersForNodeMap.Clear()
 		}
+
+		// P00d: nodes joined or left and nothing any other node receives
+		// moved. Callers send peer deltas instead of a policy refresh, so
+		// neither generation moves and the change is not reported.
+		if !needsUpdate && wasLocalSafe && pm.localSafeLocked() && onlyJoinLeave(prevNodes, nodes) {
+			return false, nil
+		}
+
+		pm.rulesGen.Add(1)
 		// Always return true when nodes changed, even if filter hash didn't change
 		// (can happen with autogroup:self or when nodes are added but don't affect rules).
 		// A SetNodes that moves pm back to an older snapshot counts too; the
