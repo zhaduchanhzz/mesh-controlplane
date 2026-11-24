@@ -1,6 +1,6 @@
 # ADR 0008 — DNS theo tailnet trong process nhiều tailnet (P06)
 
-- **Trạng thái:** Proposed (chờ chủ dự án duyệt). Viết theo quyết định ngày 2026-11-24 trong `evidence/source-inventory-P06.md` §4a: base domain theo tailnet, DNS theo tailnet làm ngay trong P06.
+- **Trạng thái:** Accepted (chủ dự án duyệt 2026-11-24, gồm Q-a–Q-c ở cuối). Viết theo quyết định cùng ngày trong `evidence/source-inventory-P06.md` §4a: base domain theo tailnet, DNS theo tailnet làm ngay trong P06.
 - **Liên quan:** ADR 0005 (một cluster nhiều tenant, một hostname), ADR 0007 (runtime theo tailnet), P10 (`policy_revision`, reconcile), P03b (`tenantscope`).
 
 ## Bối cảnh
@@ -38,7 +38,7 @@
   - Tên record phải nằm dưới base domain của **chính** tailnet đó (`*.<s>.<base>`), hoặc nằm hoàn toàn ngoài base domain của cluster.
   - Không được đặt record dưới `<khác>.<base>`, kể cả khi record đó chỉ tới được client của chính tenant. Lý do: tránh nhầm lẫn và tránh tạo đường tới tên chứng chỉ của tenant khác.
   - Tên record trùng tên MagicDNS của một node trong tailnet vẫn bị chặn như hiện nay: `reservedLabel`, và `CertDomain` từ chối tên mà một extra record đang giữ.
-- **Giới hạn kích thước:** tối đa 1 000 record, 64 nameserver, 64 search domain, và JSON tối đa 256 KiB. Đây là chống DoS (I10); số cụ thể có thể chỉnh khi review.
+- **Giới hạn kích thước (chống DoS, I10), chỉnh được trong config của cluster:** mặc định tối đa 1 000 record, 64 nameserver (global + split), 64 search domain, JSON tối đa 256 KiB. Khóa: `tuning.tenant_dns.max_extra_records`, `max_nameservers`, `max_search_domains`, `max_config_bytes`; mỗi khóa phải dương, có mặc định, có doc sinh tự động và nằm trong `TestConfigFields`. Chỉ operator đổi được (file config), tenant thì không. Hạ giới hạn khi đã có tailnet vượt mức: DNS đang dùng của tailnet đó vẫn nạp (không cắt dữ liệu đã lưu) nhưng có cảnh báo, và lần ghi kế tiếp phải nằm trong giới hạn mới.
 - **Ghi lỗi:** JSON hỏng hoặc vi phạm ràng buộc thì lệnh ghi bị từ chối, giá trị cũ giữ nguyên.
 - **Đọc lỗi:** khi nạp, nếu `dns_config` trong DB không validate được (ví dụ do bị sửa tay), runtime của tailnet đó **không được nạp** và có log lỗi chỉ ghi tailnet ID. Không có trường hợp chạy tiếp với DNS mặc định.
 
@@ -88,7 +88,7 @@
 7. **E2E client thật:** `tailscale status` và `tailscale dns status` cho thấy tên `node.<s>.<base>` và DNS riêng của từng tailnet.
 8. **Một tailnet:** `headscale serve` vẫn dùng base domain trong file; golden và test upstream không đổi.
 
-## Câu hỏi còn mở cho chủ dự án
-- **Q-a:** Duyệt giới hạn kích thước ở §3 (1 000 record, 64 nameserver, 256 KiB)?
-- **Q-b:** API v2 cho tenant ghi DNS: để ticket sau như §4?
-- **Q-c:** Từ chối khởi động khi cluster config có DNS tenant-đặt-được (§2), thay vì dùng nó làm mặc định?
+## Quyết định của chủ dự án (2026-11-24)
+- **Q-a:** giữ giới hạn như đề xuất (1 000 record, 64 nameserver, 64 search domain, 256 KiB); mọi thông số về số lượng là tham số config của cluster, dễ chỉnh (§3).
+- **Q-b:** API v2 cho tenant ghi DNS để ticket sau; P06 chỉ có CLI của operator (§4).
+- **Q-c:** cluster config có DNS kiểu tenant (extra_records, extra_records_path, nameservers, search_domains) thì từ chối khởi động (§2).
