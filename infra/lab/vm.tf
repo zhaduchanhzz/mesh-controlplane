@@ -64,7 +64,11 @@ resource "proxmox_virtual_environment_vm" "mc_ci" {
   serial_device {}
 
   lifecycle {
-    # Lab VMs are never replaced implicitly; a replace needs human approval.
     prevent_destroy = true
+    # The image a disk was created from and the cloud-init snippet only act
+    # at creation, and PVE does not report them back: after a `tofu import`
+    # (2026-11-24, state rebuilt on this machine) they would read as a
+    # change and force a replace of a running VM.
+    ignore_changes = [disk[0].import_from, initialization[0].user_data_file_id]
   }
 }

@@ -16,4 +16,10 @@ resource "proxmox_download_file" "ubuntu_2404" {
   checksum           = local.ubuntu_sha256
   checksum_algorithm = "sha256"
   overwrite          = false
+
+  # Only used for the download; not read back by `tofu import` (state
+  # rebuilt 2026-11-24), where they would force a re-download.
+  lifecycle {
+    ignore_changes = [url, checksum, checksum_algorithm]
+  }
 }

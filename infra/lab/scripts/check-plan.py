@@ -43,15 +43,20 @@ def check(rc: dict) -> str | None:
             after.get("datastore_id") == "local"
             and after.get("content_type") == "import"
             and str(after.get("file_name", "")).startswith("mc-")
-            and after.get("checksum")
+            # The checksum guards a download, i.e. a create; an update of
+            # an imported file keeps it out of state (ignore_changes).
+            and (after.get("checksum") or "create" not in actions)
         )
         return None if ok else f"{addr}: download must be a checksummed mc-* file in local:import"
     if typ == "proxmox_virtual_environment_file":
         raw = (after.get("source_raw") or [{}])[0]
+        # An imported snippet keeps source_raw out of state (ignore_changes):
+        # its stored file_name names it then. Same rule either way.
+        name = raw.get("file_name") or after.get("file_name") or ""
         ok = (
             after.get("datastore_id") == "local"
             and after.get("content_type") == "snippets"
-            and str(raw.get("file_name", "")).startswith("mc-")
+            and str(name).startswith("mc-")
         )
         return None if ok else f"{addr}: file must be an mc-* snippet in local:snippets"
     return f"{addr}: resource type {typ} is outside the self-apply scope"
