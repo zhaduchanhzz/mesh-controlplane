@@ -339,6 +339,26 @@ t_dns() {
   else record D03 PASS "a record under another tailnet's domain is refused"; fi
 }
 
+# P07 (S12, I07): a node of A changes what it advertises and reconnects over
+# and over while b1 streams; b1 must never hold a node or key of A.
+t_s12() {
+  local ka1 ka2 i leak="" pb
+  ka1=$(nodekey p05-a1); ka2=$(nodekey p05-a2)
+  for i in 1 2 3; do
+    ci_ "docker exec p05-a2 tailscale set --advertise-routes=10.77.$i.0/24" >/dev/null 2>&1
+    ci_ "docker exec p05-a2 tailscale down" >/dev/null 2>&1
+    ci_ "docker exec p05-a2 tailscale up --login-server=$URL --hostname=p05-a2 --advertise-routes=10.77.$i.0/24" >/dev/null 2>&1
+    pb=$(peers p05-b1)
+    [ -n "$pb" ] && leak="$leak; round $i: b1 sees [$pb]"
+    ts_json p05-b1 >"$TMPD/b1.json"
+    grep -qE "${ka1}|${ka2}|p05-a[0-9]" "$TMPD/b1.json" && leak="$leak; round $i: b1 status names a node of A"
+  done
+  wait_state p05-a2 Running 30 || leak="$leak; a2 not Running after the churn"
+  wait_peer p05-a1 p05-a2 30 || leak="$leak; a1 lost a2"
+  [ -z "$leak" ] && record S12 PASS "3 rounds of route change + reconnect in A: b1 holds nothing of A, A converges" \
+    || record S12 FAIL "${leak#; }"
+}
+
 t_profiles() {
   local n=p05-d ra=0 rb=0 problems=""
   start_ts $n || { record R04 FAIL "client setup failed"; return; }
@@ -741,6 +761,7 @@ fi
 t_http
 t_isolation
 t_dns
+t_s12
 t_profiles
 t_refusals
 t_scope
