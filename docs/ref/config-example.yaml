@@ -532,7 +532,7 @@ tuning:
     # takes over at most about this long after the active process stops
     # renewing. At least 1s.
     ttl: 10s
-    # How often the active process renews; below ttl - safety_margin.
+    # How often the active process renews; below `ttl` minus `safety_margin`.
     renew_interval: 3s
     # How often a standby tries to take the lease.
     acquire_interval: 1s

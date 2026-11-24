@@ -1048,23 +1048,23 @@ type Tuning struct {
 
 // ClusterLeaseConfig times the cluster lease (P11b). Expiry is decided by
 // the database clock; the active process also stops serving on its own,
-// by its monotonic clock, safety_margin before its lease could expire.
+// by its monotonic clock, `safety_margin` before its lease could expire.
 type ClusterLeaseConfig struct {
 	// TTL is how long the lease lives in the database after each renewal;
 	// a standby takes over at most about this long after the active
 	// process stops renewing. At least 1s.
-	TTL time.Duration `example:"\"10s\"" koanf:"ttl"`
+	TTL time.Duration `example:"\"30s\"" koanf:"ttl"`
 
 	// RenewInterval is how often the active process renews; below
-	// ttl - safety_margin.
-	RenewInterval time.Duration `example:"\"3s\"" koanf:"renew_interval"`
+	// `ttl` minus `safety_margin`.
+	RenewInterval time.Duration `example:"\"10s\"" koanf:"renew_interval"`
 
 	// AcquireInterval is how often a standby tries to take the lease.
-	AcquireInterval time.Duration `example:"\"1s\"" koanf:"acquire_interval"`
+	AcquireInterval time.Duration `example:"\"500ms\"" koanf:"acquire_interval"`
 
 	// SafetyMargin is how long before the TTL the active process stops
 	// serving when it could not renew; at most half the TTL.
-	SafetyMargin time.Duration `example:"\"2s\"" koanf:"safety_margin"`
+	SafetyMargin time.Duration `example:"\"5s\"" koanf:"safety_margin"`
 }
 
 // IncrementalNetmapConfig controls the incremental netmap (P00d, ADR 0005).

@@ -17,7 +17,7 @@ var configFieldDocs = map[string]string{
 	"CertificatesConfig.Enabled":         "Lets nodes run `tailscale cert`. It requires `dns.magic_dns`, a lowercase `dns.base_domain` and `dns.challenge.provider`.",
 	"CertificatesConfig.Zone":            "The public DNS zone challenge records are written to, when `dns.base_domain` sits below the zone apex. It must contain `dns.base_domain`. Empty uses `dns.base_domain`.",
 	"ClusterLeaseConfig.AcquireInterval": "How often a standby tries to take the lease.",
-	"ClusterLeaseConfig.RenewInterval":   "How often the active process renews; below ttl - safety_margin.",
+	"ClusterLeaseConfig.RenewInterval":   "How often the active process renews; below `ttl` minus `safety_margin`.",
 	"ClusterLeaseConfig.SafetyMargin":    "How long before the TTL the active process stops serving when it could not renew; at most half the TTL.",
 	"ClusterLeaseConfig.TTL":             "How long the lease lives in the database after each renewal; a standby takes over at most about this long after the active process stops renewing. At least 1s.",
 	"Config.Addr":                        "The host:port the server listens on for clients, the API and the web pages. It serves HTTPS when `tls.cert_path` or `tls.acme.hostname` is set, plain HTTP otherwise. The default listens on every address, IPv4 and IPv6 alike.",
