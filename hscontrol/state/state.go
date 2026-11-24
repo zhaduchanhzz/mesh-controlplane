@@ -452,6 +452,13 @@ func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 	batchTimeout := cmp.Or(cfg.Tuning.NodeStoreBatchTimeout, defaults.NodeStoreBatchTimeout)
 
 	nodeStore := NewNodeStore(nodes, policyPeersFunc(polMan), batchSize, batchTimeout)
+	if cfg.Tuning.IncrementalNetmap.Enabled {
+		nodeStore.SetIncrementalPeers(policyIncrementalPeers(polMan))
+		nodeStore.SetReconcilePeers(func(nodes []types.NodeView) (map[types.NodeID][]types.NodeID, uint64) {
+			return polMan.BuildPeerMapGen(views.SliceOf(nodes))
+		})
+	}
+
 	polMan.SetRouterSession(nodeStore.RouterSession)
 	nodeStore.reservedLabel = func(label string) bool {
 		return cfg.DNSConfig.BaseDomain != "" && cfg.HasExtraRecord(label+"."+cfg.DNSConfig.BaseDomain)
@@ -508,7 +515,42 @@ func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 // live manager and every write validation use the same ones, so a policy
 // is validated under the semantics it will be installed with.
 func policyOptions(cfg *types.Config) []policy.Option {
-	return []policy.Option{policy.WithEmptyPolicyDenies(cfg.PolicyEmptyDenies)}
+	return []policy.Option{
+		policy.WithEmptyPolicyDenies(cfg.PolicyEmptyDenies),
+		policy.WithLocalNodeChanges(cfg.Tuning.IncrementalNetmap.Enabled),
+	}
+}
+
+// policyIncrementalPeers is [policyPeersFunc] for the incremental netmap
+// (P00d): the same SetNodes refresh, then a patch of the previous adjacency
+// when the batch only joined and removed nodes and the policy reports the
+// change local, a full build otherwise. Runs on the NodeStore writer.
+func policyIncrementalPeers(pm policy.PolicyManager) IncrementalPeersFunc {
+	return func(
+		nodes []types.NodeView,
+		prevPeers map[types.NodeID][]types.NodeID,
+		prevGen uint64,
+		joined, removed []types.NodeID,
+		try bool,
+	) (map[types.NodeID][]types.NodeID, uint64, bool) {
+		slice := views.SliceOf(nodes)
+
+		_, err := pm.SetNodes(slice)
+		if err != nil {
+			log.Error().Err(err).Msg("refreshing policy nodes before peer map build")
+		}
+
+		if try && err == nil {
+			peers, gen, ok := pm.IncrementalPeerMap(slice, prevPeers, prevGen, joined, removed)
+			if ok {
+				return peers, gen, true
+			}
+		}
+
+		peers, gen := pm.BuildPeerMapGen(slice)
+
+		return peers, gen, false
+	}
 }
 
 func policyPeersFunc(pm policy.PolicyManager) PeersFunc {
@@ -524,6 +566,14 @@ func policyPeersFunc(pm policy.PolicyManager) PeersFunc {
 
 		return pm.BuildPeerMap(slice)
 	}
+}
+
+// ReconcilePeerMaps checks the incremental netmap against a full build
+// and returns the nodes whose peers differed, which now have the full
+// build's and need a full map (P00d). Nil while the incremental netmap is
+// off or nothing differed.
+func (s *State) ReconcilePeerMaps() []types.NodeID {
+	return s.nodeStore.ReconcilePeerMaps().Diverged
 }
 
 // Closed reports whether Close has been called.
@@ -2324,6 +2374,24 @@ func (s *State) DeleteNodeFromStoreForTest(id types.NodeID) {
 // so wrap must delegate to its argument. Call before any map is served.
 func (s *State) WrapPolicyManagerForTest(wrap func(policy.PolicyManager) policy.PolicyManager) {
 	s.polMan = wrap(s.polMan)
+}
+
+// MutatePeerMapForTest publishes a copy of the current snapshot whose
+// adjacency mutate changed, to inject a divergence for reconciliation and
+// removal tests (P00d M03, M04). The mutation goes straight to the
+// snapshot, bypassing the writer: call it only while no write is queued.
+func (s *State) MutatePeerMapForTest(mutate func(map[types.NodeID][]types.NodeID)) {
+	snap := *s.nodeStore.data.Load()
+
+	peers := make(map[types.NodeID][]types.NodeID, len(snap.peersByNode))
+	for id, ps := range snap.peersByNode {
+		peers[id] = slices.Clone(ps)
+	}
+
+	mutate(peers)
+
+	snap.peersByNode = peers
+	s.nodeStore.data.Store(&snap)
 }
 
 // UpdatePolicyManagerNodesForTest syncs the policy manager with the

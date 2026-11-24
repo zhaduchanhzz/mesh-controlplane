@@ -36,6 +36,20 @@ type PolicyManager interface {
 	// NodesGeneration counts SetNodes calls that reported a change; see
 	// [policyv2.PolicyManager.NodesGeneration].
 	NodesGeneration() uint64
+	// RulesGeneration counts changes that are not local to the nodes that
+	// joined or left; see [policyv2.PolicyManager.RulesGeneration] (P00d).
+	RulesGeneration() uint64
+	// BuildPeerMapGen is BuildPeerMap and the rules generation it was built at.
+	BuildPeerMapGen(nodes views.Slice[types.NodeView]) (map[types.NodeID][]types.NodeID, uint64)
+	// IncrementalPeerMap patches a peer map for joined and removed nodes
+	// when the rules have not moved; see
+	// [policyv2.PolicyManager.IncrementalPeerMap].
+	IncrementalPeerMap(
+		nodes views.Slice[types.NodeView],
+		prev map[types.NodeID][]types.NodeID,
+		prevGen uint64,
+		joined, removed []types.NodeID,
+	) (map[types.NodeID][]types.NodeID, uint64, bool)
 	// NodeCanHaveTag reports whether the given node can have the given tag.
 	NodeCanHaveTag(node types.NodeView, tag string) bool
 
@@ -116,6 +130,12 @@ type Option = policyv2.Option
 // as a tenant tailnet requires; see [policyv2.WithEmptyPolicyDenies].
 func WithEmptyPolicyDenies(on bool) Option {
 	return policyv2.WithEmptyPolicyDenies(on)
+}
+
+// WithLocalNodeChanges reports local node joins and removals as no policy
+// change; see [policyv2.WithLocalNodeChanges] (P00d).
+func WithLocalNodeChanges(on bool) Option {
+	return policyv2.WithLocalNodeChanges(on)
 }
 
 // NewPolicyManager returns a new [PolicyManager].

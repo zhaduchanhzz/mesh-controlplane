@@ -88,6 +88,11 @@ func Default() types.Config {
 			RegisterCacheExpiration:        15 * time.Minute,
 			RegisterCacheMaxEntries:        1024,
 			MaxPeerEntries:                 1_000_000,
+			IncrementalNetmap: types.IncrementalNetmapConfig{
+				Enabled:           false,
+				ReconcileInterval: 60 * time.Second,
+				FullMapInterval:   15 * time.Minute,
+			},
 		},
 	}
 }
