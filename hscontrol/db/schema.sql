@@ -146,6 +146,11 @@ CREATE INDEX idx_nodes_auth_key_id ON nodes(auth_key_id);
 -- the same tailnet (NodeStore nodesByMachineKey[mk][userID]).
 CREATE INDEX idx_nodes_tailnet_machine_key ON nodes(tailnet_id, machine_key);
 CREATE INDEX idx_nodes_tailnet_node_key ON nodes(tailnet_id, node_key);
+-- An overlay address belongs to one node of a tailnet; two tailnets are two
+-- overlays and may reuse it. NULL (no address of that family) may repeat
+-- (P06, migration 202611241200-nodes-ip-unique-per-tailnet).
+CREATE UNIQUE INDEX idx_nodes_tailnet_ipv4 ON nodes(tailnet_id, ipv4) WHERE ipv4 IS NOT NULL;
+CREATE UNIQUE INDEX idx_nodes_tailnet_ipv6 ON nodes(tailnet_id, ipv6) WHERE ipv6 IS NOT NULL;
 -- A (machine_key, node_key) pair resolves a Noise session to exactly one
 -- tailnet (ADR 0007 §2): it may not appear in two tailnets. Within one tailnet
 -- upstream keeps several rows for it (re-login as another user), so this is a
@@ -227,4 +232,12 @@ CREATE TABLE platform_idempotency(
   response text NOT NULL,
   created_at datetime NOT NULL,
   PRIMARY KEY(actor, idempotency_key)
+);
+
+-- Per-tailnet settings (P06, ADR 0008): DNS settings of a tailnet as
+-- validated JSON; see hscontrol/db/tailnet_settings.go.
+CREATE TABLE tailnet_settings(
+  tailnet_id text PRIMARY KEY,
+  dns_config text,
+  CONSTRAINT fk_tailnet_settings_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id)
 );

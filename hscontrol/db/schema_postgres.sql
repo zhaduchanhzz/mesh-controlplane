@@ -112,6 +112,9 @@ CREATE TABLE nodes(
 CREATE INDEX idx_nodes_auth_key_id ON nodes(auth_key_id);
 CREATE INDEX idx_nodes_tailnet_machine_key ON nodes(tailnet_id, machine_key);
 CREATE INDEX idx_nodes_tailnet_node_key ON nodes(tailnet_id, node_key);
+-- Overlay address unique within a tailnet (P06); see schema.sql.
+CREATE UNIQUE INDEX idx_nodes_tailnet_ipv4 ON nodes(tailnet_id, ipv4) WHERE ipv4 IS NOT NULL;
+CREATE UNIQUE INDEX idx_nodes_tailnet_ipv6 ON nodes(tailnet_id, ipv6) WHERE ipv6 IS NOT NULL;
 -- One tailnet per (machine_key, node_key) pair (ADR 0007 §2); see schema.sql.
 CREATE INDEX idx_nodes_machine_key_node_key ON nodes(machine_key, node_key);
 CREATE FUNCTION nodes_key_pair_tailnet_check() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -200,4 +203,12 @@ CREATE TABLE platform_idempotency(
   response text NOT NULL,
   created_at timestamptz NOT NULL,
   PRIMARY KEY(actor, idempotency_key)
+);
+
+-- Per-tailnet settings (P06, ADR 0008): DNS settings of a tailnet as
+-- validated JSON; see hscontrol/db/tailnet_settings.go.
+CREATE TABLE tailnet_settings(
+  tailnet_id text PRIMARY KEY,
+  dns_config text,
+  CONSTRAINT fk_tailnet_settings_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id)
 );

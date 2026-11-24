@@ -240,6 +240,27 @@ func Validate(c *types.Config) error {
 		})
 	}
 
+	// ADR 0008 Q-a: the per-tailnet DNS limits are operator settings and
+	// must bound something.
+	for _, l := range []struct {
+		key string
+		n   int
+		def int
+	}{
+		{"tuning.tenant_dns.max_extra_records", c.Tuning.TenantDNS.MaxExtraRecords, types.DefaultTenantDNSLimits.MaxExtraRecords},
+		{"tuning.tenant_dns.max_nameservers", c.Tuning.TenantDNS.MaxNameservers, types.DefaultTenantDNSLimits.MaxNameservers},
+		{"tuning.tenant_dns.max_search_domains", c.Tuning.TenantDNS.MaxSearchDomains, types.DefaultTenantDNSLimits.MaxSearchDomains},
+		{"tuning.tenant_dns.max_config_bytes", c.Tuning.TenantDNS.MaxConfigBytes, types.DefaultTenantDNSLimits.MaxConfigBytes},
+	} {
+		if l.n <= 0 {
+			v.Add(&types.ConfigError{
+				Reason:  l.key + " must be positive",
+				Current: []types.KV{{Key: l.key, Value: l.n}},
+				Hint:    fmt.Sprintf("set to a positive number (default: %d)", l.def),
+			})
+		}
+	}
+
 	if inc := c.Tuning.IncrementalNetmap; inc.Enabled {
 		if inc.ReconcileInterval < minReconcileInterval {
 			v.Add(&types.ConfigError{

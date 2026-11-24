@@ -88,6 +88,7 @@ func Default() types.Config {
 			RegisterCacheExpiration:        15 * time.Minute,
 			RegisterCacheMaxEntries:        1024,
 			MaxPeerEntries:                 1_000_000,
+			TenantDNS:                      types.DefaultTenantDNSLimits,
 			IncrementalNetmap: types.IncrementalNetmapConfig{
 				Enabled:           false,
 				ReconcileInterval: 60 * time.Second,

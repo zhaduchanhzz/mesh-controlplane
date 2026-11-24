@@ -132,6 +132,10 @@ var configFieldDocs = map[string]string{
 	"TailSQLConfig.Enabled":                               "Runs tailsql. It needs `database.type` sqlite.",
 	"TailSQLConfig.StateDir":                              "Holds the node's identity. Losing it registers a new node, `tailsql-1`, and leaves the old one for an admin to delete.",
 	"TaildropConfig.Enabled":                              "Gives every node the file-sharing capability. False omits it from the baseline; a policy `nodeAttrs` grant can still give it.",
+	"TenantDNSLimits.MaxConfigBytes":                      "The largest a tailnet's DNS settings may be, as stored JSON.",
+	"TenantDNSLimits.MaxExtraRecords":                     "The most extra DNS records a tailnet may store.",
+	"TenantDNSLimits.MaxNameservers":                      "The most nameservers a tailnet may store, global and split together.",
+	"TenantDNSLimits.MaxSearchDomains":                    "The most search domains a tailnet may store.",
 	"Tuning.BatchChangeDelay":                             "How often queued changes are sent to clients as one update; must be positive.",
 	"Tuning.BatcherWorkers":                               "The number of workers building map updates for connected clients. Zero picks the number from the CPU count.",
 	"Tuning.IncrementalNetmap":                            "Updates peer relationships for a joining or deleted node without rebuilding them for the whole tailnet. Off by default.",
@@ -141,6 +145,7 @@ var configFieldDocs = map[string]string{
 	"Tuning.NodeStoreBatchTimeout":                        "The longest a partial batch of node changes waits before the rebuild; must be positive. Lower values answer single changes faster at the cost of more rebuilds.",
 	"Tuning.RegisterCacheExpiration":                      "How long a pending registration waits to be completed. Zero uses the default.",
 	"Tuning.RegisterCacheMaxEntries":                      "Bounds pending registrations. At capacity, new registrations are refused without evicting pending ones; SSH checks have a small reserve beyond it. Zero uses the default. See [Pending authentication limits](https://headscale.net/stable/ref/registration/#pending-authentication-limits).",
+	"Tuning.TenantDNS":                                    "Bounds the DNS settings each tailnet may store in cluster mode (ADR 0008).",
 }
 
 var configValueDocs = map[string]string{

@@ -3403,6 +3403,11 @@ Holds performance settings that rarely need changing.
       node_store_batch_size: 100
       node_store_batch_timeout: 500ms
       max_peer_entries: 1000000
+      tenant_dns:
+        max_extra_records: 1000
+        max_nameservers: 64
+        max_search_domains: 64
+        max_config_bytes: 262144
       incremental_netmap:
         enabled: false
         reconcile_interval: 1m
@@ -3623,6 +3628,133 @@ Bounds the peer relationships of a tailnet: the sum, over its nodes, of the peer
 
     ```nix
     services.headscale.settings.tuning.max_peer_entries = 4000000;
+    ```
+
+### `tuning.tenant_dns` { #tuning.tenant_dns data-toc-label="tenant_dns" }
+
+Bounds the DNS settings each tailnet may store in cluster mode (ADR 0008).
+
+??? example "All `tuning.tenant_dns` keys and defaults"
+
+    ```yaml
+    tuning:
+      tenant_dns:
+        max_extra_records: 1000
+        max_nameservers: 64
+        max_search_domains: 64
+        max_config_bytes: 262144
+    ```
+
+#### `tuning.tenant_dns.max_extra_records` { #tuning.tenant_dns.max_extra_records data-toc-label="max_extra_records" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `1000`
+- **Env:** `HEADSCALE_TUNING_TENANT_DNS_MAX_EXTRA_RECORDS`
+
+The most extra DNS records a tailnet may store.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_dns:
+        max_extra_records: 2000
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_DNS_MAX_EXTRA_RECORDS=2000
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_dns.max_extra_records = 2000;
+    ```
+
+#### `tuning.tenant_dns.max_nameservers` { #tuning.tenant_dns.max_nameservers data-toc-label="max_nameservers" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `64`
+- **Env:** `HEADSCALE_TUNING_TENANT_DNS_MAX_NAMESERVERS`
+
+The most nameservers a tailnet may store, global and split together.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_dns:
+        max_nameservers: 16
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_DNS_MAX_NAMESERVERS=16
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_dns.max_nameservers = 16;
+    ```
+
+#### `tuning.tenant_dns.max_search_domains` { #tuning.tenant_dns.max_search_domains data-toc-label="max_search_domains" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `64`
+- **Env:** `HEADSCALE_TUNING_TENANT_DNS_MAX_SEARCH_DOMAINS`
+
+The most search domains a tailnet may store.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_dns:
+        max_search_domains: 16
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_DNS_MAX_SEARCH_DOMAINS=16
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_dns.max_search_domains = 16;
+    ```
+
+#### `tuning.tenant_dns.max_config_bytes` { #tuning.tenant_dns.max_config_bytes data-toc-label="max_config_bytes" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `262144`
+- **Env:** `HEADSCALE_TUNING_TENANT_DNS_MAX_CONFIG_BYTES`
+
+The largest a tailnet's DNS settings may be, as stored JSON.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_dns:
+        max_config_bytes: 524288
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_DNS_MAX_CONFIG_BYTES=524288
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_dns.max_config_bytes = 524288;
     ```
 
 ### `tuning.incremental_netmap` { #tuning.incremental_netmap data-toc-label="incremental_netmap" }

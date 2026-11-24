@@ -18,7 +18,7 @@ import (
 // non-test code that writes a tenant table, except the reviewed allowlist.
 
 var tenantWriteRE = regexp.MustCompile(
-	`(?is)\b(insert\s+into|update|delete\s+from)\s+"?(users|nodes|credentials|policies)\b`)
+	`(?is)\b(insert\s+into|update|delete\s+from)\s+"?(users|nodes|credentials|policies|tailnet_settings)\b`)
 
 // rawTenantWriteAllowlist holds file:reason for reviewed raw tenant writes.
 var rawTenantWriteAllowlist = map[string]string{
@@ -32,6 +32,9 @@ var rawTenantWriteAllowlist = map[string]string{
 	// Benchmark B3 (build tag benchdb, never in the server binary): measures
 	// the cost of rewriting every row of a tenant on a move, on purpose.
 	"cmd/bench-db/b3.go": "benchmark B3 bulk rewrite",
+	// Platform operator path (P06, ADR 0008): the tailnet's DNS settings,
+	// validated, under the ownership lock with the config_revision bump.
+	"hscontrol/db/tailnet_settings.go": "SetTailnetDNS under LockOwnership",
 }
 
 func TestNoRawTenantWritesOutsideFence(t *testing.T) {

@@ -99,6 +99,7 @@ func TestP08ClusterConfigRefusesTailSQL(t *testing.T) {
 		ClusterID: "c1",
 		ServerURL: "https://c1.cp.gta5web.online:8443",
 		Policy:    types.PolicyConfig{Mode: types.PolicyModeDB},
+		DNSConfig: types.DNSConfig{BaseDomain: "c1.tailnet.internal"}, // P06: required
 	}
 	require.NoError(t, validateClusterConfig(cfg), "control: a valid cluster config")
 

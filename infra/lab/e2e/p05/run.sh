@@ -304,6 +304,41 @@ t_isolation() {
   else record R03 FAIL "a1 cannot ping a2 (see logs/R03-ping.log)"; fi
 }
 
+# P06 (ADR 0008): each tailnet has its MagicDNS domain <slug>.<base> and its
+# own DNS settings, written by the operator with `cluster tailnet dns`. JSON is
+# parsed on mc-ci (python3 on a Windows runner adds a CR or is missing).
+DNS_BASE=${DNS_BASE:-c1.tailnet.internal}
+dns_status() { ci_ "docker exec $1 tailscale dns status 2>&1"; }
+set_dns() { # SLUG JSON -> CLI exit code
+  local f=/var/lib/headscale/cluster-e2e/dns.json
+  printf '%s\n' "$2" | cp_ "sudo install -o headscale -g headscale -m 0640 /dev/stdin $f && $HSC tailnet dns --slug $1 --file $f; rc=\$?; sudo rm -f $f; exit \$rc"     >>"$ART_DIR/logs/dns-cli.log" 2>&1
+}
+t_dns() {
+  # Suffix and own name as the client reports them (tailscale dns status).
+  local da db sa sb na nb
+  da=$(dns_status p05-a1); db=$(dns_status p05-b1)
+  sa=$(sed -n 's/.*(suffix = \([^)]*\)).*/\1/p' <<<"$da" | head -1); sb=$(sed -n 's/.*(suffix = \([^)]*\)).*/\1/p' <<<"$db" | head -1)
+  na=$(sed -n 's/.*reach this device at \([^ ]*\)\.$/\1/p' <<<"$da" | head -1); nb=$(sed -n 's/.*reach this device at \([^ ]*\)\.$/\1/p' <<<"$db" | head -1)
+  if [ "$sa" = "a.$DNS_BASE" ] && [ "$sb" = "b.$DNS_BASE" ] && [ "$na" = "p05-a1.a.$DNS_BASE" ] && [ "$nb" = "p05-b1.b.$DNS_BASE" ]; then
+    record D01 PASS "MagicDNS per tailnet: $na / $nb"
+  else record D01 FAIL "suffix a=[$sa] b=[$sb] names a=[$na] b=[$nb]"; fi
+
+  # override_local_dns: the global nameserver is then a resolver, which
+  # `tailscale dns status` lists (a fallback resolver it does not show).
+  set_dns b '{"override_local_dns":true,"nameservers":{"global":["9.9.9.9"]},"search_domains":["b.corp.example"]}'     || { record D02 FAIL "cluster tailnet dns refused a valid setting"; return; }
+  local i sbd=""
+  for i in $(seq 1 30); do sbd=$(dns_status p05-b1); grep -q 9.9.9.9 <<<"$sbd" && grep -q b.corp.example <<<"$sbd" && break; sleep 1; done
+  local sad; sad=$(dns_status p05-a1)
+  printf '%s\n' "$sbd" >"$ART_DIR/logs/D02-b1-dns.txt"; printf '%s\n' "$sad" >"$ART_DIR/logs/D02-a1-dns.txt"
+  if grep -q 9.9.9.9 <<<"$sbd" && grep -q b.corp.example <<<"$sbd" && ! grep -qE '9\.9\.9\.9|b\.corp\.example' <<<"$sad"; then
+    record D02 PASS "B's nameserver and search domain reach b1 only, not a1"
+  else record D02 FAIL "b1 or a1 DNS not as expected (logs/D02-*-dns.txt)"; fi
+
+  if set_dns b "{\"extra_records\":[{\"name\":\"p05-a1.a.$DNS_BASE\",\"type\":\"A\",\"value\":\"100.64.0.9\"}]}"; then
+    record D03 FAIL "a record under A's domain was stored for B"
+  else record D03 PASS "a record under another tailnet's domain is refused"; fi
+}
+
 t_profiles() {
   local n=p05-d ra=0 rb=0 problems=""
   start_ts $n || { record R04 FAIL "client setup failed"; return; }
@@ -705,6 +740,7 @@ fi
 { echo "image: $IMAGE"; echo "commit: $SHA"; echo "cluster: $CLUSTER_ID"; } >>"$ART_DIR/env.txt"
 t_http
 t_isolation
+t_dns
 t_profiles
 t_refusals
 t_scope

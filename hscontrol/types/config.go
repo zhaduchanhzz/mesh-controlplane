@@ -1031,6 +1031,10 @@ type Tuning struct {
 	// nodes; 0 means no bound. Policy changes are not refused.
 	MaxPeerEntries int64 `example:"4000000" koanf:"max_peer_entries"`
 
+	// TenantDNS bounds the DNS settings each tailnet may store in cluster
+	// mode (ADR 0008).
+	TenantDNS TenantDNSLimits `koanf:"tenant_dns"`
+
 	// IncrementalNetmap updates peer relationships for a joining or
 	// deleted node without rebuilding them for the whole tailnet. Off by
 	// default.

@@ -150,6 +150,10 @@ func TestConfigFields(t *testing.T) {
 		"tuning.node_store_batch_size",
 		"tuning.node_store_batch_timeout",
 		"tuning.max_peer_entries",
+		"tuning.tenant_dns.max_extra_records",
+		"tuning.tenant_dns.max_nameservers",
+		"tuning.tenant_dns.max_search_domains",
+		"tuning.tenant_dns.max_config_bytes",
 		"tuning.incremental_netmap.enabled",
 		"tuning.incremental_netmap.reconcile_interval",
 		"tuning.incremental_netmap.full_map_interval",
@@ -243,6 +247,7 @@ func TestConfigTree(t *testing.T) {
 		"tailsql",
 		"cli",
 		"tuning",
+		"tuning.tenant_dns",
 		"tuning.incremental_netmap",
 	}
 

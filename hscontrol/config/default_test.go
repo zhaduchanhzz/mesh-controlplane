@@ -40,6 +40,8 @@ func TestDefaultHoldsDefaults(t *testing.T) {
 	assert.Equal(t, 500*time.Millisecond, d.Tuning.NodeStoreBatchTimeout)
 	assert.Zero(t, d.Tuning.BatcherWorkers, "auto: its count depends on the host")
 	assert.EqualValues(t, 1_000_000, d.Tuning.MaxPeerEntries, "P10d: a full mesh of 1000 nodes")
+	assert.Equal(t, types.TenantDNSLimits{MaxExtraRecords: 1000, MaxNameservers: 64, MaxSearchDomains: 64, MaxConfigBytes: 256 << 10},
+		d.Tuning.TenantDNS, "P06 / ADR 0008 Q-a")
 	assert.False(t, d.Tuning.IncrementalNetmap.Enabled, "P00d: the incremental netmap is off by default")
 	assert.Equal(t, 60*time.Second, d.Tuning.IncrementalNetmap.ReconcileInterval)
 	assert.Equal(t, 15*time.Minute, d.Tuning.IncrementalNetmap.FullMapInterval)
