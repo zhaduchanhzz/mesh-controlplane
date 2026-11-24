@@ -1139,5 +1139,31 @@ in
         example = 524288;
       };
     };
+    incremental_netmap = {
+      enabled = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Turns the incremental path on. Experimental: keep off until it has passed security review.
+        '';
+        example = true;
+      };
+      reconcile_interval = lib.mkOption {
+        type = t.duration;
+        default = "1m";
+        description = ''
+          How often a full rebuild runs in the background and is compared with the incremental result; at least 10s. Read only while enabled.
+        '';
+        example = "2m";
+      };
+      full_map_interval = lib.mkOption {
+        type = t.duration;
+        default = "15m";
+        description = ''
+          How often every connected node is sent a full map, spread over the interval so nodes are not all sent one at once; at least 1m. Read only while enabled.
+        '';
+        example = "30m";
+      };
+    };
   };
 }
