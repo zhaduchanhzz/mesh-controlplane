@@ -239,3 +239,146 @@
   9 <- patch=[11:true]
   10 <- patch=[11:true]
   11 <- self dns derp ssh profiles=3 peers=[1 2 6 9 10] filter=9067b8c611c9
+== join alice/r1 -> 12
+  change type=policy target=0 origin=0 policy runtime
+  1 <- profiles=3 changed=[2 6 9 10 11 12] filter=9067b8c611c9
+  2 <- profiles=3 changed=[1 6 9 10 11 12] filter=9067b8c611c9
+  6 <- profiles=4 changed=[1 2 9 10 11 12] filter=9067b8c611c9
+  9 <- profiles=3 changed=[1 2 6 10 11 12] filter=9067b8c611c9
+  10 <- profiles=3 changed=[1 2 6 9 11 12] filter=9067b8c611c9
+  11 <- profiles=3 changed=[1 2 6 9 10 12] filter=9067b8c611c9
+== connect 12
+  change type=patch target=0 origin=0 patches=[12]
+  1 <- patch=[12:true]
+  2 <- patch=[12:true]
+  6 <- patch=[12:true]
+  9 <- patch=[12:true]
+  10 <- patch=[12:true]
+  11 <- patch=[12:true]
+  12 <- self dns derp ssh profiles=3 peers=[1 2 6 9 10 11] filter=9067b8c611c9
+== join bob/r2 -> 13
+  change type=policy target=0 origin=0 policy runtime
+  1 <- profiles=3 changed=[2 6 9 10 11 12 13] filter=9067b8c611c9
+  2 <- profiles=3 changed=[1 6 9 10 11 12 13] filter=9067b8c611c9
+  6 <- profiles=4 changed=[1 2 9 10 11 12 13] filter=9067b8c611c9
+  9 <- profiles=3 changed=[1 2 6 10 11 12 13] filter=9067b8c611c9
+  10 <- profiles=3 changed=[1 2 6 9 11 12 13] filter=9067b8c611c9
+  11 <- profiles=3 changed=[1 2 6 9 10 12 13] filter=9067b8c611c9
+  12 <- profiles=3 changed=[1 2 6 9 10 11 13] filter=9067b8c611c9
+== connect 13
+  change type=patch target=0 origin=0 patches=[13]
+  1 <- patch=[13:true]
+  2 <- patch=[13:true]
+  6 <- patch=[13:true]
+  9 <- patch=[13:true]
+  10 <- patch=[13:true]
+  11 <- patch=[13:true]
+  12 <- patch=[13:true]
+  13 <- self dns derp ssh profiles=3 peers=[1 2 6 9 10 11 12] filter=9067b8c611c9
+== announce r1
+  change type=peers target=0 origin=12 changed=[12]
+  1 <- profiles=1 changed=[12]
+  2 <- profiles=1 changed=[12]
+  6 <- profiles=3 changed=[12]
+  9 <- profiles=2 changed=[12]
+  10 <- profiles=2 changed=[12]
+  11 <- profiles=1 changed=[12]
+  12 <- self
+  13 <- profiles=2 changed=[12]
+== approve r1
+  change type=policy target=0 origin=0 policy runtime
+  1 <- profiles=3 changed=[2 6 9 10 11 12 13] filter=e91b6663a1e1
+  2 <- profiles=3 changed=[1 6 9 10 11 12 13] filter=e91b6663a1e1
+  6 <- profiles=4 changed=[1 2 9 10 11 12 13] filter=e91b6663a1e1
+  9 <- profiles=3 changed=[1 2 6 10 11 12 13] filter=e91b6663a1e1
+  10 <- profiles=3 changed=[1 2 6 9 11 12 13] filter=e91b6663a1e1
+  11 <- profiles=3 changed=[1 2 6 9 10 12 13] filter=e91b6663a1e1
+  12 <- self profiles=3 changed=[1 2 6 9 10 11 13] filter=e91b6663a1e1
+  13 <- profiles=3 changed=[1 2 6 9 10 11 12] filter=e91b6663a1e1
+== announce r2
+  change type=peers target=0 origin=13 changed=[13]
+  1 <- profiles=2 changed=[13]
+  2 <- profiles=2 changed=[13]
+  6 <- profiles=3 changed=[13]
+  9 <- profiles=1 changed=[13]
+  10 <- profiles=1 changed=[13]
+  11 <- profiles=2 changed=[13]
+  12 <- profiles=2 changed=[13]
+  13 <- self
+== approve r2
+  change type=policy target=0 origin=0 policy runtime
+  1 <- profiles=3 changed=[2 6 9 10 11 12 13] filter=e91b6663a1e1
+  2 <- profiles=3 changed=[1 6 9 10 11 12 13] filter=e91b6663a1e1
+  6 <- profiles=4 changed=[1 2 9 10 11 12 13] filter=e91b6663a1e1
+  9 <- profiles=3 changed=[1 2 6 10 11 12 13] filter=e91b6663a1e1
+  10 <- profiles=3 changed=[1 2 6 9 11 12 13] filter=e91b6663a1e1
+  11 <- profiles=3 changed=[1 2 6 9 10 12 13] filter=e91b6663a1e1
+  12 <- profiles=3 changed=[1 2 6 9 10 11 13] filter=e91b6663a1e1
+  13 <- self profiles=3 changed=[1 2 6 9 10 11 12] filter=e91b6663a1e1
+== delete primary router r1
+  change type=peers target=1 origin=0 removed=[12] deleted=[12]
+  change type=peers target=10 origin=0 removed=[12] deleted=[12]
+  change type=peers target=11 origin=0 removed=[12] deleted=[12]
+  change type=peers target=12 origin=0 deleted=[12]
+  change type=peers target=13 origin=0 removed=[12] deleted=[12]
+  change type=peers target=2 origin=0 removed=[12] deleted=[12]
+  change type=peers target=6 origin=0 removed=[12] deleted=[12]
+  change type=peers target=9 origin=0 removed=[12] deleted=[12]
+  change type=policy target=0 origin=0 policy runtime
+  1 <- removed=[12]
+  1 <- profiles=3 changed=[2 6 9 10 11 13] filter=e91b6663a1e1
+  2 <- removed=[12]
+  2 <- profiles=3 changed=[1 6 9 10 11 13] filter=e91b6663a1e1
+  6 <- removed=[12]
+  6 <- profiles=4 changed=[1 2 9 10 11 13] filter=e91b6663a1e1
+  9 <- removed=[12]
+  9 <- profiles=3 changed=[1 2 6 10 11 13] filter=e91b6663a1e1
+  10 <- removed=[12]
+  10 <- profiles=3 changed=[1 2 6 9 11 13] filter=e91b6663a1e1
+  11 <- removed=[12]
+  11 <- profiles=3 changed=[1 2 6 9 10 13] filter=e91b6663a1e1
+  13 <- removed=[12]
+  13 <- self profiles=3 changed=[1 2 6 9 10 11] filter=e91b6663a1e1
+== join bob/b5 -> 14
+  change type=policy target=0 origin=0 policy runtime
+  1 <- profiles=3 changed=[2 6 9 10 11 13 14] filter=e91b6663a1e1
+  2 <- profiles=3 changed=[1 6 9 10 11 13 14] filter=e91b6663a1e1
+  6 <- profiles=4 changed=[1 2 9 10 11 13 14] filter=e91b6663a1e1
+  9 <- profiles=3 changed=[1 2 6 10 11 13 14] filter=e91b6663a1e1
+  10 <- profiles=3 changed=[1 2 6 9 11 13 14] filter=e91b6663a1e1
+  11 <- profiles=3 changed=[1 2 6 9 10 13 14] filter=e91b6663a1e1
+  13 <- profiles=3 changed=[1 2 6 9 10 11 14] filter=e91b6663a1e1
+== connect 14
+  change type=patch target=0 origin=0 patches=[14]
+  1 <- patch=[14:true]
+  2 <- patch=[14:true]
+  6 <- patch=[14:true]
+  9 <- patch=[14:true]
+  10 <- patch=[14:true]
+  11 <- patch=[14:true]
+  13 <- patch=[14:true]
+  14 <- self dns derp ssh profiles=3 peers=[1 2 6 9 10 11 13] filter=e91b6663a1e1
+== delete b5
+  change type=peers target=1 origin=0 removed=[14] deleted=[14]
+  change type=peers target=10 origin=0 removed=[14] deleted=[14]
+  change type=peers target=11 origin=0 removed=[14] deleted=[14]
+  change type=peers target=13 origin=0 removed=[14] deleted=[14]
+  change type=peers target=14 origin=0 deleted=[14]
+  change type=peers target=2 origin=0 removed=[14] deleted=[14]
+  change type=peers target=6 origin=0 removed=[14] deleted=[14]
+  change type=peers target=9 origin=0 removed=[14] deleted=[14]
+  change type=policy target=0 origin=0 policy runtime
+  1 <- removed=[14]
+  1 <- profiles=3 changed=[2 6 9 10 11 13] filter=e91b6663a1e1
+  2 <- removed=[14]
+  2 <- profiles=3 changed=[1 6 9 10 11 13] filter=e91b6663a1e1
+  6 <- removed=[14]
+  6 <- profiles=4 changed=[1 2 9 10 11 13] filter=e91b6663a1e1
+  9 <- removed=[14]
+  9 <- profiles=3 changed=[1 2 6 10 11 13] filter=e91b6663a1e1
+  10 <- removed=[14]
+  10 <- profiles=3 changed=[1 2 6 9 11 13] filter=e91b6663a1e1
+  11 <- removed=[14]
+  11 <- profiles=3 changed=[1 2 6 9 10 13] filter=e91b6663a1e1
+  13 <- removed=[14]
+  13 <- profiles=3 changed=[1 2 6 9 10 11] filter=e91b6663a1e1

@@ -452,6 +452,10 @@ func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 	batchTimeout := cmp.Or(cfg.Tuning.NodeStoreBatchTimeout, defaults.NodeStoreBatchTimeout)
 
 	nodeStore := NewNodeStore(nodes, policyPeersFunc(polMan), batchSize, batchTimeout)
+	if cfg.Tuning.IncrementalNetmap.Enabled {
+		nodeStore.SetIncrementalPeers(policyIncrementalPeers(polMan))
+	}
+
 	polMan.SetRouterSession(nodeStore.RouterSession)
 	nodeStore.reservedLabel = func(label string) bool {
 		return cfg.DNSConfig.BaseDomain != "" && cfg.HasExtraRecord(label+"."+cfg.DNSConfig.BaseDomain)
@@ -508,7 +512,42 @@ func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 // live manager and every write validation use the same ones, so a policy
 // is validated under the semantics it will be installed with.
 func policyOptions(cfg *types.Config) []policy.Option {
-	return []policy.Option{policy.WithEmptyPolicyDenies(cfg.PolicyEmptyDenies)}
+	return []policy.Option{
+		policy.WithEmptyPolicyDenies(cfg.PolicyEmptyDenies),
+		policy.WithLocalNodeChanges(cfg.Tuning.IncrementalNetmap.Enabled),
+	}
+}
+
+// policyIncrementalPeers is [policyPeersFunc] for the incremental netmap
+// (P00d): the same SetNodes refresh, then a patch of the previous adjacency
+// when the batch only joined and removed nodes and the policy reports the
+// change local, a full build otherwise. Runs on the NodeStore writer.
+func policyIncrementalPeers(pm policy.PolicyManager) IncrementalPeersFunc {
+	return func(
+		nodes []types.NodeView,
+		prevPeers map[types.NodeID][]types.NodeID,
+		prevGen uint64,
+		joined, removed []types.NodeID,
+		try bool,
+	) (map[types.NodeID][]types.NodeID, uint64, bool) {
+		slice := views.SliceOf(nodes)
+
+		_, err := pm.SetNodes(slice)
+		if err != nil {
+			log.Error().Err(err).Msg("refreshing policy nodes before peer map build")
+		}
+
+		if try && err == nil {
+			peers, gen, ok := pm.IncrementalPeerMap(slice, prevPeers, prevGen, joined, removed)
+			if ok {
+				return peers, gen, true
+			}
+		}
+
+		peers, gen := pm.BuildPeerMapGen(slice)
+
+		return peers, gen, false
+	}
 }
 
 func policyPeersFunc(pm policy.PolicyManager) PeersFunc {

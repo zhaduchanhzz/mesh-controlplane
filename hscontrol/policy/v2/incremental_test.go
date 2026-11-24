@@ -113,6 +113,23 @@ func TestIncrementalPeerMapMatchesFullBuild(t *testing.T) {
 			}
 		}
 
+		// Sometimes a node that stays also changes owner or tags in the
+		// same SetNodes: never local (its relations can move without the
+		// filter moving, e.g. same-user adjacency).
+		if len(after) > 0 && rapid.IntRange(0, 3).Draw(rt, "alsoRetag") == 0 {
+			i := rapid.IntRange(0, len(after)-1).Draw(rt, "retag")
+			moved := *after[i]
+
+			if moved.IsTagged() {
+				u := rapid.SampledFrom(scanUsers).Draw(rt, "newOwner")
+				moved.Tags, moved.User, moved.UserID = nil, &u, &u.ID
+			} else {
+				moved.Tags, moved.User, moved.UserID = []string{rapid.SampledFrom(scanTags).Draw(rt, "newTag")}, nil, nil
+			}
+
+			after[i] = &moved
+		}
+
 		after = append(after, joining...)
 		after = rapid.Permutation(after).Draw(rt, "afterOrder")
 

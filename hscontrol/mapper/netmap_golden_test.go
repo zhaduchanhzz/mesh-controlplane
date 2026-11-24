@@ -1,10 +1,12 @@
 package mapper
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -35,7 +37,10 @@ import (
 // depend on timing. Refresh with HEADSCALE_UPDATE_GOLDEN=1 only for a
 // change meant to alter the default path, and review the diff.
 
-const netmapGoldenPath = "testdata/netmap_golden/incremental_off.golden"
+const (
+	netmapGoldenPath   = "testdata/netmap_golden/incremental_off.golden"
+	netmapGoldenOnPath = "testdata/netmap_golden/incremental_on.golden"
+)
 
 const (
 	goldenPolicyAllowAll = `{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}`
@@ -54,6 +59,16 @@ type netmapGolden struct {
 	chans map[types.NodeID]chan *tailcfg.MapResponse
 	users map[string]*types.User
 	out   strings.Builder
+
+	// model is each connected node's peer set as a client builds it from
+	// the frames it received: a full Peers list replaces it, PeersChanged
+	// adds, PeersRemoved removes. After every step it must equal the
+	// node's peers on the server (no revoked peer kept, none missing).
+	model map[types.NodeID]map[tailcfg.NodeID]bool
+	// views records the models after every step, to compare runs.
+	views []string
+	// steps records each step's change types, to assert on them.
+	steps map[string][]change.Change
 }
 
 func newNetmapGolden(t *testing.T, incremental bool) *netmapGolden {
@@ -112,6 +127,8 @@ func newNetmapGolden(t *testing.T, incremental bool) *netmapGolden {
 		st:    st,
 		chans: map[types.NodeID]chan *tailcfg.MapResponse{},
 		users: users,
+		model: map[types.NodeID]map[tailcfg.NodeID]bool{},
+		steps: map[string][]change.Change{},
 	}
 
 	g.setPolicy("allow_all", goldenPolicyAllowAll)
@@ -193,6 +210,8 @@ func (g *netmapGolden) step(label string, cs []change.Change) {
 
 	fmt.Fprintf(&g.out, "== %s\n", label)
 
+	g.steps[label] = cs
+
 	// Targeted changes come in adjacency order, which is map order; the
 	// set is what reaches the nodes, so it is written sorted.
 	lines := make([]string, 0, len(cs))
@@ -220,8 +239,98 @@ func (g *netmapGolden) step(label string, cs []change.Change) {
 	for _, id := range ids {
 		for _, resp := range drain(g.chans[id]) {
 			fmt.Fprintf(&g.out, "  %d <- %s\n", id, goldenFrame(resp))
+			g.apply(id, resp)
 		}
 	}
+
+	g.checkModel(label)
+}
+
+// apply updates id's client model with one frame.
+func (g *netmapGolden) apply(id types.NodeID, r *tailcfg.MapResponse) {
+	m := g.model[id]
+	if m == nil {
+		m = map[tailcfg.NodeID]bool{}
+		g.model[id] = m
+	}
+
+	if len(r.Peers) > 0 {
+		clear(m)
+
+		for _, p := range r.Peers {
+			m[p.ID] = true
+		}
+	}
+
+	for _, p := range r.PeersChanged {
+		m[p.ID] = true
+	}
+
+	for _, p := range r.PeersRemoved {
+		delete(m, p)
+	}
+}
+
+// checkModel compares every live node's client model with its peers on
+// the server. A peer the client holds that the server no longer gives it
+// is a revocation that did not reach the client (M06 at the unit level).
+func (g *netmapGolden) checkModel(label string) {
+	g.t.Helper()
+
+	var view strings.Builder
+
+	live := g.st.ListNodes().AsSlice()
+	slices.SortFunc(live, func(a, b types.NodeView) int { return cmp.Compare(a.ID(), b.ID()) })
+
+	for _, n := range live {
+		id := n.ID()
+		if _, connected := g.chans[id]; !connected {
+			continue
+		}
+
+		want := map[tailcfg.NodeID]bool{}
+		for _, p := range g.st.ListPeers(id).All() {
+			want[p.ID().NodeID()] = true
+		}
+
+		have := g.model[id]
+
+		for p := range have {
+			if !want[p] {
+				g.t.Fatalf("ISOLATION after %q: node %d still holds peer %d the server no longer gives it", label, id, p)
+			}
+		}
+
+		for p := range want {
+			if !have[p] {
+				g.t.Fatalf("after %q: node %d is missing peer %d", label, id, p)
+			}
+		}
+
+		ps := slices.Sorted(maps.Keys(have))
+		fmt.Fprintf(&view, "%d:%v ", id, ps)
+	}
+
+	g.views = append(g.views, label+" "+view.String())
+}
+
+// announce has id announce routes in a map request and approves them.
+func (g *netmapGolden) router(host string, routes ...netip.Prefix) {
+	g.t.Helper()
+
+	n := g.node(host)
+
+	c, err := g.st.UpdateNodeFromMapRequest(n.ID(), tailcfg.MapRequest{
+		NodeKey:  n.NodeKey(),
+		DiscoKey: n.DiscoKey(),
+		Hostinfo: &tailcfg.Hostinfo{Hostname: host, RoutableIPs: routes},
+	})
+	require.NoError(g.t, err)
+	g.step("announce "+host, []change.Change{c})
+
+	_, c, err = g.st.SetApprovedRoutes(n.ID(), routes)
+	require.NoError(g.t, err)
+	g.step("approve "+host, []change.Change{c})
 }
 
 func (g *netmapGolden) waitIdle() {
@@ -438,7 +547,33 @@ func runNetmapScenario(g *netmapGolden) string {
 	g.step("policy allow_all", g.setPolicy("allow_all", goldenPolicyAllowAll))
 	g.join("alice", "a4")
 
+	// HA subnet routers: removing the primary moves the route to the
+	// standby, which every peer must learn; never a local removal.
+	lan := netip.MustParsePrefix("10.9.0.0/24")
+	g.join("alice", "r1")
+	g.join("bob", "r2")
+	g.router("r1", lan)
+	g.router("r2", lan)
+
+	cs, err = g.st.DeleteNode(g.node("r1"))
+	require.NoError(g.t, err)
+	g.step("delete primary router r1", cs)
+
+	g.join("bob", "b5")
+	cs, err = g.st.DeleteNode(g.node("b5"))
+	require.NoError(g.t, err)
+	g.step("delete b5", cs)
+
 	return g.out.String()
+}
+
+func changeTypes(cs []change.Change) []string {
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, c.Type())
+	}
+
+	return out
 }
 
 func TestNetmapGoldenIncrementalOff(t *testing.T) {
@@ -456,4 +591,44 @@ func TestNetmapGoldenIncrementalOff(t *testing.T) {
 	// The scenario is deterministic: a second run gives the same bytes.
 	again := runNetmapScenario(newNetmapGolden(t, false))
 	require.Equal(t, got, again, "the golden scenario must be deterministic")
+}
+
+// TestNetmapGoldenIncrementalOn runs the scenario with the switch on.
+// Every node's client model must track the server's adjacency after every
+// step (checked inside the run), and match the model of the run with the
+// switch off: the incremental path changes how peers are sent, never which
+// peers a node ends up with. Q1 and Q4 are pinned on the change types: a
+// join under allow-all is a peer delta, a removal under it is targeted
+// removals only; a join that moves the filter, and removing a router, stay
+// policy changes. The frames are recorded in their own golden.
+func TestNetmapGoldenIncrementalOn(t *testing.T) {
+	off := newNetmapGolden(t, false)
+	runNetmapScenario(off)
+
+	on := newNetmapGolden(t, true)
+	got := runNetmapScenario(on)
+
+	require.Equal(t, off.views, on.views, "the switch must not change any node's final peer set at any step")
+
+	types := func(label string) []string {
+		cs, ok := on.steps[label]
+		require.True(t, ok, "no step %q", label)
+
+		return changeTypes(cs)
+	}
+
+	require.Equal(t, []string{"peers"}, types("join alice/a3 -> 6"), "Q1: a join under allow-all is a peer delta")
+	require.NotContains(t, types("delete b2"), "policy", "a removal under allow-all sends removals only")
+	require.Contains(t, types("join bob/b3 -> 9"), "policy", "a join that moves the group filter is a policy change")
+	require.Contains(t, types("delete primary router r1"), "policy", "removing a primary router is a policy change")
+	require.Contains(t, types("join bob/b4 -> 10"), "policy", "autogroup:self is outside the narrow scope")
+	require.Equal(t, []string{"peers"}, types("join bob/b5 -> 14"), "Q1 after routers exist")
+
+	if os.Getenv("HEADSCALE_UPDATE_GOLDEN") != "" {
+		require.NoError(t, os.WriteFile(netmapGoldenOnPath, []byte(got), 0o600))
+	}
+
+	want, err := os.ReadFile(netmapGoldenOnPath)
+	require.NoError(t, err, "missing golden; run with HEADSCALE_UPDATE_GOLDEN=1 to generate")
+	require.Equal(t, string(want), got)
 }
