@@ -382,7 +382,6 @@ func (m *mapSession) serveLongPoll() {
 				mapResponseLastSentSeconds.WithLabelValues("keepalive", m.node.ID().String()).Set(float64(time.Now().Unix()))
 			}
 
-			mapResponseSent.WithLabelValues("ok", "keepalive").Inc()
 			m.resetKeepAlive()
 		}
 	}
@@ -412,6 +411,15 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 	if err != nil {
 		return err
 	}
+
+	// Every frame written to a client, behind the servable gate above: the
+	// P11b E2E reads it to prove a process without the lease sends nothing.
+	sentType := "update"
+	if msg.KeepAlive {
+		sentType = "keepalive"
+	}
+
+	mapResponseSent.WithLabelValues("ok", sentType).Inc()
 
 	m.log.Trace().
 		Caller().

@@ -30,7 +30,7 @@ func leaseDB(t *testing.T) (*gorm.DB, *lease.Store) {
 }
 
 // leaseCtx is ctxFor(id) whose fence also claims the lease (holder, epoch).
-func leaseCtx(t *testing.T, id, holder string, epoch uint64) context.Context {
+func leaseCtx(t testing.TB, id, holder string, epoch uint64) context.Context {
 	t.Helper()
 	f, err := tailnet.NewFence(testCluster, testEpoch)
 	if err != nil {

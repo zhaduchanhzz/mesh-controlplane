@@ -196,3 +196,100 @@ func TestP11bLostLeaseStopsOldActive(t *testing.T) {
 	c3 := servertest.NewClusterClient(t, tc.Tenant(t, tenantA), "lost-a3", servertest.ClusterClientOptions{AuthKey: keyA})
 	waitPeersExactly(t, c1, selfKey(t, c2), selfKey(t, c3))
 }
+
+func hasHost(rows []servertest.NodeRow, host string) bool {
+	for _, r := range rows {
+		if r.Hostname == host {
+			return true
+		}
+	}
+
+	return false
+}
+
+// I02/I13: a node deleted on the active right before it stops does not come
+// back through the new active: no row, not in any peer's netmap.
+func TestP11bDeletedNodeStaysDeletedAfterFailover(t *testing.T) {
+	tc := newHACluster(t)
+	a := tc.Primary()
+
+	ta := tc.Tenant(t, tenantA)
+	keyA := mintKey(t, ta, "alice")
+	c1 := servertest.NewClusterClient(t, ta, "del-a1", servertest.ClusterClientOptions{AuthKey: keyA})
+	c2 := servertest.NewClusterClient(t, ta, "del-a2", servertest.ClusterClientOptions{AuthKey: keyA})
+	waitPeersExactly(t, c1, selfKey(t, c2))
+
+	b := tc.StartProcess(t)
+
+	// Delete c2 and stop the active at once, without waiting for c1 to see
+	// the deletion.
+	deleteNode(t, tc, tenantA, c2)
+	c2.Disconnect(t)
+	tc.StopProcess(t, a)
+
+	tc.WaitReady(t, b, 10*time.Second)
+	tc.Use(b)
+
+	require.False(t, hasHost(tc.NodeRows(t), "del-a2"), "deleted row stays deleted")
+
+	c1.Reconnect(t)
+
+	c3 := servertest.NewClusterClient(t, tc.Tenant(t, tenantA), "del-a3", servertest.ClusterClientOptions{AuthKey: keyA})
+	waitPeersExactly(t, c1, selfKey(t, c3))
+	waitPeersExactly(t, c3, selfKey(t, c1))
+	assert.False(t, hasHost(tc.NodeRows(t), "del-a2"))
+}
+
+// The ephemeral GC is rebuilt on the new active from the database: an
+// ephemeral node that does not come back is removed one inactivity timeout
+// after the takeover; one that reconnects is kept. The timer counts from
+// the takeover on the new process's clock, never from timestamps written by
+// the old one (no early deletion from clock skew).
+func TestP11bEphemeralGCAfterFailover(t *testing.T) {
+	// node.ephemeral.inactivity_timeout has a 65 s floor (config validation).
+	const timeout = 66 * time.Second
+
+	tc := servertest.NewTestClusterWith(t,
+		servertest.ClusterOptions{FrontDoor: true, Lease: fastLease, EphemeralTimeout: timeout},
+		servertest.TailnetSeed{Slug: tenantA})
+	tc.SetPolicy(t, tenantA, allowAll)
+	a := tc.Primary()
+
+	ta := tc.Tenant(t, tenantA)
+	u := ta.CreateUser(t, "eve")
+	// Ephemeral pre-auth keys are single use: one per client.
+	e1 := servertest.NewClusterClient(t, ta, "eph-back",
+		servertest.ClusterClientOptions{AuthKey: ta.CreateEphemeralPreAuthKey(t, types.UserID(u.ID))})
+	e2 := servertest.NewClusterClient(t, ta, "eph-gone",
+		servertest.ClusterClientOptions{AuthKey: ta.CreateEphemeralPreAuthKey(t, types.UserID(u.ID))})
+	waitPeersExactly(t, e1, selfKey(t, e2))
+
+	b := tc.StartProcess(t)
+	tc.StopProcess(t, a)
+	tc.WaitReady(t, b, 10*time.Second)
+	tc.Use(b)
+
+	taken := time.Now()
+
+	// Both rows survive the takeover itself.
+	rows := tc.NodeRows(t)
+	require.True(t, hasHost(rows, "eph-back"))
+	require.True(t, hasHost(rows, "eph-gone"))
+
+	e1.Reconnect(t)
+
+	require.Eventually(t, func() bool { return !hasHost(tc.NodeRows(t), "eph-gone") },
+		timeout+30*time.Second, 250*time.Millisecond, "the ephemeral node that did not come back is removed")
+
+	gone := time.Since(taken)
+	t.Logf("ephemeral node removed %s after the takeover (timeout %s)", gone, timeout)
+	assert.GreaterOrEqual(t, gone, timeout-500*time.Millisecond, "not before the inactivity timeout")
+
+	// Both were scheduled at the same instant on load; the reconnected one
+	// had its timer cancelled, so it is still there after the other went.
+	time.Sleep(2 * time.Second) //nolint:forbidigo // past the shared deadline
+	assert.True(t, hasHost(tc.NodeRows(t), "eph-back"), "the reconnected ephemeral node is kept")
+	e1.WaitForCondition(t, "eph-gone left e1's netmap", clusterWait, func(nm *netmap.NetworkMap) bool {
+		return nm != nil && len(nm.Peers) == 0
+	})
+}

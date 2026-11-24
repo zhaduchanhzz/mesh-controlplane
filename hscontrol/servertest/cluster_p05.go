@@ -140,6 +140,9 @@ type ClusterOptions struct {
 	FrontDoor bool
 	// Lease, when set, replaces tuning.cluster_lease (P11b).
 	Lease *types.ClusterLeaseConfig
+	// EphemeralTimeout, when set, replaces
+	// node.ephemeral.inactivity_timeout (P11b).
+	EphemeralTimeout time.Duration
 }
 
 // NewTestClusterWith is [NewTestCluster] with cluster-wide options.
@@ -199,6 +202,11 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 	if o.Lease != nil {
 		cfg.Tuning.ClusterLease = *o.Lease
 	}
+
+	if o.EphemeralTimeout > 0 {
+		cfg.Node.Ephemeral.InactivityTimeout = o.EphemeralTimeout
+	}
+
 	cfg.MetricsAddr = ""
 	cfg.UnixSocket = filepath.Join(sockDir, "hs.sock")
 	cfg.Noise.PrivateKeyPath = filepath.Join(tmpDir, "noise_private.key")
