@@ -1,6 +1,6 @@
 # PR P07 Evidence — source inventory: mapper, event, MapResponse delta theo tailnet
 
-- **Trạng thái:** `Verified` (cluster suite `-race`, mutation, E2E client thật 29/29 ×2; §5–§8); chưa `Reviewed`, chưa merge. §2–§4 là inventory tại `e9c7137`.
+- **Trạng thái:** `Verified` (cluster suite `-race`, mutation, E2E client thật 29/29 ×2; §5–§8); chưa `Reviewed`; merge vào `master` theo lệnh chủ dự án (2026-11-24). §2–§4 là inventory tại `e9c7137`.
 - **Nhánh:** `feat/P07-mapper-scoped` (từ `master` `e9c7137`, đã có P00d và P06).
 - **Phạm vi (PLAN dòng 276, 291; `06-tests-benchmarks.md` S12, §1c):** I07 (thay đổi ở A không đổi danh sách peer hay event của B), S12 (A gửi MapRequest/cập nhật node trong lúc B đang nhận map: B không nhận event hay delta nào), chạy lại M01/M03 của P00d với nhiều tenant, E2E không lộ key/netmap chéo kể cả khi kết nối lại.
 
@@ -108,5 +108,5 @@ Harness `infra/lab/e2e/p05/run.sh` thêm ca S12: a2 (tailnet A) đổi `--advert
   - Metric divergence P00d vẫn cộng dồn mọi tenant.
   - Chưa có race test riêng ép hai batcher song song ngoài các test trên (chạy `-race`).
   - Ephemeral GC, HA prober/route failover, SSH-check ở A khi B quan sát: chưa có test riêng.
-- Race toàn repo (`./...`) chưa chạy lại cho P07 (đã chạy các package đổi + cluster suite).
+- Race toàn repo tại `5af47fd`: `go test -race -count=1 -timeout 150m ./...` exit 1, 40 package ok, chỉ `TestAPIv2` fail vì thiếu `tscli` (môi trường); `nix shell … tscli opentofu -c go test -race -run '^(TestAPIv2|TestAPIv2OAuthScopes)$'` exit 0; cluster suite `-race` exit 0 (463 s).
 - Reviewer approval: chưa có.
