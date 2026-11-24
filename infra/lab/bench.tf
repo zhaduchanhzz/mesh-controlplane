@@ -38,6 +38,12 @@ resource "proxmox_virtual_environment_file" "mc_bench_user_data" {
       ssh_public_key = trimspace(file(var.ssh_public_key_file))
     })
   }
+
+  # Only read at VM creation; PVE does not return the content on import, and
+  # the key here changed (lab access rebuilt 2026-11-23) after the VM was made.
+  lifecycle {
+    ignore_changes = [source_raw]
+  }
 }
 
 resource "proxmox_virtual_environment_vm" "mc_bench" {
@@ -49,6 +55,9 @@ resource "proxmox_virtual_environment_vm" "mc_bench" {
   vm_id     = var.mc_bench.vm_id
   pool_id   = var.lab_pool
   on_boot   = false
+  # Stage 2a (owner, 2026-11-24): mc-bench stays stopped unless a benchmark
+  # runs; `-var mc_bench_running=true` starts it for that run.
+  started = var.mc_bench_running
 
   machine       = "q35"
   scsi_hardware = "virtio-scsi-single"
@@ -107,6 +116,11 @@ resource "proxmox_virtual_environment_vm" "mc_bench" {
 
   lifecycle {
     prevent_destroy = true
+    # The image a disk was created from and the cloud-init snippet only act
+    # at creation, and PVE does not report them back: after a `tofu import`
+    # (2026-11-24, state rebuilt on this machine) they would read as a
+    # change and force a replace of a running VM.
+    ignore_changes = [disk[0].import_from, initialization[0].user_data_file_id]
   }
 }
 

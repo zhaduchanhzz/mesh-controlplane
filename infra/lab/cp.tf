@@ -37,6 +37,12 @@ resource "proxmox_virtual_environment_file" "mc_cp_user_data" {
       ssh_public_key = trimspace(file(var.ssh_public_key_file))
     })
   }
+
+  # Only read at VM creation; PVE does not return the content on import, and
+  # the key here changed (lab access rebuilt 2026-11-23) after the VM was made.
+  lifecycle {
+    ignore_changes = [source_raw]
+  }
 }
 
 resource "proxmox_virtual_environment_vm" "mc_cp" {
@@ -106,6 +112,11 @@ resource "proxmox_virtual_environment_vm" "mc_cp" {
 
   lifecycle {
     prevent_destroy = true
+    # The image a disk was created from and the cloud-init snippet only act
+    # at creation, and PVE does not report them back: after a `tofu import`
+    # (2026-11-24, state rebuilt on this machine) they would read as a
+    # change and force a replace of a running VM.
+    ignore_changes = [disk[0].import_from, initialization[0].user_data_file_id]
   }
 }
 

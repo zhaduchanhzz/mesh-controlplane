@@ -57,7 +57,7 @@ variable "mc_ci" {
     ipv4      = "192.168.1.240"
     mac       = "BC:24:11:77:02:40"
     cores     = 16
-    memory_mb = 40960
+    memory_mb = 24576
     disk_gb   = 120
   }
 
@@ -65,4 +65,10 @@ variable "mc_ci" {
     condition     = var.mc_ci.vm_id >= 7700 && var.mc_ci.vm_id <= 7799
     error_message = "Lab VMIDs must stay within 7700-7799 (AGENTS.md rule 3)."
   }
+}
+
+variable "mc_bench_running" {
+  description = "Start mc-bench (7703). Off by default to free host RAM; set true only while benchmarking."
+  type        = bool
+  default     = false
 }
