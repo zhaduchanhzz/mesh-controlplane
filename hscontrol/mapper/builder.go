@@ -433,7 +433,7 @@ func (b *MapResponseBuilder) Build() (*tailcfg.MapResponse, error) {
 	// if it is left empty, and an unchanged SSHPolicy is dropped later,
 	// per connection, before it reaches the wire.
 	if debugDumpMapResponsePath != "" {
-		writeDebugMapResponse(b.resp, b.debugType, b.nodeID)
+		writeDebugMapResponse(b.resp, b.debugType, b.mapper.dumpSubdir(), b.nodeID)
 	}
 
 	return b.resp, nil

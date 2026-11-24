@@ -4810,3 +4810,8 @@ func peerChangePersistWorthy(peerChange tailcfg.PeerChange) bool {
 		peerChange.DERPRegion != 0 ||
 		peerChange.KeyExpiry != nil
 }
+
+// TailnetID is the ID of the tailnet this State serves (one per runtime).
+func (s *State) TailnetID() string {
+	return s.db.Tailnet().ID
+}

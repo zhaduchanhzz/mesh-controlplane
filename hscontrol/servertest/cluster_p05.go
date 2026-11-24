@@ -17,6 +17,7 @@
 package servertest
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -112,6 +113,27 @@ type TestCluster struct {
 func NewTestCluster(tb testing.TB, seeds ...TailnetSeed) *TestCluster {
 	tb.Helper()
 
+	return NewTestClusterWith(tb, ClusterOptions{}, seeds...)
+}
+
+// ClusterOptions are cluster-wide settings of a [TestCluster].
+type ClusterOptions struct {
+	// IncrementalNetmap turns tuning.incremental_netmap on (P00d). The
+	// reconciliation runs every hour and the periodic full map every 24h
+	// (it sends one share of nodes per interval/60, so even 1h would send
+	// a full map every minute), so a test sees only the frames its own
+	// steps cause; tests run a reconciliation with
+	// [hscontrol.Headscale.ReconcileNetmap].
+	IncrementalNetmap bool
+	// FullMapInterval, when set, replaces the 24h for the periodic full
+	// map (minimum 1m).
+	FullMapInterval time.Duration
+}
+
+// NewTestClusterWith is [NewTestCluster] with cluster-wide options.
+func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *TestCluster {
+	tb.Helper()
+
 	if len(seeds) == 0 {
 		tb.Fatal("servertest: NewTestCluster needs at least one tailnet")
 	}
@@ -188,6 +210,14 @@ func NewTestCluster(tb testing.TB, seeds ...TailnetSeed) *TestCluster {
 		ClusterID: clusterID,
 		cfg:       &cfg,
 		tailnets:  make(map[string]*SeededTailnet),
+	}
+
+	if o.IncrementalNetmap {
+		cfg.Tuning.IncrementalNetmap = types.IncrementalNetmapConfig{
+			Enabled:           true,
+			ReconcileInterval: time.Hour,
+			FullMapInterval:   cmp.Or(o.FullMapInterval, 24*time.Hour),
+		}
 	}
 
 	tc.seed(tb, seeds)
