@@ -11,6 +11,8 @@
 #   server.sh stop  RUNDIR               scrape metrics, stop, summarise samples
 #
 # POLICY is allow_all | isolated | personal_devices (TestScale's policies).
+# INCREMENTAL=1 (with RECONCILE_INTERVAL, FULL_MAP_INTERVAL) turns on
+# tuning.incremental_netmap (P00d).
 # ADDR is the listen address clients reach, e.g. 192.168.1.242:8080.
 # Metrics stay on 127.0.0.1. Keys are lab-only, short-lived test credentials
 # and are never printed.
@@ -87,6 +89,16 @@ logtail:
 cli:
   timeout: 300s
 EOF
+	# P00d: INCREMENTAL=1 turns the incremental netmap on.
+	if [ "${INCREMENTAL:-0}" = 1 ]; then
+		cat >>"$dir/config.yaml" <<EOF
+tuning:
+  incremental_netmap:
+    enabled: true
+    reconcile_interval: ${RECONCILE_INTERVAL:-1m}
+    full_map_interval: ${FULL_MAP_INTERVAL:-15m}
+EOF
+	fi
 }
 
 case $cmd in
