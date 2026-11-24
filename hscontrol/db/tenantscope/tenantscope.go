@@ -18,7 +18,9 @@
 //     PostgreSQL, so an ownership move waits for writers in flight) and its
 //     owner_cluster_id/owner_epoch must equal the tailnet.Fence of the
 //     context. A different owner or epoch fails with ErrFenced; a mutation
-//     without a fence fails with ErrNoFence.
+//     without a fence fails with ErrNoFence. A fence that claims a cluster
+//     lease (P11b, internal/lease) also needs the cluster_leases row to name
+//     that holder and epoch and to be live by the database clock.
 //
 // Tables without the column are untouched. Raw SQL (db.Raw / db.Exec) is not
 // parsed and must be reviewed by hand; see evidence/source-inventory-P03b.md.
@@ -34,6 +36,7 @@ import (
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
 
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
@@ -356,5 +359,45 @@ func checkFence(db *gorm.DB) {
 	if status != activeStatus || !live {
 		_ = db.AddError(fmt.Errorf("%w: tailnet %s is %s (deleted=%t), not ACTIVE",
 			ErrFenced, s.ID(), status, !live))
+
+		return
+	}
+
+	checkLease(db, f)
+}
+
+// checkLease (P11b): a cluster process writes only while the cluster lease it
+// claims is still its own and live by the database clock. The row is read
+// FOR SHARE on PostgreSQL, so a standby's takeover (an UPDATE of that row)
+// waits for this transaction, and every write after the takeover sees the
+// new holder. Lock order: tailnet advisory lock, tailnets row, cluster_leases
+// row.
+func checkLease(db *gorm.DB, f tailnet.Fence) {
+	holder, epoch, ok := f.Lease()
+	if !ok {
+		return // operator write (CLI): no lease to claim
+	}
+
+	q := `SELECT holder, epoch, expires_at > ` + lease.SQLiteNow + ` FROM cluster_leases WHERE cluster_id = ?`
+	if db.Dialector.Name() == "postgres" {
+		q = `SELECT holder, epoch, expires_at > ` + lease.PostgresNow + ` FROM cluster_leases WHERE cluster_id = $1 FOR SHARE`
+	}
+
+	var (
+		gotHolder string
+		gotEpoch  int64
+		live      bool
+	)
+
+	err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, q, f.Cluster()).Scan(&gotHolder, &gotEpoch, &live)
+	if err != nil {
+		_ = db.AddError(fmt.Errorf("%w: reading cluster lease of %s: %w", ErrFenced, f.Cluster(), err))
+
+		return
+	}
+
+	if gotHolder != holder || gotEpoch < 0 || uint64(gotEpoch) != epoch || !live {
+		_ = db.AddError(fmt.Errorf("%w: cluster %s lease is held by %q at epoch %d (live=%t), writer holds %q at epoch %d",
+			ErrFenced, f.Cluster(), gotHolder, gotEpoch, live, holder, epoch))
 	}
 }

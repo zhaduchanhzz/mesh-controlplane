@@ -241,3 +241,18 @@ CREATE TABLE tailnet_settings(
   dns_config text,
   CONSTRAINT fk_tailnet_settings_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id)
 );
+
+-- Cluster lease (P11b): the process allowed to serve each cluster;
+-- see internal/lease.
+CREATE TABLE cluster_leases(
+  cluster_id text PRIMARY KEY,
+  holder text NOT NULL,
+  epoch integer NOT NULL CHECK(epoch >= 1),
+  expires_at datetime NOT NULL,
+  updated_at datetime NOT NULL
+);
+CREATE TRIGGER trg_cluster_leases_epoch_monotonic BEFORE UPDATE OF epoch, holder ON cluster_leases
+WHEN NEW.epoch < OLD.epoch OR (NEW.holder <> OLD.holder AND NEW.epoch <= OLD.epoch)
+BEGIN
+  SELECT RAISE(ABORT, 'lease epoch must grow with a holder change and never decrease');
+END;

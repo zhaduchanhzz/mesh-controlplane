@@ -51,6 +51,7 @@ func v01Migrations() []*gormigrate.Migration {
 		movingMigration(),
 		nodeIPMigration(),
 		tailnetSettingsMigration(),
+		clusterLeasesMigration(),
 	}
 }
 
