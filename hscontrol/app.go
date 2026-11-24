@@ -123,6 +123,13 @@ type Headscale struct {
 	retired  atomic.Bool
 	sessions sync.Map // *noiseServer -> struct{}
 
+	// leaseGate (cluster runtimes, P11b) reports whether the cluster still
+	// holds its lease by this process's monotonic clock. Checked on every
+	// request admission and before every MapResponse write, so a process
+	// that wakes up after a pause past its deadline serves nothing, even
+	// before its lease loop runs. nil outside cluster mode.
+	leaseGate func() bool
+
 	// derpVerifyURL is this runtime's own embedded-DERP verify route (P08);
 	// derpVerifyUnregister removes it.
 	derpVerifyURL        string
@@ -1647,4 +1654,10 @@ func (h *Headscale) ReconcileNetmap() []types.NodeID {
 	}
 
 	return diverged
+}
+
+// servable reports whether h may answer a request or send a MapResponse:
+// not retired, and (cluster runtimes) the cluster lease still held (P11b).
+func (h *Headscale) servable() bool {
+	return !h.retired.Load() && (h.leaseGate == nil || h.leaseGate())
 }

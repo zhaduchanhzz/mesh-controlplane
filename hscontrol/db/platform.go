@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/go-gormigrate/gormigrate/v2"
 	"gorm.io/gorm"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
@@ -24,6 +26,10 @@ var (
 	// ErrTailnetNotActive reports a tailnet of this cluster that is not
 	// ACTIVE (PENDING, SUSPENDED or DELETING): no runtime may serve it.
 	ErrTailnetNotActive = errors.New("tailnet is not active")
+
+	// ErrNoClusterLease reports that this cluster process does not hold
+	// the cluster lease (P11b): it is standby, and gets no tenant handle.
+	ErrNoClusterLease = errors.New("cluster process does not hold the cluster lease")
 
 	errEmptyClusterID = errors.New("empty cluster id")
 )
@@ -67,7 +73,51 @@ type Platform struct {
 	db      *gorm.DB // tenantscope registered: tenant tables need a scope
 	cfg     *types.Config
 	cluster string
+
+	// P11b: a cluster process (RequireLease) gets tenant handles only while
+	// it holds the cluster lease, and every such handle's fence claims that
+	// lease. Operator processes (CLI) never set one.
+	leaseMu      sync.RWMutex
+	requireLease bool
+	leaseHolder  string
+	leaseEpoch   uint64
 }
+
+// RequireLease makes TenantDB fail with ErrNoClusterLease while no lease is
+// set: the cluster serve process calls it before anything else.
+func (p *Platform) RequireLease() {
+	p.leaseMu.Lock()
+	p.requireLease = true
+	p.leaseMu.Unlock()
+}
+
+// SetLease records the cluster lease this process now holds; tenant handles
+// opened from now on claim it.
+func (p *Platform) SetLease(holder string, epoch uint64) {
+	p.leaseMu.Lock()
+	p.leaseHolder, p.leaseEpoch = holder, epoch
+	p.leaseMu.Unlock()
+}
+
+// ClearLease forgets the lease: no new tenant handle until SetLease. Handles
+// already open keep claiming the old lease, so their writes roll back.
+func (p *Platform) ClearLease() {
+	p.SetLease("", 0)
+}
+
+func (p *Platform) currentLease() (string, uint64, error) {
+	p.leaseMu.RLock()
+	defer p.leaseMu.RUnlock()
+
+	if p.leaseHolder == "" && p.requireLease {
+		return "", 0, ErrNoClusterLease
+	}
+
+	return p.leaseHolder, p.leaseEpoch, nil
+}
+
+// LeaseStore is the cluster_leases table on this pool.
+func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.db) }
 
 // OpenPlatform opens the database, creates the v0.1 schema on a fresh one,
 // refuses databases from Headscale or unknown versions, runs the v0.1
@@ -303,7 +353,12 @@ func (p *Platform) TenantDB(id tailnet.ID) (*HSDatabase, error) {
 		return nil, fmt.Errorf("%w: tailnet %s is %s", ErrTailnetNotActive, tn.ID, tn.Status)
 	}
 
-	scoped, err := scopeTo(p.db, tn, p.cluster)
+	holder, leaseEpoch, err := p.currentLease()
+	if err != nil {
+		return nil, err
+	}
+
+	scoped, err := scopeTo(p.db, tn, p.cluster, holder, leaseEpoch)
 	if err != nil {
 		return nil, err
 	}

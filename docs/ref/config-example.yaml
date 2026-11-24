@@ -525,3 +525,17 @@ tuning:
     # interval so nodes are not all sent one at once; at least 1m. Read only
     # while enabled.
     full_map_interval: 15m
+  # Times the lease that elects the one active process of a cluster in cluster
+  # mode (P11b): the others stay standby and take over when the lease expires.
+  cluster_lease:
+    # How long the lease lives in the database after each renewal; a standby
+    # takes over at most about this long after the active process stops
+    # renewing. At least 1s.
+    ttl: 10s
+    # How often the active process renews; below ttl - safety_margin.
+    renew_interval: 3s
+    # How often a standby tries to take the lease.
+    acquire_interval: 1s
+    # How long before the TTL the active process stops serving when it could not
+    # renew; at most half the TTL.
+    safety_margin: 2s

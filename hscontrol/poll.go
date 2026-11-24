@@ -400,6 +400,12 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 		return errMapSessionStopped
 	}
 
+	// P11b: nothing is sent once this cluster process lost its lease (or
+	// the runtime was retired), even if the stream has not been closed yet.
+	if !m.h.servable() {
+		return errMapSessionStopped
+	}
+
 	startWrite := time.Now()
 
 	err := writeMapResponse(m.w, m.req.Compress, m.isStreaming(), msg)

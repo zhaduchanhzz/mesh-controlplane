@@ -14,6 +14,7 @@ import (
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/dns"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/util/dnsname"
 )
@@ -257,6 +258,29 @@ func Validate(c *types.Config) error {
 				Reason:  l.key + " must be positive",
 				Current: []types.KV{{Key: l.key, Value: l.n}},
 				Hint:    fmt.Sprintf("set to a positive number (default: %d)", l.def),
+			})
+		}
+	}
+
+	// P11b: the active process renews, and stops serving, well before its
+	// lease can expire.
+	{
+		cl := c.Tuning.ClusterLease
+
+		err := lease.Config{
+			TTL: cl.TTL, RenewInterval: cl.RenewInterval,
+			AcquireInterval: cl.AcquireInterval, SafetyMargin: cl.SafetyMargin,
+		}.Validate()
+		if err != nil {
+			v.Add(&types.ConfigError{
+				Reason: "tuning.cluster_lease is not safe: " + err.Error(),
+				Current: []types.KV{
+					{Key: "tuning.cluster_lease.ttl", Value: cl.TTL.String()},
+					{Key: "tuning.cluster_lease.renew_interval", Value: cl.RenewInterval.String()},
+					{Key: "tuning.cluster_lease.acquire_interval", Value: cl.AcquireInterval.String()},
+					{Key: "tuning.cluster_lease.safety_margin", Value: cl.SafetyMargin.String()},
+				},
+				Hint: "ttl >= 1s; 0 < safety_margin <= ttl/2; 0 < renew_interval < ttl - safety_margin; acquire_interval > 0 (defaults 10s, 3s, 1s, 2s)",
 			})
 		}
 	}

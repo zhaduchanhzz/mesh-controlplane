@@ -106,6 +106,12 @@ type TestCluster struct {
 	cfg      *types.Config
 	tailnets map[string]*SeededTailnet
 	raw      *gorm.DB
+
+	// P11b: the cluster hostname (Host of every request), the processes
+	// started (procs[0] by NewTestClusterWith) and the optional front door.
+	host  string
+	procs []*ClusterProcess
+	front *frontDoor
 }
 
 // NewTestCluster writes seeds into a fresh shared database, then starts one
@@ -128,6 +134,12 @@ type ClusterOptions struct {
 	// FullMapInterval, when set, replaces the 24h for the periodic full
 	// map (minimum 1m).
 	FullMapInterval time.Duration
+	// FrontDoor (P11b) puts the cluster URL on a front door that forwards
+	// each connection to the process whose /ready answers 200, so more
+	// processes can be started with [TestCluster.StartProcess].
+	FrontDoor bool
+	// Lease, when set, replaces tuning.cluster_lease (P11b).
+	Lease *types.ClusterLeaseConfig
 }
 
 // NewTestClusterWith is [NewTestCluster] with cluster-wide options.
@@ -166,6 +178,27 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 
 	cfg.ServerURL = "http://localhost:" + port
 	cfg.Addr = types.ListenAddr(addr)
+
+	var front *frontDoor
+
+	if o.FrontDoor {
+		// Clients and the cluster's server_url point at the front door; each
+		// process listens on its own address behind it.
+		fdAddr := freeLoopbackAddr(tb)
+		front = newFrontDoor(tb, fdAddr)
+		front.host = "localhost"
+
+		_, fdPort, err := net.SplitHostPort(fdAddr)
+		if err != nil {
+			tb.Fatalf("servertest: %v", err)
+		}
+
+		cfg.ServerURL = "http://localhost:" + fdPort
+	}
+
+	if o.Lease != nil {
+		cfg.Tuning.ClusterLease = *o.Lease
+	}
 	cfg.MetricsAddr = ""
 	cfg.UnixSocket = filepath.Join(sockDir, "hs.sock")
 	cfg.Noise.PrivateKeyPath = filepath.Join(tmpDir, "noise_private.key")
@@ -210,6 +243,8 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 		ClusterID: clusterID,
 		cfg:       &cfg,
 		tailnets:  make(map[string]*SeededTailnet),
+		host:      "localhost",
+		front:     front,
 	}
 
 	if o.IncrementalNetmap {
@@ -225,34 +260,17 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 	// cluster (quota). Register the cluster under test as shared.
 	tc.registerCluster(tb)
 
-	cluster, err := hscontrol.NewCluster(&cfg)
-	if err != nil {
-		tb.Fatalf("servertest: NewCluster: %v", err)
-	}
+	// startProcess registers its stop after the seed cleanups, so it runs
+	// first: the cluster stops before the raw handle closes.
+	p := tc.startProcess(tb, addr)
+	tc.Cluster = p.Cluster
 
-	tc.Cluster = cluster
-
-	ctx, cancel := context.WithCancel(context.Background())
-	serveErr := make(chan error, 1)
-
-	go func() { serveErr <- cluster.Serve(ctx) }()
-
-	// Registered after the seed cleanups, so it runs first: the cluster
-	// stops before the raw handle closes.
-	tb.Cleanup(func() {
-		cancel()
-
-		select {
-		case <-serveErr:
-		case <-time.After(30 * time.Second):
-			tb.Errorf("servertest: cluster Serve did not return 30s after cancel")
-		}
-	})
-
-	tc.waitHealthy(tb, serveErr)
+	tc.waitHealthy(tb, p.done)
 
 	return tc
 }
+
+func cfgListenAddr(addr string) types.ListenAddr { return types.ListenAddr(addr) }
 
 // seed creates the v0.1 schema through the existing single-tenant opener
 // (which also creates the default tailnet, reused for seeds[0]), then writes
@@ -414,7 +432,8 @@ func (tc *TestCluster) waitHealthy(tb testing.TB, serveErr <-chan error) {
 		default:
 		}
 
-		resp, err := client.Get(tc.URL + "/health") //nolint:noctx // bounded by client timeout
+		// /ready, not /health (P11b): /health answers on a standby too.
+		resp, err := client.Get(tc.URL + "/ready") //nolint:noctx // bounded by client timeout
 		if err == nil {
 			_ = resp.Body.Close()
 
@@ -426,7 +445,7 @@ func (tc *TestCluster) waitHealthy(tb testing.TB, serveErr <-chan error) {
 		time.Sleep(50 * time.Millisecond) //nolint:forbidigo // polling a listener we do not own
 	}
 
-	tb.Fatalf("servertest: cluster at %s not healthy after 20s", tc.URL)
+	tb.Fatalf("servertest: cluster at %s not ready after 20s", tc.URL)
 }
 
 // Tailnet returns the seeded tailnet with slug.
