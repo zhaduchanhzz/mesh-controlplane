@@ -109,13 +109,12 @@ func migrationIDs() []string {
 }
 
 // TestTailnetSettingsDDLInSchemaFiles (P06, ADR 0008): the table DDL is
-// the same text in the migration and both schema files, and the migration
-// is the last one (the bootstrap read-only consumer requires it).
+// the same text in the migration and both schema files. The last migration
+// is checked in TestClusterLeasesDDLInSchemaFiles (P11b).
 func TestTailnetSettingsDDLInSchemaFiles(t *testing.T) {
 	norm := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 	assert.Contains(t, norm(dbSchema), tailnetSettingsDDL)
 	assert.Contains(t, norm(dbSchemaPostgres), tailnetSettingsDDL)
-	assert.Equal(t, tailnetSettingsMigrationID, LatestMigrationID())
 }
 
 // nodeIPIndexes returns the stored definitions of the two address indexes

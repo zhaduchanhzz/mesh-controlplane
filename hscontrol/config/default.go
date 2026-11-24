@@ -94,6 +94,12 @@ func Default() types.Config {
 				ReconcileInterval: 60 * time.Second,
 				FullMapInterval:   15 * time.Minute,
 			},
+			ClusterLease: types.ClusterLeaseConfig{
+				TTL:             10 * time.Second,
+				RenewInterval:   3 * time.Second,
+				AcquireInterval: time.Second,
+				SafetyMargin:    2 * time.Second,
+			},
 		},
 	}
 }

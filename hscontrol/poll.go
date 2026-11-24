@@ -382,7 +382,6 @@ func (m *mapSession) serveLongPoll() {
 				mapResponseLastSentSeconds.WithLabelValues("keepalive", m.node.ID().String()).Set(float64(time.Now().Unix()))
 			}
 
-			mapResponseSent.WithLabelValues("ok", "keepalive").Inc()
 			m.resetKeepAlive()
 		}
 	}
@@ -400,12 +399,27 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 		return errMapSessionStopped
 	}
 
+	// P11b: nothing is sent once this cluster process lost its lease (or
+	// the runtime was retired), even if the stream has not been closed yet.
+	if !m.h.servable() {
+		return errMapSessionStopped
+	}
+
 	startWrite := time.Now()
 
 	err := writeMapResponse(m.w, m.req.Compress, m.isStreaming(), msg)
 	if err != nil {
 		return err
 	}
+
+	// Every frame written to a client, behind the servable gate above: the
+	// P11b E2E reads it to prove a process without the lease sends nothing.
+	sentType := "update"
+	if msg.KeepAlive {
+		sentType = "keepalive"
+	}
+
+	mapResponseSent.WithLabelValues("ok", sentType).Inc()
 
 	m.log.Trace().
 		Caller().

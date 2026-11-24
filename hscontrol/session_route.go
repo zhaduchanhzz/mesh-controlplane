@@ -49,9 +49,9 @@ func (ns *noiseServer) bind(h *Headscale) error {
 	switch {
 	case h == nil:
 		return errSessionUnbound
-	case ns.headscale != nil && ns.headscale.retired.Load():
+	case ns.headscale != nil && !ns.headscale.servable():
 		return errRuntimeRetired
-	case h.retired.Load():
+	case !h.servable():
 		return errRuntimeRetired
 	case ns.headscale == nil:
 		ns.headscale = h
@@ -59,7 +59,7 @@ func (ns *noiseServer) bind(h *Headscale) error {
 
 		// Retired between the check and the registration: closeSessions may
 		// have missed this session, so refuse it here.
-		if h.retired.Load() {
+		if !h.servable() {
 			h.sessions.Delete(ns)
 
 			return errRuntimeRetired
@@ -142,7 +142,7 @@ func (ns *noiseServer) enter() (func(), error) {
 		return nil, errSessionUnbound
 	}
 
-	if h.retired.Load() || !h.inflight.enter() {
+	if !h.servable() || !h.inflight.enter() {
 		return nil, errRuntimeRetired
 	}
 
@@ -158,7 +158,7 @@ func (ns *noiseServer) requireBound() error {
 		return errSessionUnbound
 	}
 
-	if ns.headscale.retired.Load() {
+	if !ns.headscale.servable() {
 		return errRuntimeRetired
 	}
 

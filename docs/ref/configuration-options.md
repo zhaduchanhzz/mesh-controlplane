@@ -3412,6 +3412,11 @@ Holds performance settings that rarely need changing.
         enabled: false
         reconcile_interval: 1m
         full_map_interval: 15m
+      cluster_lease:
+        ttl: 10s
+        renew_interval: 3s
+        acquire_interval: 1s
+        safety_margin: 2s
     ```
 
 ### `tuning.batch_change_delay` { #tuning.batch_change_delay data-toc-label="batch_change_delay" }
@@ -3853,6 +3858,133 @@ How often every connected node is sent a full map, spread over the interval so n
 
     ```nix
     services.headscale.settings.tuning.incremental_netmap.full_map_interval = "30m";
+    ```
+
+### `tuning.cluster_lease` { #tuning.cluster_lease data-toc-label="cluster_lease" }
+
+Times the lease that elects the one active process of a cluster in cluster mode (P11b): the others stay standby and take over when the lease expires.
+
+??? example "All `tuning.cluster_lease` keys and defaults"
+
+    ```yaml
+    tuning:
+      cluster_lease:
+        ttl: 10s
+        renew_interval: 3s
+        acquire_interval: 1s
+        safety_margin: 2s
+    ```
+
+#### `tuning.cluster_lease.ttl` { #tuning.cluster_lease.ttl data-toc-label="ttl" }
+
+- **Type:** [duration](#type-duration)
+- **Default:** `10s`
+- **Env:** `HEADSCALE_TUNING_CLUSTER_LEASE_TTL`
+
+How long the lease lives in the database after each renewal; a standby takes over at most about this long after the active process stops renewing. At least 1s.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      cluster_lease:
+        ttl: 30s
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_CLUSTER_LEASE_TTL=30s
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.cluster_lease.ttl = "30s";
+    ```
+
+#### `tuning.cluster_lease.renew_interval` { #tuning.cluster_lease.renew_interval data-toc-label="renew_interval" }
+
+- **Type:** [duration](#type-duration)
+- **Default:** `3s`
+- **Env:** `HEADSCALE_TUNING_CLUSTER_LEASE_RENEW_INTERVAL`
+
+How often the active process renews; below `ttl` minus `safety_margin`.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      cluster_lease:
+        renew_interval: 10s
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_CLUSTER_LEASE_RENEW_INTERVAL=10s
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.cluster_lease.renew_interval = "10s";
+    ```
+
+#### `tuning.cluster_lease.acquire_interval` { #tuning.cluster_lease.acquire_interval data-toc-label="acquire_interval" }
+
+- **Type:** [duration](#type-duration)
+- **Default:** `1s`
+- **Env:** `HEADSCALE_TUNING_CLUSTER_LEASE_ACQUIRE_INTERVAL`
+
+How often a standby tries to take the lease.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      cluster_lease:
+        acquire_interval: 500ms
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_CLUSTER_LEASE_ACQUIRE_INTERVAL=500ms
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.cluster_lease.acquire_interval = "500ms";
+    ```
+
+#### `tuning.cluster_lease.safety_margin` { #tuning.cluster_lease.safety_margin data-toc-label="safety_margin" }
+
+- **Type:** [duration](#type-duration)
+- **Default:** `2s`
+- **Env:** `HEADSCALE_TUNING_CLUSTER_LEASE_SAFETY_MARGIN`
+
+How long before the TTL the active process stops serving when it could not renew; at most half the TTL.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      cluster_lease:
+        safety_margin: 5s
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_CLUSTER_LEASE_SAFETY_MARGIN=5s
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.cluster_lease.safety_margin = "5s";
     ```
 
 ## Removed keys { #removed-keys }

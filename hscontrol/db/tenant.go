@@ -180,7 +180,7 @@ func bindRuntimeTailnet(raw *gorm.DB, cfg *types.Config) (*gorm.DB, types.Tailne
 		return nil, types.Tailnet{}, err
 	}
 
-	scoped, err := scopeTo(raw, tn, cluster)
+	scoped, err := scopeTo(raw, tn, cluster, "", 0)
 	if err != nil {
 		return nil, types.Tailnet{}, err
 	}
@@ -189,8 +189,9 @@ func bindRuntimeTailnet(raw *gorm.DB, cfg *types.Config) (*gorm.DB, types.Tailne
 }
 
 // scopeTo binds raw to tn with the verified scope of this cluster's runtime.
-// The returned handle shares raw's connection pool.
-func scopeTo(raw *gorm.DB, tn types.Tailnet, cluster string) (*gorm.DB, error) {
+// The returned handle shares raw's connection pool. A non-empty leaseHolder
+// makes every write also claim that cluster lease (P11b).
+func scopeTo(raw *gorm.DB, tn types.Tailnet, cluster, leaseHolder string, leaseEpoch uint64) (*gorm.DB, error) {
 	id, err := tailnet.ParseID(tn.ID)
 	if err != nil {
 		return nil, fmt.Errorf("tailnet %q: %w", tn.ID, err)
@@ -211,6 +212,13 @@ func scopeTo(raw *gorm.DB, tn types.Tailnet, cluster string) (*gorm.DB, error) {
 	fence, err := tailnet.NewFence(cluster, tailnet.Epoch(tn.OwnerEpoch))
 	if err != nil {
 		return nil, err
+	}
+
+	if leaseHolder != "" {
+		fence, err = fence.WithLease(leaseHolder, leaseEpoch)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ctx, err = tailnet.WithFence(ctx, fence)

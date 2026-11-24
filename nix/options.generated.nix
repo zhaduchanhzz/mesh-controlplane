@@ -1165,5 +1165,39 @@ in
         example = "30m";
       };
     };
+    cluster_lease = {
+      ttl = lib.mkOption {
+        type = t.duration;
+        default = "10s";
+        description = ''
+          How long the lease lives in the database after each renewal; a standby takes over at most about this long after the active process stops renewing. At least 1s.
+        '';
+        example = "30s";
+      };
+      renew_interval = lib.mkOption {
+        type = t.duration;
+        default = "3s";
+        description = ''
+          How often the active process renews; below `ttl` minus `safety_margin`.
+        '';
+        example = "10s";
+      };
+      acquire_interval = lib.mkOption {
+        type = t.duration;
+        default = "1s";
+        description = ''
+          How often a standby tries to take the lease.
+        '';
+        example = "500ms";
+      };
+      safety_margin = lib.mkOption {
+        type = t.duration;
+        default = "2s";
+        description = ''
+          How long before the TTL the active process stops serving when it could not renew; at most half the TTL.
+        '';
+        example = "5s";
+      };
+    };
   };
 }

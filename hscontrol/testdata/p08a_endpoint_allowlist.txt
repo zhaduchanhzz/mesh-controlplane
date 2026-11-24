@@ -206,6 +206,7 @@ cluster GET /auth/{auth_id} disabled-404
 cluster GET /favicon.ico none
 cluster GET /health none
 cluster GET /key none
+cluster GET /ready none
 cluster GET /register/{auth_id} disabled-404
 cluster GET /robots.txt none
 cluster GET /ts2021 noise-handshake

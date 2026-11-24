@@ -305,4 +305,5 @@ Bảng §3 giữ nguyên làm hồ sơ P08a. Các thay đổi P08 so với bản
 | `public POST /verify` | `none` | `verify-secret`: cần secret trong `derp.verify_secret_path`; không cấu hình thì mọi caller nhận cùng 403; node hết hạn không được admit (F2) |
 | Listener public của cluster (`headscale cluster serve`) | chưa có trong inventory | Thêm 11 dòng `cluster …`: chỉ route không gắn tenant và `/ts2021`; mọi route sau guard Host/SNI (421). `/register/{auth_id}`, `/auth/{auth_id}` = `disabled-404`. Không có API admin, debug, metrics |
 | Listener metrics của cluster | chưa có | Chỉ `GET /metrics`, sau `operatorOnly`; không có trang debug (test `TestP08ClusterMetricsOperatorsOnly`, không liệt kê trong allowlist vì không phải router chi) |
+| cluster GET `/ready` (P11b) | chưa có | `none`: 200 `{"status":"ready","lease_epoch":N}` chỉ ở process giữ lease cluster và đã nạp tailnet, 503 `{"status":"standby"}` ở standby; dùng làm health check của front door (HAProxy). Không lộ holder, node, tenant; sau guard Host/SNI như mọi route cluster |
 | Router Noise | đọc từ `NoiseUpgradeHandler` | đọc từ `serveNoiseSession` (P05 đã chuyển router sang hàm này); tập route không đổi |

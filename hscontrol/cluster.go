@@ -2,14 +2,18 @@ package hscontrol
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,6 +26,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"golang.org/x/sync/errgroup"
@@ -109,6 +114,15 @@ type Cluster struct {
 	// stopping tracks runtimes being stopped in the background by retire
 	// (P10 review B1): reconcile never waits for one, shutdown waits for all.
 	stopping sync.WaitGroup
+
+	// P11b: the cluster lease elects the one process of the cluster that
+	// serves (active); the others are standby. leaseMu serializes taking the
+	// lease (load every owned tailnet), losing it (retire them all) and
+	// reconcile, so no runtime is loaded outside a held lease. ready is set
+	// once the tailnets are loaded and cleared first when the lease ends.
+	lease   *lease.Manager
+	leaseMu sync.Mutex
+	ready   atomic.Bool
 }
 
 // tenantRuntime is one loaded tailnet: its runtime, the ownership epoch it
@@ -170,6 +184,21 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		return nil, err
 	}
 
+	// P11b: tenant handles exist only under the cluster lease; tailnets are
+	// loaded when this process takes it (Serve), never here.
+	platform.RequireLease()
+
+	lc := cfg.Tuning.ClusterLease
+
+	mgr, err := lease.NewManager(platform.LeaseStore(), platform.ClusterID(), leaseHolderName(), lease.Config{
+		TTL: lc.TTL, RenewInterval: lc.RenewInterval, AcquireInterval: lc.AcquireInterval, SafetyMargin: lc.SafetyMargin,
+	})
+	if err != nil {
+		_ = platform.Close()
+
+		return nil, fmt.Errorf("cluster lease: %w", err)
+	}
+
 	c := &Cluster{
 		host:     host,
 		cfg:      cfg,
@@ -178,23 +207,7 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		registry: registry,
 		front:    &Headscale{cfg: cfg, noisePrivateKey: noiseKey},
 		runtimes: make(map[tailnet.ID]*tenantRuntime),
-	}
-
-	tns, err := platform.OwnedTailnets(platform.ClusterID())
-	if err == nil {
-		for _, tn := range tns {
-			err = c.load(tn)
-			if err != nil {
-				break
-			}
-		}
-	}
-
-	if err != nil {
-		c.closeRuntimes()
-		_ = platform.Close()
-
-		return nil, err
+		lease:    mgr,
 	}
 
 	return c, nil
@@ -282,6 +295,8 @@ func (c *Cluster) load(tn types.Tailnet) error {
 		return err
 	})
 
+	h.leaseGate = c.leaseHeld
+
 	rt := &tenantRuntime{
 		id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h,
 		policyRev: tdb.Tailnet().PolicyRevision,
@@ -327,6 +342,13 @@ func (c *Cluster) Runtime(id tailnet.ID) (*Headscale, bool) {
 // at the epoch they were loaded with (moved, epoch bumped, not ACTIVE,
 // deleted). A failed listing changes nothing.
 func (c *Cluster) reconcile() {
+	c.leaseMu.Lock()
+	defer c.leaseMu.Unlock()
+
+	if !c.ready.Load() || !c.leaseHeld() {
+		return // standby, or the lease is ending: onLeaseLost retires
+	}
+
 	owned, err := c.platform.OwnedTailnets(c.platform.ClusterID())
 	if err != nil {
 		log.Error().Err(err).Msg("reconcile: listing owned tailnets")
@@ -690,6 +712,15 @@ func (c *Cluster) NoiseUpgradeHandler(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	// P11b: a standby process (or one whose lease is ending) opens no
+	// session, whatever routed the client here.
+	if !c.Ready() {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "standby", http.StatusServiceUnavailable)
+
+		return
+	}
+
 	serveNoiseSession(w, req, *c.noiseKey, &noiseServer{
 		router:    c,
 		challenge: key.NewChallenge(),
@@ -734,6 +765,142 @@ func (c *Cluster) HealthHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	_, _ = w.Write([]byte(`{"status":"pass"}`))
+}
+
+// ReadyHandler (P11b) answers 200 only on the process that holds the cluster
+// lease and has loaded its tailnets; standby answers 503. The front door (L4
+// forwarder health check) sends clients to the ready process; the standby
+// refuses /ts2021 anyway.
+func (c *Cluster) ReadyHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/health+json")
+	w.Header().Set("Cache-Control", "no-store")
+
+	if l, ok := c.lease.Current(); ok && c.ready.Load() {
+		_, _ = fmt.Fprintf(w, `{"status":"ready","lease_epoch":%d}`, l.Epoch)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"status":"standby"}`))
+}
+
+// leaseHeld is the lease gate of every runtime of this process.
+func (c *Cluster) leaseHeld() bool {
+	_, ok := c.lease.Current()
+
+	return ok
+}
+
+// LeaseHolder is this process's name in cluster_leases.
+func (c *Cluster) LeaseHolder() string { return c.lease.Holder() }
+
+// Ready reports whether this process serves: it holds the cluster lease and
+// has loaded its tailnets.
+func (c *Cluster) Ready() bool { return c.ready.Load() && c.leaseHeld() }
+
+// onLeaseAcquired loads and starts every ACTIVE tailnet the cluster owns,
+// under the new lease. A tailnet that fails to load is logged and left out,
+// as in reconcile; failing to list the tailnets gives the lease back.
+func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
+	c.leaseMu.Lock()
+	defer c.leaseMu.Unlock()
+
+	// Runtimes of an earlier lease of this process must be gone first.
+	c.waitStopping("taking the cluster lease")
+
+	c.platform.SetLease(l.Holder, l.Epoch)
+
+	owned, err := c.platform.OwnedTailnets(c.platform.ClusterID())
+	if err != nil {
+		c.platform.ClearLease()
+
+		return fmt.Errorf("listing owned tailnets: %w", err)
+	}
+
+	for _, tn := range owned {
+		err := c.load(tn)
+		if err != nil {
+			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: loading tailnet")
+
+			continue
+		}
+
+		id, _ := tailnet.ParseID(tn.ID)
+
+		c.mu.RLock()
+		rt := c.runtimes[id]
+		c.mu.RUnlock()
+
+		if err := c.start(rt); err != nil { //nolint:noinlineerr
+			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: starting tailnet")
+			c.retire(rt, "failed to start")
+		}
+	}
+
+	c.ready.Store(true)
+
+	c.mu.RLock()
+	n := len(c.order)
+	c.mu.RUnlock()
+
+	log.Info().Str("cluster", l.Cluster).Str("holder", l.Holder).Uint64("lease_epoch", l.Epoch).
+		Int("tailnets", n).Msg("cluster active: serving")
+
+	return nil
+}
+
+// onLeaseLost stops serving: every runtime is retired (sessions closed, map
+// streams ended) and no tenant handle is opened until the next lease. Writes
+// still in flight roll back in the database (lease fence).
+func (c *Cluster) onLeaseLost(l lease.Lease, reason string) {
+	c.ready.Store(false)
+
+	c.leaseMu.Lock()
+	defer c.leaseMu.Unlock()
+
+	c.platform.ClearLease()
+
+	for _, rt := range c.tenantSnapshot() {
+		c.retire(rt, "cluster lease ended: "+reason)
+	}
+
+	log.Warn().Str("cluster", l.Cluster).Str("holder", l.Holder).Uint64("lease_epoch", l.Epoch).
+		Str("reason", reason).Msg("cluster standby: not serving")
+
+	c.waitStopping("losing the cluster lease")
+}
+
+// waitStopping waits, bounded, for retired runtimes to finish stopping.
+func (c *Cluster) waitStopping(why string) {
+	done := make(chan struct{})
+
+	go func() {
+		c.stopping.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(runtimeDrainTimeout + 5*time.Second):
+		log.Error().Str("why", why).Msg("retired tailnet runtimes still stopping; going on")
+	}
+}
+
+// leaseHolderName names this process in cluster_leases: host name plus a
+// random suffix, new on every start, so a restarted process never mistakes
+// an earlier incarnation's lease for its own.
+func leaseHolderName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+
+	var b [4]byte
+
+	_, _ = rand.Read(b[:])
+
+	return host + "-" + hex.EncodeToString(b[:])
 }
 
 // clusterRegistrationDisabled answers the web/OIDC registration routes: in
@@ -816,6 +983,7 @@ func (c *Cluster) HTTPHandler() http.Handler {
 
 	r.Get("/key", c.front.KeyHandler)
 	r.Get("/health", c.HealthHandler)
+	r.Get("/ready", c.ReadyHandler)
 	r.Get("/version", c.front.VersionHandler)
 	r.Get("/robots.txt", c.front.RobotsHandler)
 	r.Head("/machine/ping-response", c.PingResponseHandler)
@@ -840,13 +1008,6 @@ func (c *Cluster) Serve(ctx context.Context) error {
 	c.serveCtx, c.serveGroup = ctx, errorGroup
 
 	defer c.shutdownRuntimes()
-
-	for _, rt := range c.tenantSnapshot() {
-		err := c.start(rt)
-		if err != nil {
-			return fmt.Errorf("starting tailnet runtime: %w", err)
-		}
-	}
 
 	tlsBundle, err := c.front.getTLSSettings(ctx)
 	if err != nil {
@@ -897,14 +1058,19 @@ func (c *Cluster) Serve(ctx context.Context) error {
 		log.Info().Msgf("cluster metrics (operators only) on %s", mln.Addr())
 	}
 
-	c.mu.RLock()
-	n := len(c.order)
-	c.mu.RUnlock()
-
 	log.Info().
 		Str("cluster", c.platform.ClusterID()).
-		Int("tailnets", n).
-		Msgf("cluster listening on %s", ln.Addr())
+		Str("holder", c.lease.Holder()).
+		Msgf("cluster listening on %s (standby until it holds the cluster lease)", ln.Addr())
+
+	// P11b: active while this process holds the cluster lease, standby
+	// otherwise. On shutdown the lease is released so a standby takes over
+	// without waiting for the TTL.
+	errorGroup.Go(func() error {
+		c.lease.Run(ctx, c.onLeaseAcquired, c.onLeaseLost)
+
+		return nil
+	})
 
 	errorGroup.Go(func() error {
 		t := time.NewTicker(reconcileInterval)
@@ -968,16 +1134,6 @@ func (c *Cluster) shutdownRuntimes() {
 	err := c.platform.Close()
 	if err != nil {
 		log.Error().Err(err).Msg("closing platform database")
-	}
-}
-
-// closeRuntimes closes the states of runtimes that never started.
-func (c *Cluster) closeRuntimes() {
-	for _, rt := range c.runtimesSnapshot() {
-		err := rt.state.Close()
-		if err != nil {
-			log.Error().Err(err).Msg("closing tailnet state")
-		}
 	}
 }
 
