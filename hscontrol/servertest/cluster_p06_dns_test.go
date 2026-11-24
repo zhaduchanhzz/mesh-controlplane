@@ -153,14 +153,26 @@ func TestClusterP06DNSRefusesInvalid(t *testing.T) {
 func TestClusterP06DNSCorruptRowNotLoaded(t *testing.T) {
 	tc := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: tenantA})
 
-	st := tc.CreateTailnetLive(t, "tenant-c")
-	tc.StoreRawTailnetDNSForTest(t, st.ID.String(), `{"nameservers":{"global":["resolver"]}}`)
-	time.Sleep(3 * time.Second) // reconcile ticks
-	require.False(t, tc.HasRuntime(t, "tenant-c"), "a tailnet with invalid stored DNS must not load")
+	// One row that parses but breaks a rule, one that does not parse.
+	for slug, raw := range map[string]string{
+		"tenant-c": `{"nameservers":{"global":["resolver"]}}`,
+		"tenant-d": `{"nameservers":`,
+	} {
+		st := tc.CreateTailnetLive(t, slug)
+		tc.StoreRawTailnetDNSForTest(t, st.ID.String(), raw)
+	}
 
-	// Repaired: it loads.
-	require.NoError(t, tc.SetTailnetDNS(t, "tenant-c", nil))
-	tc.WaitRuntime(t, "tenant-c", true, 15*time.Second)
+	time.Sleep(3 * time.Second) // reconcile ticks
+
+	for _, slug := range []string{"tenant-c", "tenant-d"} {
+		require.False(t, tc.HasRuntime(t, slug), "%s: a tailnet with invalid stored DNS must not load", slug)
+	}
+
+	// Repaired: they load.
+	for _, slug := range []string{"tenant-c", "tenant-d"} {
+		require.NoError(t, tc.SetTailnetDNS(t, slug, nil))
+		tc.WaitRuntime(t, slug, true, 15*time.Second)
+	}
 }
 
 // Loading runtimes while others serve maps: with -race, a DNS config
