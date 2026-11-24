@@ -1105,5 +1105,39 @@ in
       '';
       example = 4000000;
     };
+    tenant_dns = {
+      max_extra_records = lib.mkOption {
+        type = lib.types.int;
+        default = 1000;
+        description = ''
+          The most extra DNS records a tailnet may store.
+        '';
+        example = 2000;
+      };
+      max_nameservers = lib.mkOption {
+        type = lib.types.int;
+        default = 64;
+        description = ''
+          The most nameservers a tailnet may store, global and split together.
+        '';
+        example = 16;
+      };
+      max_search_domains = lib.mkOption {
+        type = lib.types.int;
+        default = 64;
+        description = ''
+          The most search domains a tailnet may store.
+        '';
+        example = 16;
+      };
+      max_config_bytes = lib.mkOption {
+        type = lib.types.int;
+        default = 262144;
+        description = ''
+          The largest a tailnet's DNS settings may be, as stored JSON.
+        '';
+        example = 524288;
+      };
+    };
   };
 }

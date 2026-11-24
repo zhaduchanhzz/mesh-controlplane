@@ -50,6 +50,7 @@ func v01Migrations() []*gormigrate.Migration {
 		registryMigration(),
 		movingMigration(),
 		nodeIPMigration(),
+		tailnetSettingsMigration(),
 	}
 }
 

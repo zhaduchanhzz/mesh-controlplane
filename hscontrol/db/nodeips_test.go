@@ -96,7 +96,26 @@ func TestNodeIPDDLInSchemaFiles(t *testing.T) {
 	norm := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 	assert.Contains(t, norm(dbSchema), nodeIPDDL)
 	assert.Contains(t, norm(dbSchemaPostgres), nodeIPDDL)
-	assert.Equal(t, nodeIPMigrationID, LatestMigrationID())
+	assert.Contains(t, migrationIDs(), nodeIPMigrationID)
+}
+
+func migrationIDs() []string {
+	var ids []string
+	for _, m := range v01Migrations() {
+		ids = append(ids, m.ID)
+	}
+
+	return ids
+}
+
+// TestTailnetSettingsDDLInSchemaFiles (P06, ADR 0008): the table DDL is
+// the same text in the migration and both schema files, and the migration
+// is the last one (the bootstrap read-only consumer requires it).
+func TestTailnetSettingsDDLInSchemaFiles(t *testing.T) {
+	norm := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
+	assert.Contains(t, norm(dbSchema), tailnetSettingsDDL)
+	assert.Contains(t, norm(dbSchemaPostgres), tailnetSettingsDDL)
+	assert.Equal(t, tailnetSettingsMigrationID, LatestMigrationID())
 }
 
 // nodeIPIndexes returns the stored definitions of the two address indexes

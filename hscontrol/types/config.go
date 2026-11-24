@@ -1030,6 +1030,10 @@ type Tuning struct {
 	// while the tailnet is at the bound. 1000000 is a full mesh of 1000
 	// nodes; 0 means no bound. Policy changes are not refused.
 	MaxPeerEntries int64 `example:"4000000" koanf:"max_peer_entries"`
+
+	// TenantDNS bounds the DNS settings each tailnet may store in cluster
+	// mode (ADR 0008).
+	TenantDNS TenantDNSLimits `koanf:"tenant_dns"`
 }
 
 // BatcherWorkerCount is BatcherWorkers, or [DefaultBatcherWorkers] when unset.

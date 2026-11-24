@@ -49,6 +49,9 @@ func init() {
 
 	tailnetStatusCmd.Flags().StringVar(&clusterStatus, "set", "", "new status: PENDING, ACTIVE, SUSPENDED or DELETING")
 	tailnetPolicyCmd.Flags().StringVar(&clusterPolicyFile, "file", "", "policy file (HuJSON)")
+	tailnetDNSCmd.Flags().StringVar(&clusterDNSFile, "file", "", "DNS settings file (JSON; see ADR 0008)")
+	tailnetDNSCmd.Flags().BoolVar(&clusterDNSClear, "clear", false, "drop the tailnet's DNS settings (the defaults)")
+	tailnetDNSCmd.Flags().BoolVar(&clusterDNSShow, "show", false, "print the stored DNS settings")
 	tailnetAuthKeyCmd.Flags().StringVar(&clusterUser, "user", "", "user owning the nodes (created if missing)")
 	tailnetAuthKeyCmd.Flags().DurationVar(&clusterKeyExpiry, "expiration", time.Hour, "key lifetime")
 	tailnetAuthKeyCmd.Flags().BoolVar(&clusterKeyReusable, "reusable", false, "key can register several nodes")
@@ -59,7 +62,7 @@ func init() {
 	clusterRegisterCmd.Flags().Int64Var(&clusterRegMax, "max-devices", 5000, "device budget of the cluster")
 	clusterRegisterCmd.Flags().StringVar(&clusterRegEndpoint, "endpoint", "", "endpoint URL (default: server_url)")
 
-	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetAuthKeyCmd, tailnetAuthKeyRevokeCmd, tailnetNodesCmd, tailnetReassignCmd)
+	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetDNSCmd, tailnetAuthKeyCmd, tailnetAuthKeyRevokeCmd, tailnetNodesCmd, tailnetReassignCmd)
 	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, tailnetCmd)
 	rootCmd.AddCommand(clusterCmd)
 }
@@ -225,6 +228,81 @@ var tailnetPolicyCmd = &cobra.Command{
 
 			// A running cluster reloads the policy when the revision moves.
 			return p.BumpPolicyRevision(id)
+		})
+	},
+}
+
+var (
+	clusterDNSFile  string
+	clusterDNSClear bool
+	clusterDNSShow  bool
+)
+
+// tailnetDNSCmd stores, clears or shows the DNS settings of tailnet --slug
+// (P06, ADR 0008). The settings are validated before they are stored; a
+// running cluster serves them to the tailnet's clients within seconds.
+var tailnetDNSCmd = &cobra.Command{
+	Use:   "dns",
+	Short: "Store (--file), clear (--clear) or show (--show) the DNS settings of tailnet --slug",
+	RunE: func(_ *cobra.Command, _ []string) error {
+		chosen := 0
+		for _, on := range []bool{clusterDNSFile != "", clusterDNSClear, clusterDNSShow} {
+			if on {
+				chosen++
+			}
+		}
+
+		if chosen != 1 {
+			return errors.New("give exactly one of --file, --clear, --show")
+		}
+
+		cfg, err := clusterConfig()
+		if err != nil {
+			return err
+		}
+
+		var settings *types.TenantDNS
+
+		if clusterDNSFile != "" {
+			data, err := os.ReadFile(clusterDNSFile)
+			if err != nil {
+				return err
+			}
+
+			settings, err = types.ParseTenantDNS(data)
+			if err != nil {
+				return err
+			}
+		}
+
+		return withPlatform(func(p *db.Platform) error {
+			tn, err := p.TailnetBySlug(clusterSlug)
+			if err != nil {
+				return err
+			}
+
+			id, err := tailnet.ParseID(tn.ID)
+			if err != nil {
+				return err
+			}
+
+			if clusterDNSShow {
+				d, err := p.TailnetDNS(id)
+				if err != nil {
+					return err
+				}
+
+				out, err := json.MarshalIndent(d, "", "  ")
+				if err != nil {
+					return err
+				}
+
+				fmt.Println(string(out)) //nolint:forbidigo // CLI output
+
+				return nil
+			}
+
+			return p.SetTailnetDNS(id, settings, cfg.DNSConfig.BaseDomain, cfg.Tuning.TenantDNS)
 		})
 	},
 }

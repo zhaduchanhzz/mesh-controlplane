@@ -502,3 +502,13 @@ tuning:
   # bound. 1000000 is a full mesh of 1000 nodes; 0 means no bound. Policy
   # changes are not refused.
   max_peer_entries: 1000000
+  # Bounds the DNS settings each tailnet may store in cluster mode (ADR 0008).
+  tenant_dns:
+    # The most extra DNS records a tailnet may store.
+    max_extra_records: 1000
+    # The most nameservers a tailnet may store, global and split together.
+    max_nameservers: 64
+    # The most search domains a tailnet may store.
+    max_search_domains: 64
+    # The largest a tailnet's DNS settings may be, as stored JSON.
+    max_config_bytes: 262144

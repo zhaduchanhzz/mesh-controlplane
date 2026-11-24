@@ -233,3 +233,11 @@ CREATE TABLE platform_idempotency(
   created_at datetime NOT NULL,
   PRIMARY KEY(actor, idempotency_key)
 );
+
+-- Per-tailnet settings (P06, ADR 0008): DNS settings of a tailnet as
+-- validated JSON; see hscontrol/db/tailnet_settings.go.
+CREATE TABLE tailnet_settings(
+  tailnet_id text PRIMARY KEY,
+  dns_config text,
+  CONSTRAINT fk_tailnet_settings_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id)
+);

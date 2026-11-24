@@ -30,6 +30,12 @@ func (p *Platform) CreateTailnet(slug string) (types.Tailnet, error) {
 		return types.Tailnet{}, errEmptySlug
 	}
 
+	// The slug is the first label of the tailnet's MagicDNS domain (ADR
+	// 0008 §1).
+	if slugErr := types.ValidSlug(slug); slugErr != nil {
+		return types.Tailnet{}, slugErr
+	}
+
 	now := time.Now().UTC()
 	tn := types.Tailnet{
 		ID:             uuid.NewV4().String(),

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/frontdoor"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"golang.org/x/sync/errgroup"
@@ -45,6 +47,15 @@ var (
 	errClusterPolicyFile = errors.New(
 		"cluster mode needs policy.mode=database: a policy file would apply to every tailnet",
 	)
+	// ADR 0008: DNS is per tailnet in cluster mode. The cluster sets the
+	// base domain every tailnet's lives under; settings a tailnet owns in
+	// the config file would apply to nobody or to everybody.
+	errClusterTenantDNS = errors.New(
+		"cluster mode keeps dns.extra_records, dns.extra_records_path, dns.nameservers and " +
+			"dns.search_domains per tailnet (`cluster tailnet dns`); remove them from the config")
+	errClusterNoBaseDomain = errors.New(
+		"cluster mode needs dns.base_domain: each tailnet's MagicDNS domain is <slug>.<base_domain>")
+
 	errClusterTLSUnsupported = errors.New(
 		"cluster mode supports tls.cert_path/tls.key_path or plain HTTP behind the front door, not ACME",
 	)
@@ -111,6 +122,9 @@ type tenantRuntime struct {
 	// policyRev is the tailnets.policy_revision the runtime's policy matches;
 	// only the reconcile loop reads or writes it after load.
 	policyRev uint64
+	// configRev is the tailnets.config_revision the runtime's DNS matches
+	// (ADR 0008); same rules as policyRev.
+	configRev uint64
 
 	cancel context.CancelFunc // stops its scheduled tasks
 	stop   func()             // from startRuntime
@@ -200,6 +214,12 @@ func validateClusterConfig(cfg *types.Config) error {
 		return errClusterTLSUnsupported
 	case cfg.TailSQL.Enabled:
 		return errClusterTailSQL
+	case len(cfg.DNSConfig.ExtraRecords) > 0, cfg.DNSConfig.ExtraRecordsPath != "",
+		len(cfg.DNSConfig.Nameservers.Global) > 0, len(cfg.DNSConfig.Nameservers.Split) > 0,
+		len(cfg.DNSConfig.SearchDomains) > 0:
+		return errClusterTenantDNS
+	case cfg.DNSConfig.BaseDomain == "":
+		return errClusterNoBaseDomain
 	}
 
 	if _, err := clusterHost(cfg.ServerURL); err != nil { //nolint:noinlineerr
@@ -223,8 +243,20 @@ func (c *Cluster) load(tn types.Tailnet) error {
 		return fmt.Errorf("tailnet %s: %w", id, err)
 	}
 
-	h, err := newHeadscale(c.cfg, c.noiseKey, "", func() (*state.State, error) {
-		return state.NewStateWithDB(c.cfg, tdb)
+	// The runtime's own config: the tailnet's DNS under <slug>.<base>, a
+	// live DNS no other runtime shares (ADR 0008 §5). Stored settings that
+	// do not parse or validate keep the tailnet out: never default DNS.
+	dns, err := c.tailnetDNS(id, tdb.Tailnet().Slug)
+	if err != nil {
+		_ = tdb.Close()
+
+		return fmt.Errorf("tailnet %s: %w", id, err)
+	}
+
+	rcfg := c.cfg.ForTailnet(tdb.Tailnet().Slug, dns)
+
+	h, err := newHeadscale(rcfg, c.noiseKey, "", func() (*state.State, error) {
+		return state.NewStateWithDB(rcfg, tdb)
 	})
 	if err != nil {
 		_ = tdb.Close()
@@ -253,6 +285,7 @@ func (c *Cluster) load(tn types.Tailnet) error {
 	rt := &tenantRuntime{
 		id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h,
 		policyRev: tdb.Tailnet().PolicyRevision,
+		configRev: tdb.Tailnet().ConfigRevision,
 	}
 
 	c.mu.Lock()
@@ -307,7 +340,7 @@ func (c *Cluster) reconcile() {
 	}
 
 	c.mu.RLock()
-	var stale, policyChanged []*tenantRuntime
+	var stale, policyChanged, configChanged []*tenantRuntime
 	loaded := make(map[string]bool, len(c.runtimes))
 	for id, rt := range c.runtimes {
 		loaded[id.String()] = true
@@ -315,11 +348,37 @@ func (c *Cluster) reconcile() {
 		switch {
 		case !ok || tn.OwnerEpoch != rt.epoch:
 			stale = append(stale, rt)
-		case tn.PolicyRevision != rt.policyRev:
-			policyChanged = append(policyChanged, rt)
+		default:
+			if tn.PolicyRevision != rt.policyRev {
+				policyChanged = append(policyChanged, rt)
+			}
+
+			if tn.ConfigRevision != rt.configRev {
+				configChanged = append(configChanged, rt)
+			}
 		}
 	}
 	c.mu.RUnlock()
+
+	for _, rt := range configChanged {
+		rev := want[rt.id.String()].ConfigRevision
+		// As for policy: recorded even when the new settings do not load,
+		// so the runtime keeps serving its previous DNS and the error is
+		// logged once.
+		rt.configRev = rev
+
+		dns, err := c.tailnetDNS(rt.id, rt.slug)
+		if err != nil {
+			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("config_revision", rev).
+				Msg("reconcile: new DNS settings rejected, keeping the previous ones")
+
+			continue
+		}
+
+		rt.h.cfg.ReplaceTenantDNS(rt.slug, dns)
+		rt.h.Change(change.DNSConfig())
+		log.Info().Str("tailnet", rt.id.String()).Uint64("config_revision", rev).Msg("reconcile: DNS settings reloaded")
+	}
 
 	for _, rt := range policyChanged {
 		rev := want[rt.id.String()].PolicyRevision
@@ -367,6 +426,39 @@ func (c *Cluster) reconcile() {
 			c.retire(rt, "failed to start")
 		}
 	}
+}
+
+// tailnetDNS reads and checks tailnet id's stored DNS settings (ADR 0008):
+// nil for the defaults; an error when they do not parse or break a rule of
+// form. Settings over the size limits (lowered after they were stored)
+// still load, with a warning; the next write must fit.
+func (c *Cluster) tailnetDNS(id tailnet.ID, slug string) (*types.TenantDNS, error) {
+	dns, err := c.platform.TailnetDNS(id)
+	if err != nil {
+		return nil, err
+	}
+
+	if dns == nil {
+		return nil, nil //nolint:nilnil // the defaults
+	}
+
+	err = dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, unlimitedTenantDNS)
+	if err != nil {
+		return nil, fmt.Errorf("stored DNS settings: %w", err)
+	}
+
+	err = dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, c.cfg.Tuning.TenantDNS)
+	if err != nil {
+		log.Warn().Str("tailnet", id.String()).Msg("stored DNS settings exceed tuning.tenant_dns; " +
+			"they are served, the next write must fit")
+	}
+
+	return dns, nil
+}
+
+// unlimitedTenantDNS checks form only.
+var unlimitedTenantDNS = types.TenantDNSLimits{
+	MaxExtraRecords: math.MaxInt, MaxNameservers: math.MaxInt, MaxSearchDomains: math.MaxInt, MaxConfigBytes: math.MaxInt,
 }
 
 func containsRuntime(rts []*tenantRuntime, id string) bool {
