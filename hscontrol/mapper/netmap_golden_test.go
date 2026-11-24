@@ -69,6 +69,8 @@ type netmapGolden struct {
 	views []string
 	// steps records each step's change types, to assert on them.
 	steps map[string][]change.Change
+	// last holds the frames each node received in the last step.
+	last map[types.NodeID][]*tailcfg.MapResponse
 }
 
 func newNetmapGolden(t *testing.T, incremental bool) *netmapGolden {
@@ -236,8 +238,12 @@ func (g *netmapGolden) step(label string, cs []change.Change) {
 
 	slices.Sort(ids)
 
+	g.last = map[types.NodeID][]*tailcfg.MapResponse{}
+
 	for _, id := range ids {
 		for _, resp := range drain(g.chans[id]) {
+			g.last[id] = append(g.last[id], resp)
+
 			fmt.Fprintf(&g.out, "  %d <- %s\n", id, goldenFrame(resp))
 			g.apply(id, resp)
 		}

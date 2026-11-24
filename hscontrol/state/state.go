@@ -454,6 +454,9 @@ func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 	nodeStore := NewNodeStore(nodes, policyPeersFunc(polMan), batchSize, batchTimeout)
 	if cfg.Tuning.IncrementalNetmap.Enabled {
 		nodeStore.SetIncrementalPeers(policyIncrementalPeers(polMan))
+		nodeStore.SetReconcilePeers(func(nodes []types.NodeView) (map[types.NodeID][]types.NodeID, uint64) {
+			return polMan.BuildPeerMapGen(views.SliceOf(nodes))
+		})
 	}
 
 	polMan.SetRouterSession(nodeStore.RouterSession)
@@ -563,6 +566,14 @@ func policyPeersFunc(pm policy.PolicyManager) PeersFunc {
 
 		return pm.BuildPeerMap(slice)
 	}
+}
+
+// ReconcilePeerMaps checks the incremental netmap against a full build
+// and returns the nodes whose peers differed, which now have the full
+// build's and need a full map (P00d). Nil while the incremental netmap is
+// off or nothing differed.
+func (s *State) ReconcilePeerMaps() []types.NodeID {
+	return s.nodeStore.ReconcilePeerMaps().Diverged
 }
 
 // Closed reports whether Close has been called.
@@ -2363,6 +2374,24 @@ func (s *State) DeleteNodeFromStoreForTest(id types.NodeID) {
 // so wrap must delegate to its argument. Call before any map is served.
 func (s *State) WrapPolicyManagerForTest(wrap func(policy.PolicyManager) policy.PolicyManager) {
 	s.polMan = wrap(s.polMan)
+}
+
+// MutatePeerMapForTest publishes a copy of the current snapshot whose
+// adjacency mutate changed, to inject a divergence for reconciliation and
+// removal tests (P00d M03, M04). The mutation goes straight to the
+// snapshot, bypassing the writer: call it only while no write is queued.
+func (s *State) MutatePeerMapForTest(mutate func(map[types.NodeID][]types.NodeID)) {
+	snap := *s.nodeStore.data.Load()
+
+	peers := make(map[types.NodeID][]types.NodeID, len(snap.peersByNode))
+	for id, ps := range snap.peersByNode {
+		peers[id] = slices.Clone(ps)
+	}
+
+	mutate(peers)
+
+	snap.peersByNode = peers
+	s.nodeStore.data.Store(&snap)
 }
 
 // UpdatePolicyManagerNodesForTest syncs the policy manager with the

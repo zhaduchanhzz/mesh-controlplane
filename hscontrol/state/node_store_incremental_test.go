@@ -377,3 +377,62 @@ func TestNodeStoreIncrementalPolicyChangeAlwaysFull(t *testing.T) {
 	require.Equal(t, counts{1, 0}, delta(before), "an explicit rebuild builds in full")
 	h.check(t, "rebuild")
 }
+
+// TestNodeStoreReconcileReplacesDivergence is M03 at the NodeStore level:
+// an injected extra and missing peer are found, counted, and replaced by
+// the full build; a policy change since the build skips the comparison.
+func TestNodeStoreReconcileReplacesDivergence(t *testing.T) {
+	h := newIncHarness(t, incPolicyHosts, true, 6)
+	defer h.store.Stop()
+
+	h.store.fullPeers = func(all []types.NodeView) (map[types.NodeID][]types.NodeID, uint64) {
+		return h.pm.BuildPeerMapGen(views.SliceOf(all))
+	}
+
+	// A first relation build records the rules generation.
+	h.store.PutNode(h.newNode(0))
+	h.sync(t)
+
+	res := h.store.ReconcilePeerMaps()
+	require.True(t, res.Checked)
+	require.Empty(t, res.Diverged)
+
+	snap := *h.store.data.Load()
+	peers := deepPeers(snap.peersByNode)
+
+	var a, b types.NodeID
+
+	for id, ps := range peers {
+		if len(ps) >= 2 {
+			a, b = id, ps[0]
+
+			break
+		}
+	}
+
+	require.NotZero(t, a, "precondition: a node with peers")
+
+	outsider := h.newNode(0)
+	outsider.ID = 999
+	peers[a] = append(without(peers[a], b), outsider.ID) // b missing, 999 extra
+	snap.peersByNode = peers
+	h.store.data.Store(&snap)
+
+	res = h.store.ReconcilePeerMaps()
+	require.True(t, res.Checked)
+	require.Contains(t, res.Diverged, a)
+	require.Equal(t, 1, res.Extra)
+	require.Equal(t, 1, res.Missing)
+	h.check(t, "after reconcile")
+
+	// Rules moved since the build: nothing to compare against.
+	_, err := h.pm.SetPolicy([]byte(incPolicyAllowAll))
+	require.NoError(t, err)
+
+	res = h.store.ReconcilePeerMaps()
+	require.False(t, res.Checked)
+}
+
+func without(ps []types.NodeID, id types.NodeID) []types.NodeID {
+	return slices.DeleteFunc(slices.Clone(ps), func(p types.NodeID) bool { return p == id })
+}

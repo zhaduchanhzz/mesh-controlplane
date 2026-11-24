@@ -435,6 +435,26 @@ func (h *Headscale) scheduledTasks(ctx context.Context) {
 	accessTokenTicker := time.NewTicker(time.Hour)
 	defer accessTokenTicker.Stop()
 
+	// P00d: with the incremental netmap on, check it against a full build
+	// every reconcile_interval (a difference is replaced and the nodes it
+	// touched get a full map), and send every node a full map once per
+	// full_map_interval, spread over the interval.
+	var reconcileChan <-chan time.Time
+
+	if inc := h.cfg.Tuning.IncrementalNetmap; inc.Enabled {
+		reconcileTicker := time.NewTicker(inc.ReconcileInterval)
+		defer reconcileTicker.Stop()
+
+		reconcileChan = reconcileTicker.C
+
+		go h.mapBatcher.RunFullMapRefresh(inc.FullMapInterval, ctx.Done())
+
+		log.Info().
+			Dur("reconcile_interval", inc.ReconcileInterval).
+			Dur("full_map_interval", inc.FullMapInterval).
+			Msg("incremental netmap enabled (experimental)")
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -495,6 +515,11 @@ func (h *Headscale) scheduledTasks(ctx context.Context) {
 
 		case <-haHealthChan:
 			haProber.ProbeOnce(ctx, h.Change)
+
+		case <-reconcileChan:
+			if diverged := h.state.ReconcilePeerMaps(); len(diverged) > 0 {
+				h.mapBatcher.SendFullMaps(diverged)
+			}
 		}
 	}
 }

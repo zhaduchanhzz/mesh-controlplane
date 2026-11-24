@@ -123,6 +123,9 @@ type NodeStore struct {
 	// (P00d, tuning.incremental_netmap). Set before Start: the writer
 	// reads it without a lock.
 	incPeers IncrementalPeersFunc
+	// fullPeers, when set, is the full build reconciliation compares with
+	// (P00d); see [NodeStore.SetReconcilePeers].
+	fullPeers peerBuilder
 	// reservedLabel reports labels held outside the NodeStore; nil reserves
 	// none. Set before Start: the writer reads it without a lock.
 	reservedLabel func(string) bool
@@ -279,6 +282,8 @@ type work struct {
 	// pre, when non-nil, receives each updated node as it was before its
 	// update function ran.
 	pre map[types.NodeID]types.NodeView
+	// For reconcilePeerMaps (P00d).
+	reconcileResult chan ReconcileResult
 }
 
 // updateChanges reports whether an in-place update moved a peer-visibility
@@ -544,7 +549,7 @@ func (s *NodeStore) processWrite() {
 			// A peer-map rebuild is applied at once, with the writes queued
 			// before it, in order: its caller (a user or policy change)
 			// waits for it and gains nothing from the batch wait.
-			if len(batch) >= s.batchSize || w.op == rebuildPeerMaps {
+			if len(batch) >= s.batchSize || w.op == rebuildPeerMaps || w.op == reconcilePeerMaps {
 				s.applyBatch(batch)
 				batch = batch[:0]
 
@@ -607,6 +612,8 @@ func (s *NodeStore) applyBatch(batch []work) {
 	touched := make(map[types.NodeID]bool)
 
 	var joined, removed []types.NodeID
+
+	reconcile := false
 
 	for i := range batch {
 		w := &batch[i]
@@ -706,6 +713,9 @@ func (s *NodeStore) applyBatch(batch []work) {
 			nodeSetOnly = false
 			relationChanged = true
 			electionChanged = true
+		case reconcilePeerMaps:
+			// Checked against the snapshot this batch publishes, below.
+			reconcile = true
 		}
 	}
 
@@ -725,6 +735,12 @@ func (s *NodeStore) applyBatch(batch []work) {
 	}
 
 	newSnap := snapshotFromNodesWith(nodes, build, prev, !relationChanged, !electionChanged)
+
+	var reconciled ReconcileResult
+	if reconcile {
+		reconciled = s.reconcileSnapshot(&newSnap)
+	}
+
 	s.data.Store(&newSnap)
 
 	switch {
@@ -753,6 +769,14 @@ func (s *NodeStore) applyBatch(batch []work) {
 
 		if w.op == rebuildPeerMaps {
 			close(w.rebuildResult)
+
+			continue
+		}
+
+		if w.op == reconcilePeerMaps {
+			w.reconcileResult <- reconciled
+
+			close(w.reconcileResult)
 
 			continue
 		}
