@@ -37,3 +37,18 @@ Binary: cluster sha256 `cde8c6904e5d89c1…`, `mesh-bootstrap` `3b1821814b5699bd
 - Một PostgreSQL, một PgBouncer, không HA (P13): chưa kiểm failover, kill PgBouncer giữa tải, self-check cấu hình pooler khi khởi động (ADR 0006 §5).
 - Không đo hiệu năng trong lần này (E2E chức năng); số đo PgBouncer có ở `evidence/P14-db-benchmarks.md`.
 - Unit test tầng DB đã chạy trên PostgreSQL từ trước (P03b, P06, P10c); đây là lần đầu cả cluster + client thật chạy trên PostgreSQL qua PgBouncer.
+
+## Cập nhật: PostgreSQL cố định trên mc-db (2026-11-24, chủ dự án duyệt)
+
+- **VM `mc-db`** (VMID 7704, 192.168.1.243, 4 vCPU / 8 GiB / 60 GB, pool `meshcontrol-lab`): root OpenTofu riêng `infra/lab/db` (state riêng, vì state của `infra/lab` không có trên máy chạy). `tofu fmt`/`validate` exit 0; plan: `2 to add, 0 to change, 0 to destroy` (snippet `mc-db-user-data.yaml`, VM 7704); `check-plan.py`: "In lab scope"; apply đúng file plan, exit 0.
+- **`infra/lab/db/setup-db.sh`** (chạy lại được): PostgreSQL 16.16 (volume `mc-pg-data`, SCRAM cho kết nối mạng, socket nội bộ container trust) + PgBouncer 1.24.1 (transaction, `max_prepared_statements = 200`, database wildcard) trên `192.168.1.243:6432`; database lâu dài `meshlab`. Mật khẩu qua stdin, lưu trong `/opt/mc-db` (0700) và `%USERPROFILE%\.mesh-lab\mc-db.env` (ACL chỉ người dùng hiện tại). Lần cài đầu dùng `--auth=scram-sha-256` cho cả socket nội bộ nên bước tạo role thất bại; volume khi đó mới tạo, chưa có dữ liệu, được xóa và tạo lại với `--auth-local=trust`.
+- **Harness:** `DB=postgres` tạo database `e2e_<run>` (owner `headscale`) trên mc-db và xóa khi cleanup (chỉ tên dạng `e2e_[0-9a-z]+`, nên không bao giờ đụng `meshlab`); `DB=pgcontainer` giữ cách container tạm (`pg.sh`).
+
+| Lần | Kết quả | Database | Artifact (không commit) |
+|---|---|---|---|
+| 1 | **29/29 PASS**, cleanup_ok=1, 0 key chưa redact | `e2e_20261124t125103z`, đã xóa | `artifacts/605b30c/P05/e2e-20261124T125103Z` |
+| 2 | **29/29 PASS**, cleanup_ok=1, 0 key chưa redact | `e2e_20261124t125949z`, đã xóa | `artifacts/605b30c/P05/e2e-20261124T125949Z` |
+
+Sau hai lần chạy, mc-db chỉ còn database `meshlab`.
+
+**Phân loại DB theo loại test:** DB cố định `meshlab` cho lab giai đoạn 2, thử tay và test dài (dữ liệu tích lũy, migration chạy dần); E2E P05 dùng database riêng mỗi lần (harness có slug cố định, chuyển cluster, DELETING terminal, nên chạy lại trên cùng DB sẽ hỏng); unit test và servertest tự tạo DB tạm; benchmark dùng snapshot.
