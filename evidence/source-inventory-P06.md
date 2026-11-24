@@ -36,7 +36,18 @@ Kiểm chứng trực tiếp (không chỉ qua báo cáo của agent đọc ngu�
 `servertest/cluster_p05_test.go`: `TestClusterTwoTailnetsPeersIsolated`, `TestClusterAuthKeyPicksTailnet`, `TestClusterSameMachineKeyTwoTailnets`, `TestClusterSessionCannotSwitchTenant`, `TestClusterOverlapAndConfigIndependence` (names/IPAM, policy change A↔B im lặng, rename), `TestClusterRefusesForeignOrInactiveTailnet`; `tenant_default_deny_test.go`; `p08a_apiv2_tailnet_scope_test.go`; `cluster_p10_test.go`.
 **Chưa có** test xuyên tailnet cho: route/exit node/HA trùng CIDR, auto-approver, policy derpMap, extra_records, chứng chỉ/`set-dns` trùng tên, tag trùng tên ở A và B.
 
-## 4. Đề xuất (chờ chủ dự án)
+## 4a. Quyết định của chủ dự án (2026-11-24)
+
+- **Q1 → base domain theo tailnet** (không phải từ chối certificates): tên MagicDNS của node trong tailnet `slug` là `<node>.<slug>.<base_domain cluster>`; `CertDomain` theo đó nên tên chứng chỉ không trùng giữa hai tailnet.
+- **Q2/Q4 → DNS theo tailnet ngay trong P06:** mỗi tailnet có cấu hình DNS riêng (nameservers, search domains, split DNS, extra_records, MagicDNS bật/tắt) lưu trong DB; không còn đối tượng DNS dùng chung giữa các runtime (đồng thời bỏ race `StartDNS`).
+- **Q3 → thêm migration** unique `(tailnet_id, ipv4)` / `(tailnet_id, ipv6)`.
+
+Thiết kế cụ thể (bảng/cột, cách nạp lại khi đổi, API/CLI ghi, phần config file còn dùng làm mặc định) sẽ được ghi thành ADR 0008 trước khi viết code (AGENTS: thay đổi thiết kế → ADR). Phác thảo:
+- Cột mới trên `tailnets`: `dns_config` (JSON đã validate, NULL = mặc định của cluster) và `dns_revision`; ghi qua CLI cluster `tailnet dns --slug … --file …` (operator) và API v2 scoped theo tailnet nếu ADR chốt; `Cluster.reconcile` nạp lại khi `dns_revision` đổi, như `policy_revision` (P10).
+- Mỗi runtime nhận một bản `Config` riêng (sao chép phần DNS) dựng trong `Cluster.load`: `BaseDomain = <slug>.<base>`, nameservers/extra_records từ DB; `StartDNS` chạy trên bản riêng nên không còn gán đè con trỏ dùng chung.
+- extra_records trong file config của cluster: không áp cho tenant (hoặc chỉ là mặc định), ADR chốt.
+
+## 4. Đề xuất ban đầu (đã được chốt ở §4a)
 
 - **Q1 [Đề xuất] Chứng chỉ node trong cluster mode:** từ chối khởi động khi `dns.certificates.enabled` ở cluster mode (fail closed, giống OIDC/embedded DERP), cho tới khi có DNS theo tailnet. Phương án khác: base domain theo tailnet (`<slug>.<base>`), lớn hơn và đổi tên MagicDNS của client.
 - **Q2 [Đề xuất] `StartDNS`:** gọi một lần ở `NewCluster`; `newHeadscale` không gọi lại khi config đã có DNS sống; một `ExtraRecordsManager` cho cả cluster. Test race: nạp nóng runtime trong lúc mapper đọc DNS.
