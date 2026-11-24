@@ -1,6 +1,6 @@
 # PR P00d Evidence — source inventory: netmap tăng dần sau công tắc mặc định OFF
 
-- **Trạng thái:** `Planned`. File này chỉ là inventory: chưa đổi code, chưa chạy test. Các mục đánh dấu **[Đề xuất]** là đề xuất chờ chủ dự án chốt, **chưa** phải quyết định.
+- **Trạng thái:** `Verified` (unit/property/race + E2E M06 với client thật, xem §8–§9); chưa `Reviewed`. **Công tắc vẫn mặc định OFF**; không bật ở môi trường nào trước review bảo mật. §2–§7 là inventory ban đầu tại `3269688`.
 - **Nhánh:** `feat/P00d-incremental-netmap`.
 - **Ticket / ADR:** `tickets/P00d.md`; ADR 0005 §"Netmap tăng dần" (biện pháp 1–5) và quyết định 3; ADR 0007 §1 (runtime theo tailnet); `06-tests-benchmarks.md` §1c (M01–M06); PLAN dòng 72, 272, 278, 290–291.
 
@@ -9,7 +9,7 @@
 | | Commit |
 |---|---|
 | Before (inventory đọc trên) | `3269688e` (= `master`, đã có merge P00c `37f8f2c`: `BuildPeerMap` có index, NodeStore flush khi rebuild và nhả writer theo thứ tự hàng đợi) |
-| After | chưa có (chưa có commit code) |
+| After | `b286668` (nhánh `feat/P00d-incremental-netmap`, rebase lên `master` `d678618`) |
 
 Đọc bằng `git`/`grep`/`sed` trên working tree sạch tại `3269688`. Không chạy `go test`, không chạm lab.
 
@@ -327,22 +327,100 @@ Lưu ý phạm vi: với allow_all, mọi node đều "bị ảnh hưởng" bở
 
 ## 8. Tests + lệnh + exit code
 
-Chưa chạy (inventory). Lệnh dự kiến theo ticket:
-`go test ./hscontrol/state/... ./hscontrol/policy/... ./hscontrol/mapper/... -count=1`, `CGO_ENABLED=1 go test -race ...` trên `mc-ci`, `-rapid.checks` và seed ghi trong evidence.
+Mọi lệnh chạy trên `mc-ci` (go1.27.4 linux/amd64), cây đồng bộ bằng bundle từ worktree `wt-p00d`.
+
+### 8.1 Commit theo bước (§5.4)
+| Bước | Commit | Nội dung |
+|---|---|---|
+| 2 | `de96b62` | `tuning.incremental_netmap` (enabled=false, reconcile 1m ≥ 10s, full map 15m ≥ 1m); docs/nix sinh lại |
+| 3 | `42c2a5e` | M05 golden: chuỗi change + frame từng node, batcher chạy tick bằng tay; tất định qua 5 lần `-race` |
+| 4 | `307ad92` | PolicyManager: `rulesGen`, `RulesGeneration`, `BuildPeerMapGen`, `IncrementalPeerMap`, `WithLocalNodeChanges`; "cục bộ" = global filter, không deny-all/SSH/nodeAttrs/relay/via/capability internet, hash không đổi, chỉ thêm/bớt node không phục vụ route |
+| 5–7 | `1e62197` | NodeStore: batch chỉ gồm node mới/xóa → vá adjacency (snapshot giữ `rulesGen`, metric `peers="incremental"`); State: join cục bộ → `NodeAdded`, xóa cục bộ → chỉ removal (Q1) |
+| 8–10 | `2142a67` | Đối chiếu trên writer (`reconcilePeerMaps`, metric `nodestore_netmap_divergence_total{kind}`, log chỉ số lượng), `Batcher.SendFullMaps` (không dùng `FullSelf` qua AddWork, S1), removal theo `lastSentPeers`/`partialPeers` (R5), full map định kỳ chia 60 phần |
+| harness | `2fde828`, `abff625`, `b286668` | capload `INCREMENTAL`, `MAX_PEER_ENTRIES`; E2E M06 `infra/lab/e2e/p00d/run.sh` |
+
+### 8.2 Test chính
+| Test | Kiểm | Kết quả |
+|---|---|---|
+| `TestNetmapGoldenIncrementalOff` (M05) | công tắc OFF: change + frame khớp golden; golden chỉ được nối thêm khi mở rộng kịch bản | pass, tất định ×5 `-race` |
+| `TestNetmapGoldenIncrementalOn` | mô hình client dựng từ frame = adjacency server sau **mọi** bước, ON và OFF; hai chế độ cho cùng tập peer ở mọi bước; join allow-all = `peers` (1 peer), xóa = chỉ removal, join đổi filter / xóa router primary / autogroup:self = `policy` | pass |
+| `TestIncrementalPeerMapMatchesFullBuild` (M01 policy, rapid 5000) | cục bộ ⇔ patch được nhận; patch = full build (ISOLATION báo trước); node ở lại giữ filter, SSH, capability | pass; 262 lần cục bộ, 4738 lần từ chối |
+| `TestNodeStoreIncrementalAdjacencyMatchesFullBuild` (M01 NodeStore, 6 policy × tenant) | join/xóa/burst đồng thời có ghi relation, tag/route/online, đổi policy kể cả join giữa `SetPolicy` và rebuild (R4); snapshot cũ không đổi | pass; 2 083 lần dựng tăng dần được kiểm |
+| `TestNodeStoreIncrementalPolicyChangeAlwaysFull` (M02) | đổi policy, đổi user, rebuild → luôn full | pass |
+| `TestNodeStoreReconcileReplacesDivergence`, `TestReconcileReplacesDivergedAdjacency` (M03) | lệch tiêm vào (extra + missing) được phát hiện, đếm, thay bằng full build; chỉ hai node lệch nhận full map, peer thừa bị gỡ khỏi client | pass |
+| `TestRemovalReachesNodesTheAdjacencyMissed`, `TestRemovalSurvivesFullPendingQueue` (M04) | removal tới node mà adjacency bỏ sót; hàng đợi tràn gộp thành full map vẫn gỡ peer | pass |
+| `TestFullMapRefreshCoversEveryNode` | mỗi node một full map trong một chu kỳ, chia đều | pass |
+
+### 8.3 Mutation (bản sao tạm trên mc-ci, không commit)
+| Mutation | Bị bắt bởi |
+|---|---|
+| M1 bỏ lọc khi xóa | ISOLATION (policy rapid) |
+| M2 bỏ same-user khi join | Not equal (policy rapid) |
+| M3 coi SSH là cục bộ | SSH policy đổi (policy rapid) |
+| M4 cho router join/xóa cục bộ | "removing a primary router is a policy change" (golden ON) |
+| M5 bỏ qua filter đổi | Not equal (policy rapid) |
+| M7 đổi thuộc tính node có sẵn coi là cục bộ | ISOLATION (policy rapid, có retag) |
+| R1 tắt removal theo `lastSentPeers` | ISOLATION (`TestRemovalReachesNodesTheAdjacencyMissed`) |
+| R2 đối chiếu không thay adjacency | 2 test M03 |
+| R3 `SendFullMaps` không làm gì | ISOLATION (M03) + refresh |
+| R4 chia phần full map sai | refresh |
+| M6 nodeAttrs coi là cục bộ | **không bắt**: điều kiện thận trọng, nodeAttrs không đổi capability của node khác |
+| N1–N3 (kiểm ở NodeStore) | **không bắt**: tầng policy kiểm lại mọi điều kiện (generation, node đã có peer, đổi thuộc tính → `rulesGen` tăng); kiểm ở NodeStore là lớp thứ hai |
+
+### 8.4 Lệnh và exit code
+| Lệnh | Exit |
+|---|---:|
+| `go build ./... && go vet` các package đổi; `gofmt -l` (chỉ còn `node_store_test.go`, lỗi có từ trước) | 0 |
+| `go test -count=1 ./hscontrol/state/... ./hscontrol/policy/... ./hscontrol/mapper/... ./hscontrol/types/... ./hscontrol/config/...` | 0 |
+| `go test -race -count=1 -timeout 150m ./...` (2096 s) | 1: 40 package ok; `servertest` fail ở `TestAPIv2` (thiếu `tscli`, môi trường) và `TestPolicyChanges/multiple_policy_changes` (timeout 10 s khi máy tải 19) |
+| `go test -race -count=5 -run TestPolicyChanges ./hscontrol/servertest/` | 0 (công tắc OFF, đường mà golden M05 chứng minh không đổi) |
+| `nix shell … tscli opentofu -c go test -race -run '^(TestAPIv2\|TestAPIv2OAuthScopes)$' ./hscontrol/servertest/` | 0 |
+| `go test -race -count=1 -tags p05cluster -run 'Cluster\|P05\|P10' ./hscontrol/servertest/` | 0 (137 s) |
 
 ## 9. E2E / negative isolation / migration / benchmark
 
-- E2E M06: chưa chạy.
-- Negative tenant isolation: chưa có code mới. P07 phải chạy lại M01/M03 với nhiều runtime.
-- DB migration: không có (P00d không đổi schema).
-- Benchmark: chưa có; before = P00c trên `master` (số đo P00c §6 vẫn là cây trước port).
+### 9.1 M06 với client thật
+`infra/lab/e2e/p00d/run.sh`: `headscale serve` một tailnet trên mc-cp (đường public `c1.cp.gta5web.online:8443` qua VPS + WireGuard, POC tạm dừng và được khôi phục), client `tailscale/tailscale:v1.104.7` trên mc-ci, binary `b286668` sha256 `b15c75d3cc9be9cd…`. reconcile_interval = full_map_interval = 1 h, nên removal phải đi đường delta/policy. Thời gian tính từ lúc API trả về tới lúc `tailscale status --json` của client không còn peer (poll ~0,2 s qua ssh, nên là cận trên).
+
+| Kịch bản (5 vòng) | ON p50 / max | OFF p50 / max |
+|---|---|---|
+| revoke (xóa node), client m1 | 0,38 / 1,03 s | 0,39 / 1,01 s |
+| revoke, client m2 | 0,83 / 1,44 s | 0,84 / 1,44 s |
+| userdel (xóa node rồi user) | 0,99 / 1,02 s | 0,37 / 1,05 s |
+| policy chặn | 1,00 / 1,04 s | 0,38 / 0,77 s |
+| join (đối chứng) | 4,0–5,2 s | 3,9–5,3 s |
+
+Kết quả: `0 FAIL`, `cleanup_ok=1` cả hai lần; ON: 23 lần dựng tăng dần, OFF: 0; không có divergence trong log; 0 file artifact chứa key chưa redact. Artifact (không commit, `artifacts/` bị ignore): `artifacts/b286668/P00d/m06-inc1-20261124T073427Z`, `…/m06-inc0-20261124T073634Z`.
+Lần chạy đầu (`m06-inc1-20261124T073154Z`, binary cùng nội dung) **không được tính**: harness báo exit 0 với verdict rỗng vì `python3` trên runner Windows là alias Store; đã sửa (`b286668`: chạy thử interpreter, verdict thiếu = FAIL).
+
+### 9.2 Benchmark server-only (mc-bench 8 vCPU/24 GiB, tải mc-ci, một mẫu mỗi ô, binary `2fde828`)
+| Ô | Pha kết nối | Đăng ký 500 node | RSS đỉnh |
+|---|---|---|---:|
+| 10k isolated, ON | 10 000 / 72,1 s | **500 / 18,5 s, 28,6 MB gửi** | 2,8 GB |
+| 10k isolated, OFF | 10 000 / 75,7 s | 500 / 28,8 s, 289,5 MB | 2,9 GB |
+| 10k personal_devices, ON | 10 000 / 77,5 s | 500 / 38,8 s | 2,9 GB |
+| 10k personal_devices, OFF | 10 000 / 84,0 s | 500 / 41,9 s | 2,8 GB |
+| 5k personal_devices, ON | 5 000 / 18,6 s | 500 / 13,9 s | 1,6 GB |
+| 5k allow_all, ON (`max_peer_entries` 0) | 5 000 / 365,6 s, 9,17 GB | 500 / 60,5 s, 1,50 GB | 13,2 GB |
+| 5k allow_all, OFF (`max_peer_entries` 0) | 5 000 / 367,3 s, 9,09 GB | 500 / 62,1 s, 1,63 GB | 12,9 GB |
+
+Nhận xét (số đo, không tuyên bố capacity):
+- isolated: đăng ký nhanh hơn ~36 %, dữ liệu gửi ít hơn ~10 lần.
+- personal_devices (autogroup:self) ngoài phạm vi hẹp Q4: không đổi, đúng dự kiến.
+- allow_all: chi phí chính là map đầu tiên của node mới (5000 peer) và pha kết nối O(n²) byte; P00d không giảm phần này. Với `max_peer_entries` mặc định (1 000 000, P10d), 5k allow_all từ chối mọi node mới; đó là hành vi đúng thiết kế, phải tắt mới đo được.
+
+### 9.3 Khác
+- Negative tenant isolation: P00d làm trên runtime theo tailnet hiện có; P07 chạy lại M01/M03 với nhiều runtime.
+- Migration: không có.
 
 ## 10. Known limitations / security blockers
-
-- Chưa có code; mọi mục §5 là đề xuất.
-- Điều kiện §5.3 mục 3 cần API PolicyManager mới; chưa thiết kế chi tiết.
-- Không bật công tắc ở bất kỳ môi trường nào trước review bảo mật.
+- Công tắc **mặc định OFF**; bật ở bất kỳ môi trường nào cần review bảo mật.
+- Phạm vi hẹp (Q4): autogroup:self, via, router/exit, SSH, nodeAttrs, relay, capability internet luôn full rebuild + `PolicyChange`.
+- Xóa node dưới allow-all vẫn sao chép O(n²) phần tử danh sách peer; chi phí đối chiếu (một full build mỗi `reconcile_interval`) chưa đo ở 10k (R9).
+- M06 chạy trên runtime một tailnet: cluster mode chưa có API vận hành xóa node/user khi đang chạy.
+- Metric divergence cộng dồn mọi runtime (không label tenant, R10).
+- Một mẫu mỗi ô benchmark; `TestPolicyChanges` có thể timeout khi máy tải cao.
 
 ## 11. Reviewer approval
 
-Chưa có.
+Chưa có. Merge theo lệnh chủ dự án ngày 2026-11-24 ("chạy E2E M06 cho P00d rồi merge"); trạng thái `Verified`, chưa `Reviewed`.
