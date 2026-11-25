@@ -132,6 +132,15 @@ ts_start() {
       --state=$TSDIR/tailscaled.state --socket=$TSS --port=41641
     for i in \$(seq 1 40); do sudo /opt/tailscale/$V/tailscale --socket=$TSS status >/dev/null 2>&1; [ \$? -le 1 ] && exit 0; sleep 0.25; done; exit 1"
 }
+# ts_aside IP: park the client's state (its node identity) and start it
+# fresh; ts_back IP: restore the parked state, so the client is again the same
+# node (no duplicate nodes from re-enrolments).
+ts_aside() { vm "$1" "sudo systemctl stop $TSU 2>/dev/null; sudo systemctl reset-failed $TSU 2>/dev/null; sudo rm -rf $TSDIR.keep; sudo mv $TSDIR $TSDIR.keep" && ts_start "$1"; }
+ts_back() {
+  vm "$1" "sudo systemctl stop $TSU 2>/dev/null; sudo systemctl reset-failed $TSU 2>/dev/null; sudo rm -rf $TSDIR; sudo mv $TSDIR.keep $TSDIR
+    sudo systemd-run --quiet --unit=$TSU -p RuntimeDirectory=n1-ts /opt/tailscale/$V/tailscaled --state=$TSDIR/tailscaled.state --socket=$TSS --port=41641
+    for i in \$(seq 1 40); do sudo /opt/tailscale/$V/tailscale --socket=$TSS status >/dev/null 2>&1; [ \$? -le 1 ] && exit 0; sleep 0.25; done; exit 1"
+}
 ts_stop() { vm "$1" "sudo systemctl stop $TSU 2>/dev/null; sudo systemctl reset-failed $TSU 2>/dev/null; sudo rm -rf $TSDIR; true"; }
 ts_up() { # IP URL KEYFILE HOSTNAME
   vm "$1" "sudo timeout 60 /opt/tailscale/$V/tailscale --socket=$TSS up --login-server=$2 --auth-key=file:/dev/stdin --hostname=$4 --accept-dns=false" \
@@ -302,8 +311,13 @@ EOF
   cli c1 "register --class shared --max-devices 5000 >/dev/null" || return 1
   cli c2 "register --class shared --max-devices 5000 >/dev/null" || return 1
   local s pf=/var/lib/headscale/cluster/n1-policy.hujson
-  for s in a b; do cli c1 "tailnet create --slug $s >/dev/null && $CLI1 tailnet status --slug $s --set ACTIVE" || return 1; done
-  cli c2 "tailnet create --slug c >/dev/null && $CLI2 tailnet status --slug c --set ACTIVE" || return 1
+  for s in a b; do
+    cli c1 "tailnet create --slug $s" | py 'import json; print(json.load(sys.stdin)["id"])' | strip_cr >"$TMPD/id-$s" || return 1
+    cli c1 "tailnet status --slug $s --set ACTIVE" >/dev/null || return 1
+  done
+  cli c2 "tailnet create --slug c" | py 'import json; print(json.load(sys.stdin)["id"])' | strip_cr >"$TMPD/id-c" || return 1
+  cli c2 "tailnet status --slug c --set ACTIVE" >/dev/null || return 1
+  [ -s "$TMPD/id-a" ] && [ -s "$TMPD/id-b" ] || return 1
   # A: grants form; B and C: legacy acls (both policy forms in N1).
   set_policy a '{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}' || return 1
   set_policy b '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}' || return 1

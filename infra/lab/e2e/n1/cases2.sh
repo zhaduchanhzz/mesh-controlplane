@@ -64,13 +64,13 @@ t_s08() {
 t_s10() {
   local p="" r=0
   # A key at c2 (another cluster) and C's key at c1: refused, no node.
-  ts_start $B2 >/dev/null 2>&1 || true
+  ts_aside $B2 >/dev/null 2>&1 || p="$p; park b2"
   r=0; ts_up $B2 "$URL2" "$TMPD/key-a" n1-x1 || r=$?; [ $r != 0 ] || p="$p; key of a accepted at c2"
   ts_start $B2 >/dev/null 2>&1 || true
   r=0; ts_up $B2 "$URL1" "$TMPD/key-c" n1-x2 || r=$?; [ $r != 0 ] || p="$p; key of c accepted at c1"
   [ -z "$(node_id c1 a n1-x1)$(node_id c1 b n1-x2)" ] || p="$p; a node was created"
-  ts_start $B2 >/dev/null 2>&1; r=0; ts_up $B2 "$URL1" "$TMPD/key-b" n1-b2 || r=$?; [ $r = 0 ] || p="$p; b2 back rc=$r"
-  wait_peers $B1 n1-b2 40 || p="$p; b1 online peers [$(peers $B1)]"
+  ts_back $B2 >/dev/null 2>&1 || p="$p; b2 back"
+  wait_peers $B1 n1-b2 40 || p="$p; b1 peers [$(peers $B1)]"
   [ -z "$p" ] && record S10 PASS "key of a at c2 and key of c at c1 refused, no node; b2 re-enrolled" || record S10 FAIL "${p#; }"
 }
 
@@ -180,11 +180,11 @@ t_s18() {
   kid=$(cli c1 "tailnet authkey --slug b --user n1-b-rev --reusable --expiration 30m" | tee "$TMPD/rev.json" | py 'import json; print(json.load(sys.stdin).get("id",""))' | strip_cr)
   py 'import json; print(json.load(open(sys.argv[1]))["key"])' "$TMPD/rev.json" | strip_cr >"$TMPD/key-rev"; rm -f "$TMPD/rev.json"
   cli c1 "tailnet authkey-revoke --slug b --id $kid" >/dev/null 2>&1 || p="$p; revoke failed"
-  ts_start $B2 >/dev/null 2>&1; r=0; ts_up $B2 "$URL1" "$TMPD/key-rev" n1-rev || r=$?
+  ts_aside $B2 >/dev/null 2>&1; r=0; ts_up $B2 "$URL1" "$TMPD/key-rev" n1-rev || r=$?
   [ $r != 0 ] || p="$p; revoked key enrolled"
   [ -z "$(node_id c1 b n1-rev)" ] || p="$p; node from a revoked key"
-  # Delete b2's node: it does not come back with its old identity.
-  ts_start $B2 >/dev/null 2>&1; r=0; ts_up $B2 "$URL1" "$TMPD/key-b" n1-b2 || r=$?
+  # Delete b2's own node: it does not come back with its old identity.
+  ts_back $B2 >/dev/null 2>&1
   wait_peers $B1 n1-b2 40 || p="$p; b2 not back before delete"
   local idb2; idb2=$(node_id c1 b n1-b2)
   live c1 node delete --slug b --id "$idb2" >>"$ART_DIR/logs/s18.log" 2>&1 || p="$p; delete b2"
@@ -198,17 +198,18 @@ t_s18() {
 # ON and OFF): delete a node, block by policy, restore.
 t_m06() {
   local p="" t0 t1 ida bound=10
-  ts_start $A2 >/dev/null 2>&1; ts_up $A2 "$URL1" "$TMPD/key-a" n1-a2m >/dev/null 2>&1
-  wait_peers $A1 n1-a2m 40 || p="$p; a2m not seen"
+  ts_aside $A2 >/dev/null 2>&1; ts_up $A2 "$URL1" "$TMPD/key-a" n1-a2m >/dev/null 2>&1
+  local i; for i in $(seq 1 40); do grep -qw n1-a2m <<<"$(peers $A1)" && break; sleep 1; done
+  grep -qw n1-a2m <<<"$(peers $A1)" || p="$p; a2m not seen"
   ida=$(node_id c1 a n1-a2m); t0=$(now_ms)
-  live c1 node delete --slug a --id "$ida" >>"$ART_DIR/logs/m06.log" 2>&1 || p="$p; delete"
-  local i; for i in $(seq 1 $((bound * 4))); do [ -z "$(peers $A1)" ] && break; sleep 0.25; done
-  t1=$(now_ms); [ -z "$(peers $A1)" ] || p="$p; a1 still sees [$(peers $A1)] after ${bound}s"
-  printf 'M06 %s delete->gone %d ms\n' "$MODE" $((t1 - t0)) >>"$ART_DIR/timings.txt"
-  ts_start $A2 >/dev/null 2>&1; ts_up $A2 "$URL1" "$TMPD/key-a" n1-a2 >/dev/null 2>&1
-  wait_peers $A1 n1-a2 40 || p="$p; a2 back"
+  live c1 node delete --slug a --id "$ida" >>"$ART_DIR/logs/m06.log" 2>&1 || p="$p; delete [$ida]"
+  while [ $(( $(now_ms) - t0 )) -lt $((bound * 1000)) ]; do grep -qw n1-a2m <<<"$(peers $A1)" || break; sleep 0.2; done
+  t1=$(now_ms); grep -qw n1-a2m <<<"$(peers $A1)" && p="$p; a1 still sees n1-a2m after ${bound}s"
+  printf 'M06 %s delete->gone %d ms (includes the ssh round trip of each poll)\n' "$MODE" $((t1 - t0)) >>"$ART_DIR/timings.txt"
+  ts_back $A2 >/dev/null 2>&1
+  wait_peers $A1 n1-a2 40 || p="$p; a2 back [$(peers $A1)]"
   t0=$(now_ms); set_policy a '{"grants":[]}' || p="$p; block policy"
-  for i in $(seq 1 $((bound * 4))); do [ -z "$(peers $A1)" ] && break; sleep 0.25; done
+  while [ $(( $(now_ms) - t0 )) -lt $((bound * 1000)) ]; do [ -z "$(peers $A1)" ] && break; sleep 0.2; done
   t1=$(now_ms); [ -z "$(peers $A1)" ] || p="$p; policy block not applied in ${bound}s"
   printf 'M06 %s policy-block->gone %d ms\n' "$MODE" $((t1 - t0)) >>"$ART_DIR/timings.txt"
   set_policy a '{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}'; wait_peers $A1 n1-a2 40 || p="$p; a2 not back after restore"
