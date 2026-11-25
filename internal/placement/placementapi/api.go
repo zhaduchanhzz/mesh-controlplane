@@ -70,18 +70,18 @@ type handlers struct{ reg *placement.Registry }
 
 // TailnetView is a tailnet as the API returns it.
 type TailnetView struct {
-	ID             string    `json:"id"`
-	Slug           string    `json:"slug"`
-	Status         string    `json:"status"`
-	OwnerClusterID string    `json:"owner_cluster_id"`
-	OwnerEpoch     uint64    `json:"owner_epoch"`
-	PolicyRevision uint64    `json:"policy_revision"`
-	ConfigRevision uint64    `json:"config_revision"`
-	Devices        *int64    `json:"devices,omitempty"`
+	ID             string `json:"id"`
+	Slug           string `json:"slug"`
+	Status         string `json:"status"`
+	OwnerClusterID string `json:"owner_cluster_id"`
+	OwnerEpoch     uint64 `json:"owner_epoch"`
+	PolicyRevision uint64 `json:"policy_revision"`
+	ConfigRevision uint64 `json:"config_revision"`
+	Devices        *int64 `json:"devices,omitempty"`
 	// MovingToClusterID is the target of a pending move (ADR 0010).
-	MovingToClusterID *string `json:"moving_to_cluster_id,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	MovingToClusterID *string   `json:"moving_to_cluster_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 func view(tn types.Tailnet) TailnetView {
