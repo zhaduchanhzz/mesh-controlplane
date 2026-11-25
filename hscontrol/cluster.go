@@ -1058,6 +1058,21 @@ func (c *Cluster) Serve(ctx context.Context) error {
 		log.Info().Msgf("cluster metrics (operators only) on %s", mln.Addr())
 	}
 
+	// P08b: live operator administration, on the unix socket only.
+	var adminSrv *http.Server
+
+	if c.cfg.UnixSocket != "" {
+		aln, err := listenAdminSocket(c.cfg)
+		if err != nil {
+			return err
+		}
+
+		adminSrv = &http.Server{Handler: c.AdminHandler(), ReadTimeout: types.HTTPTimeout}
+
+		errorGroup.Go(serveHTTP(adminSrv, aln))
+		log.Info().Msgf("cluster admin API (operators only) on unix socket %s", c.cfg.UnixSocket)
+	}
+
 	log.Info().
 		Str("cluster", c.platform.ClusterID()).
 		Str("holder", c.lease.Holder()).
@@ -1099,6 +1114,12 @@ func (c *Cluster) Serve(ctx context.Context) error {
 		if metricsSrv != nil {
 			if err := metricsSrv.Shutdown(shutdownCtx); err != nil { //nolint:noinlineerr
 				log.Error().Err(err).Msg("shutting down cluster metrics server")
+			}
+		}
+
+		if adminSrv != nil {
+			if err := adminSrv.Shutdown(shutdownCtx); err != nil { //nolint:noinlineerr
+				log.Error().Err(err).Msg("shutting down cluster admin socket")
 			}
 		}
 
