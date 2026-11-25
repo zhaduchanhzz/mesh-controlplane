@@ -113,13 +113,12 @@ func (r *Registry) insertTailnet(tx *gorm.DB, slug, owner string) (types.Tailnet
 // names (CLI `cluster --cluster-id X tailnet create`, P12 owner decision
 // Q5), in one transaction like CreateTailnet, under the same rules as
 // placement except the choice: the cluster must be registered (else
-// ErrNotFound: the CLI cannot make R1) and ACTIVE, a dedicated cluster
+// ErrNotFound: the CLI cannot make R1) and ACTIVE, with a process
+// holding its lease (ErrNoLiveLease joined with ErrNoCapacity; owner
+// decision 2026-11-25, as Q2 for automatic placement), a dedicated cluster
 // must own no other live tailnet (R8) and a shared one must have room
-// (ErrNoCapacity). A live cluster lease is NOT required: the operator
-// names the cluster and may create its tailnets before its process first
-// starts; only the automatic choice (CreateTailnet) skips clusters without
-// one (Q2). A cluster left without a process shows up as R4/R5 in
-// Reconcile.
+// (ErrNoCapacity). So a cluster's process must run before its tailnets
+// are created.
 func (r *Registry) CreateTailnetOn(ctx context.Context, op Op, slug, clusterID string) (types.Tailnet, error) {
 	if !slugRE.MatchString(slug) {
 		return types.Tailnet{}, fmt.Errorf("%w: slug %q", ErrInvalid, slug)
@@ -153,12 +152,26 @@ func (r *Registry) CreateTailnetOn(ctx context.Context, op Op, slug, clusterID s
 
 // admits reports whether cluster c can take a tailnet, not counting
 // tailnet except: c is ACTIVE and a dedicated c owns no other live
-// tailnet; with room, c's live devices plus devices (the tailnet's; 0 for
-// a new one, which needs room for one) stay within max_devices. The caller
-// holds c's row lock. Failures are ErrNoCapacity.
-func admits(tx *gorm.DB, c Cluster, except string, devices int64, room bool) error {
+// tailnet. With load (a new tailnet, or one moving in from another
+// cluster) c must also have a process holding a live lease (owner decision
+// 2026-11-25: nothing is created or moved where nothing serves it) and
+// room: c's live devices plus devices (the tailnet's; 0 for a new one,
+// which needs room for one) stay within max_devices. The caller holds c's
+// row lock. Failures are ErrNoCapacity (with ErrNoLiveLease for the lease).
+func admits(tx *gorm.DB, c Cluster, except string, devices int64, load bool) error {
 	if c.State != ClusterActive {
 		return fmt.Errorf("%w: cluster %s is %s", ErrNoCapacity, c.ID, c.State)
+	}
+
+	if load {
+		live, err := liveLeases(tx)
+		if err != nil {
+			return err
+		}
+
+		if !live[c.ID] {
+			return fmt.Errorf("%w: %w: cluster %s", ErrNoCapacity, ErrNoLiveLease, c.ID)
+		}
 	}
 
 	var u usageRow
@@ -175,7 +188,7 @@ func admits(tx *gorm.DB, c Cluster, except string, devices int64, room bool) err
 		return fmt.Errorf("%w: dedicated cluster %s is taken", ErrNoCapacity, c.ID)
 	}
 
-	if room && ((devices == 0 && u.Devices >= c.MaxDevices) || u.Devices+devices > c.MaxDevices) {
+	if load && ((devices == 0 && u.Devices >= c.MaxDevices) || u.Devices+devices > c.MaxDevices) {
 		return fmt.Errorf("%w: cluster %s has %d of %d devices", ErrNoCapacity, c.ID, u.Devices, c.MaxDevices)
 	}
 
@@ -274,7 +287,9 @@ func (r *Registry) GetTailnet(ctx context.Context, id string) (TailnetInfo, erro
 //
 // Of concurrent callers with the same (from, epoch) exactly one wins; the
 // others get ErrStaleEpoch and change nothing. toCluster must be registered
-// and ACTIVE; a dedicated one must own no other live tailnet. Moving a
+// and ACTIVE; a dedicated one must own no other live tailnet; another
+// cluster must also hold a live lease and have room for the tailnet's
+// devices (P12, owner decision 2026-11-25). Moving a
 // tenant's clients is P12b (re-bootstrap, new ControlURL, new login).
 func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string, fromEpoch uint64, toCluster string) (types.Tailnet, error) {
 	if fromCluster == "" || toCluster == "" || fromEpoch == 0 {
@@ -304,8 +319,9 @@ func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string,
 				ErrStaleEpoch, id, cur.OwnerClusterID, cur.OwnerEpoch)
 		}
 
-		// Same cluster again (a new epoch) changes no load; another
-		// cluster must have room for the moving devices (P12, Q5; R7).
+		// Same cluster again (a new epoch) changes no load and needs no
+		// lease; another cluster must hold a live lease and have room for
+		// the moving devices (P12, Q5, owner decision 2026-11-25; R7).
 		var moving int64
 
 		if toCluster != fromCluster {

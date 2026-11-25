@@ -450,7 +450,8 @@ func cliOp(cluster string) placement.Op { return placement.Op{Actor: "cli:" + cl
 // createTailnetCLI creates tailnet slug owned by cluster, PENDING with a
 // deny-all policy, through the placement registry (P12, owner decision
 // Q5): cluster must be registered and ACTIVE with room, a dedicated one
-// with no other tailnet. Its process need not run yet.
+// with no other tailnet, and its process must hold the cluster lease
+// (owner decision 2026-11-25): start the cluster before creating tailnets.
 func createTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug string) (types.Tailnet, error) {
 	reg, err := placement.New(p.RegistryDB(), placement.Config{})
 	if err != nil {
@@ -462,8 +463,9 @@ func createTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug string)
 
 // reassignTailnetCLI moves tailnet slug from cluster (its owner) to to at
 // the next owner_epoch through the registry's MoveOwner (Q5): to must be
-// registered and ACTIVE with room for the tailnet's devices; to == cluster
-// is a new epoch on the same cluster.
+// registered and ACTIVE, hold a live lease, with room for the tailnet's
+// devices; to == cluster is a new epoch on the same cluster (no lease
+// check).
 func reassignTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug, to string) (types.Tailnet, error) {
 	tn, err := p.TailnetBySlug(slug)
 	if err != nil {
