@@ -9,7 +9,7 @@ Trạng thái: chủ dự án duyệt (b) và (c) ngày 2026-11-25.
 - `https://c2.cp.gta5web.online:8445/ready` công khai trả 200 (3/3 lần). Backend `mc-c2b` DOWN vì VM chưa có.
 - POC c1 (`a.cp…:8443/health`) vẫn 200.
 
-Chưa áp: (a) VM `mc-c2b` (đang plan) và cấu hình mc-c2b.
+**Đã áp (a) và cấu hình mc-c2b, 2026-11-25 06:22 UTC;** failover F1/F2 đạt, xem `evidence/LAB-stage2b-c2.md`.
 
 ## (a) VM `mc-c2b` — tự áp theo AGENTS rule 3
 
