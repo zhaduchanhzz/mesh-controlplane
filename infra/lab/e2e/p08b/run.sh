@@ -211,8 +211,22 @@ setup() {
        sudo install -o root -g headscale -m 0640 /dev/stdin /etc/headscale/cluster/pg.pass" <"$TMPD/pg.pass" || return 1
   cp_ "sudo install -o root -g headscale -m 0640 /dev/stdin $CFG" <"$TMPD/c1.yaml" || return 1
 
-  log "registry and tailnets a, b (owner $CLUSTER_ID)"
+  # P12 (owner decision 2026-11-25): tailnets are created only on a
+  # registered ACTIVE cluster whose process holds its lease: register, start
+  # the cluster, then create the tailnets live (loaded by its reconcile).
+  log "registry: cluster $CLUSTER_ID"
   cp_ "$HSC register --class shared --max-devices 5000 >/dev/null" || return 1
+
+  log "cluster process (transient unit, admin socket in /run/headscale-cluster)"
+  local since; since=$(cp_ 'date +%s') || return 1
+  cp_ "sudo systemctl reset-failed $UNIT 2>/dev/null; sudo systemd-run --quiet --unit=$UNIT --uid=headscale --gid=headscale \
+    -p RuntimeDirectory=headscale-cluster -p RuntimeDirectoryMode=0770 \
+    /usr/local/bin/headscale-cluster -c $CFG cluster serve --cluster-id $CLUSTER_ID" || return 1
+  local i
+  for i in $(seq 1 40); do [ "$(curl -s -o /dev/null -w '%{http_code}' -m 3 "$URL/ready")" = 200 ] && break; sleep 1; done
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -m 3 "$URL/ready")" = 200 ] || { log "public /ready not 200"; return 1; }
+
+  log "tailnets a, b (owner $CLUSTER_ID), created while the cluster runs"
   local s pf=/var/lib/headscale/cluster/p08b-policy.hujson
   for s in a b; do cp_ "$HSC tailnet create --slug $s >/dev/null && $HSC tailnet status --slug $s --set ACTIVE >/dev/null" || return 1; done
   printf '%s\n' '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}' \
@@ -225,14 +239,13 @@ setup() {
   TA=$(sql "SELECT id FROM tailnets WHERE slug='a'"); TB=$(sql "SELECT id FROM tailnets WHERE slug='b'")
   [[ $TA =~ ^[0-9a-f-]{36}$ && $TB =~ ^[0-9a-f-]{36}$ ]] || return 1
   log "tailnet a=$TA b=$TB"
-
-  log "cluster process (transient unit, admin socket in /run/headscale-cluster)"
-  cp_ "sudo systemctl reset-failed $UNIT 2>/dev/null; sudo systemd-run --quiet --unit=$UNIT --uid=headscale --gid=headscale \
-    -p RuntimeDirectory=headscale-cluster -p RuntimeDirectoryMode=0770 \
-    /usr/local/bin/headscale-cluster -c $CFG cluster serve --cluster-id $CLUSTER_ID" || return 1
-  local i
-  for i in $(seq 1 40); do [ "$(curl -s -o /dev/null -w '%{http_code}' -m 3 "$URL/ready")" = 200 ] && break; sleep 1; done
-  [ "$(curl -s -o /dev/null -w '%{http_code}' -m 3 "$URL/ready")" = 200 ] || { log "public /ready not 200"; return 1; }
+  local ok=0 jl
+  for i in $(seq 1 30); do
+    jl=$(cp_ "sudo journalctl -u $UNIT --since @$since --no-pager" 2>/dev/null | grep 'loaded tailnet runtime')
+    grep -q 'slug=a' <<<"$jl" && grep -q 'slug=b' <<<"$jl" && { ok=1; break; }
+    sleep 1
+  done
+  [ $ok = 1 ] || { log "tailnets a, b not loaded"; return 1; }
 
   log "mesh-placement on mc-cp loopback (throwaway CA under $PLDIR)"
   cp_ "set -e; sudo install -d -o root -g headscale -m 0751 $PLDIR; cd $PLDIR

@@ -226,9 +226,24 @@ setup() {
     sudo sed -i 's/^    name: .*/    name: $PG_DB/' $CFG
     sudo grep -q '^    name: $PG_DB\$' $CFG" || return 1
 
-  log "registry: register both clusters; tailnets a, c (c1) and b (c2)"
+  # P12 (owner decision 2026-11-25): tailnets are created only on a
+  # registered ACTIVE cluster whose process holds its lease: register and
+  # start both clusters, then create the tailnets live.
+  log "registry: register both clusters"
   cp_ "$HSC1 register --class shared --max-devices 5000 >/dev/null" || return 1
   c2_ "$HSC2 register --class shared --max-devices 5000 >/dev/null" || return 1
+
+  local since1 since2
+  since1=$(cp_ 'date +%s') && since2=$(c2_ 'date +%s') || return 1
+  log "starting both clusters"
+  cp_ "sudo systemctl start headscale-cluster" && c2_ "sudo systemctl start headscale-cluster" || return 1
+  local i h1=000 h2=000
+  for i in $(seq 1 40); do h1=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$C1_URL/ready" || true); h2=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$C2_URL/ready" || true); [ "$h1$h2" = 200200 ] && break; sleep 1; done
+  cp_ "sudo journalctl -u headscale-cluster -b --no-pager -n 30" 2>&1 | redact >"$ART_DIR/logs/c1-start.log"
+  c2_ "sudo journalctl -u headscale-cluster --since -120s --no-pager" 2>&1 | redact >"$ART_DIR/logs/c2-start.log"
+  [ "$h1$h2" = 200200 ] || { log "clusters not healthy (c1=$h1 c2=$h2)"; return 1; }
+
+  log "tailnets a, c (c1) and b (c2), created while the clusters run"
   local s pf1=/var/lib/headscale/cluster-e2e/n2c-policy.hujson pf2=/var/lib/headscale/cluster/n2c-policy.hujson
   local pol='{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}'
   for s in a c; do cp_ "$HSC1 tailnet create --slug $s >/dev/null && $HSC1 tailnet status --slug $s --set ACTIVE" || return 1; done
@@ -241,13 +256,14 @@ setup() {
     chmod 600 "$TMPD/key-$s"; [ -s "$TMPD/key-$s" ] || return 1
   done
 
-  log "starting both clusters"
-  cp_ "sudo systemctl start headscale-cluster" && c2_ "sudo systemctl start headscale-cluster" || return 1
-  local i h1=000 h2=000
-  for i in $(seq 1 40); do h1=$(health "$C1_URL"); h2=$(health "$C2_URL"); [ "$h1$h2" = 200200 ] && break; sleep 1; done
-  cp_ "sudo journalctl -u headscale-cluster -b --no-pager -n 30" 2>&1 | redact >"$ART_DIR/logs/c1-start.log"
-  c2_ "sudo journalctl -u headscale-cluster --since -120s --no-pager" 2>&1 | redact >"$ART_DIR/logs/c2-start.log"
-  [ "$h1$h2" = 200200 ] || { log "clusters not healthy (c1=$h1 c2=$h2)"; return 1; }
+  local ok=0 j1 j2
+  for i in $(seq 1 30); do
+    j1=$(cp_ "sudo journalctl -u headscale-cluster --since @$since1 --no-pager" 2>/dev/null | grep 'loaded tailnet runtime')
+    j2=$(c2_ "sudo journalctl -u headscale-cluster --since @$since2 --no-pager" 2>/dev/null | grep 'loaded tailnet runtime')
+    grep -q 'slug=a' <<<"$j1" && grep -q 'slug=c' <<<"$j1" && grep -q 'slug=b' <<<"$j2" && { ok=1; break; }
+    sleep 1
+  done
+  [ $ok = 1 ] || { log "tailnets not loaded (c1: a, c; c2: b)"; return 1; }
 
   log "bootstrap on mc-cp ($BOOT_URL)"
   scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$BOOT_BIN" "$CP_SSH:/tmp/mesh-bootstrap" || return 1
