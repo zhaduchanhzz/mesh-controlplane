@@ -222,7 +222,7 @@ cleanup() {
     on $n "sudo systemctl kill -s CONT $UNIT 2>/dev/null; sudo systemctl stop $UNIT 2>/dev/null; sudo systemctl reset-failed $UNIT 2>/dev/null; \
       sudo rm -f $CFG $HS; ! sudo test -e $CFG && ! test -e $HS" || { log "$n: run files not removed"; CLEAN_OK=0; }
   done
-  cp_ "for u in $PLUNIT $BOOTUNIT mesh-c1-ha; do sudo systemctl stop \$u 2>/dev/null; sudo systemctl reset-failed \$u 2>/dev/null; done; \
+  cp_ "for u in p12-boot-sampler $PLUNIT $BOOTUNIT mesh-c1-ha; do sudo systemctl stop \$u 2>/dev/null; sudo systemctl reset-failed \$u 2>/dev/null; done; \
        rm -f /dev/shm/p12-boot.body /dev/shm/p12-sampler.sh /dev/shm/p12-boot-codes; sudo rm -rf $PLDIR /etc/haproxy/mesh-c1-p12.cfg /usr/local/bin/mesh-placement-p12 /usr/local/bin/mesh-bootstrap-p12; ! sudo test -e $PLDIR" \
     || { log "mc-cp placement/bootstrap/HAProxy not removed"; CLEAN_OK=0; }
   # mc-c1b keeps no secret of c1 after the run (as P11b).
@@ -528,7 +528,8 @@ t_p10() {
   # Bootstrap is sampled on mc-cp every 100 ms from before the request (the
   # hand-over can take < 1 s; a sample from here takes ~1 s). The request
   # body (key id + SHA-256 proof) stays in a 0600 file in /dev/shm, removed
-  # by the sampler. 80 samples stay within the per-tenant burst (100).
+  # by the sampler (a transient unit: an ssh background job did not run).
+  # 80 samples stay within the per-tenant burst (100).
   local body; body=$(py 'import hashlib,json
 k=open(sys.argv[1]).read().strip()
 i,s=k.split("hskey-auth-",1)[1].split("-",1)
@@ -544,7 +545,7 @@ for i in \$(seq 1 80); do
 done >/dev/shm/p12-boot-codes 2>&1
 rm -f /dev/shm/p12-boot.body /dev/shm/p12-sampler.sh
 EOF
-  cp_ "umask 077; cat >/dev/shm/p12-sampler.sh && nohup setsid bash /dev/shm/p12-sampler.sh >/dev/null 2>&1 </dev/null &" <"$TMPD/sampler.sh" \
+  cp_ "umask 077; cat >/dev/shm/p12-sampler.sh && sudo systemctl reset-failed p12-boot-sampler 2>/dev/null; sudo systemd-run --quiet --unit=p12-boot-sampler --uid=mesh --gid=mesh bash /dev/shm/p12-sampler.sh" <"$TMPD/sampler.sh" \
     || p="$p; sampler start"
   sleep 1
   local since; since=$(date +%s); t0=$(now_ms)
