@@ -435,3 +435,56 @@ func TestOperatorAPIKeys(t *testing.T) {
 	assert.Equal(t, 1, outcomes["RevokeAPIKey/ok"])
 	assert.Equal(t, 1, outcomes["RevokeAPIKey/error"])
 }
+
+// P12 step 2 (Q4): the reconcile report is an operator read: no certificate
+// or a tenant credential is refused; it lists anomalies by id and count
+// only, and reading it changes nothing (no audit entry).
+func TestOperatorReconcile(t *testing.T) {
+	e := newEnv(t)
+	c := e.client(e.opCA.issue(t, "alice", x509.ExtKeyUsageClientAuth, alice))
+	get := call{method: http.MethodGet, path: "/v1/reconcile"}
+
+	code, _ := e.do(t, e.client(), get)
+	assert.Equal(t, http.StatusUnauthorized, code, "no certificate")
+
+	code, _ = e.do(t, e.client(), call{method: http.MethodGet, path: "/v1/reconcile", bearer: "hskey-api-TENANTKEY-secret"})
+	assert.Equal(t, http.StatusForbidden, code, "tenant credential")
+
+	code, _ = e.do(t, e.client(e.opCA.issue(t, alice, x509.ExtKeyUsageClientAuth, mallory)), get)
+	assert.Equal(t, http.StatusForbidden, code, "identity not allowed")
+
+	cluster := map[string]any{"id": "c1", "endpoint_url": "https://c1.cp.example.test:8443", "class": "shared", "state": "ACTIVE", "max_devices": 100}
+	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/clusters", key: "c1", body: cluster})
+	require.Equal(t, http.StatusCreated, code)
+
+	findings := func() []any {
+		t.Helper()
+
+		code, rep := e.do(t, c, get)
+		require.Equal(t, http.StatusOK, code, rep)
+		require.Contains(t, rep, "generated_at")
+
+		f, ok := rep["findings"].([]any)
+		require.True(t, ok, "findings is a list: %v", rep["findings"])
+
+		return f
+	}
+
+	// Registered ACTIVE, no process yet: R5 only.
+	assert.Equal(t, []any{map[string]any{"code": "R5_CLUSTER_ACTIVE_NO_LIVE_LEASE", "cluster_id": "c1"}}, findings())
+
+	// Its process runs, without a registered Noise key: R6 only.
+	e.live(t, "c1")
+	assert.Equal(t, []any{map[string]any{"code": "R6_CLUSTER_NO_NOISE_KEY", "cluster_id": "c1"}}, findings())
+
+	code, _ = e.do(t, c, call{method: http.MethodPatch, path: "/v1/clusters/c1", key: "k1", body: map[string]any{"noise_public_key": "mkey:c1"}})
+	require.Equal(t, http.StatusOK, code)
+	assert.Empty(t, findings(), "clean")
+
+	entries, err := e.reg.AuditLog(t.Context(), 100)
+	require.NoError(t, err)
+
+	for _, a := range entries {
+		assert.NotContains(t, a.Action, "econcile", "a read is not audited as a mutation")
+	}
+}

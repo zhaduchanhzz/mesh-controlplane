@@ -390,9 +390,6 @@ type usageRow struct {
 	Devices   int64
 }
 
-// clusterUsage counts, per owning cluster, live tailnets and their live
-// devices. Raw on purpose: nodes is a tenant table and this is the one
-// cross-tenant read placement makes; it returns counts only.
 // liveLeases returns the clusters whose cluster_leases row has not expired
 // by the database clock (P11b): a process of the cluster holds its lease.
 // A read only; placement never takes or changes a lease.
@@ -417,6 +414,9 @@ func liveLeases(db *gorm.DB) (map[string]bool, error) {
 	return out, nil
 }
 
+// clusterUsage counts, per owning cluster, live tailnets and their live
+// devices. Raw on purpose: nodes is a tenant table and this is the one
+// cross-tenant read placement makes; it returns counts only.
 func clusterUsage(db *gorm.DB) (map[string]usageRow, error) {
 	var rows []usageRow
 

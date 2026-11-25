@@ -203,6 +203,7 @@ type (
 		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
 	}
 	apiKeyOut struct{ Body placement.APIKeyInfo }
+	reconcileOut struct{ Body placement.Report }
 	auditOut  struct {
 		Body struct {
 			Entries []placement.AuditEntry `json:"entries"`
@@ -245,6 +246,8 @@ func register(api huma.API, h *handlers) {
 		Summary: "List the API keys of a tailnet (no secrets)"}, h.listAPIKeys)
 	huma.Register(api, huma.Operation{OperationID: "revokeTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys/{key_id}/revoke", Tags: tag,
 		Summary: "Revoke an API key of the tailnet"}, h.revokeAPIKey)
+	huma.Register(api, huma.Operation{OperationID: "reconcileReport", Method: http.MethodGet, Path: "/v1/reconcile", Tags: tag,
+		Summary: "Cross-cluster anomalies R1-R9 by id and count (read only; nothing is moved)"}, h.reconcile)
 	huma.Register(api, huma.Operation{OperationID: "listAudit", Method: http.MethodGet, Path: "/v1/audit", Tags: tag,
 		Summary: "Newest operator audit entries"}, h.audit)
 }
@@ -298,6 +301,21 @@ func apiError(err error) error {
 	default:
 		return huma.Error500InternalServerError("internal error")
 	}
+}
+
+// reconcile serves the cross-cluster reconcile report (P12, Q4): a read;
+// it neither moves a tailnet nor writes the audit log.
+func (h *handlers) reconcile(ctx context.Context, _ *struct{}) (*reconcileOut, error) {
+	if err := readGuard(ctx); err != nil { //nolint:noinlineerr
+		return nil, err
+	}
+
+	rep, err := h.reg.Reconcile(ctx)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	return &reconcileOut{Body: rep}, nil
 }
 
 func (h *handlers) listClusters(ctx context.Context, _ *struct{}) (*clustersOut, error) {
