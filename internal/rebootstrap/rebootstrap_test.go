@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var errExit1 = errors.New("exit status 1")
 
 const (
 	testKey    = "hskey-auth-0123456789ab-s3cretS3cretS3cret"
@@ -121,8 +123,9 @@ func TestRunBoundsConcurrencyAndMeasures(t *testing.T) {
 		targets[i] = fmt.Sprintf("t%02d", i)
 	}
 
-	run := func(_ context.Context, target, login string) ([]byte, error) {
+	run := func(ctx context.Context, target, login string) ([]byte, error) {
 		n := inFlight.Add(1)
+
 		for {
 			p := peak.Load()
 			if n <= p || peak.CompareAndSwap(p, n) {
@@ -132,16 +135,22 @@ func TestRunBoundsConcurrencyAndMeasures(t *testing.T) {
 
 		defer inFlight.Add(-1)
 
-		time.Sleep(20 * time.Millisecond)
+		// Each command takes a little while, so they overlap.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
 
 		if target == "t07" {
-			return []byte("auth failed for " + testKey), errors.New("exit status 1")
+			return []byte("auth failed for " + testKey), errExit1
 		}
 
 		return []byte("ok " + login), nil
 	}
 
 	s := Run(context.Background(), "https://c2.example:8443", targets, 8, time.Second, run)
+
 	assert.LessOrEqual(t, peak.Load(), int32(8))
 	assert.Equal(t, 20, s.Targets)
 	assert.Equal(t, 19, s.OK)
@@ -169,13 +178,13 @@ func TestRunPerTargetTimeout(t *testing.T) {
 
 	s := Run(context.Background(), "https://c2", []string{"slow"}, 1, 50*time.Millisecond, run)
 	assert.Equal(t, 1, s.Failed)
-	assert.True(t, strings.Contains(s.Results[0].Error, "deadline"))
+	assert.Contains(t, s.Results[0].Error, "deadline")
 }
 
 func TestSummarizePercentiles(t *testing.T) {
 	var res []Result
 	for i := 1; i <= 10; i++ {
-		res = append(res, Result{Target: fmt.Sprint(i), OK: true, EndMS: int64(i * 100)})
+		res = append(res, Result{Target: strconv.Itoa(i), OK: true, EndMS: int64(i * 100)})
 	}
 
 	s := Summarize("u", 8, res)
@@ -218,6 +227,7 @@ func TestResolveWaitsForANewURL(t *testing.T) {
 	assert.Equal(t, 1500*time.Millisecond, slept, "three waits, each capped at Poll")
 
 	calls.Store(0)
+
 	r.MaxWait = 700 * time.Millisecond
 	_, err = r.Resolve(context.Background(), cred)
 	require.ErrorIs(t, err, ErrStillMoving, "the old URL until the wait ends")

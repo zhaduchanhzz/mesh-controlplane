@@ -39,6 +39,10 @@ var (
 	ErrStillMoving = errors.New("tailnet still moving")
 	// ErrBadKey: the key is not a pre-auth key (hskey-auth-<id>-<secret>).
 	ErrBadKey = errors.New("not a pre-auth key")
+	// ErrRateLimited: bootstrap kept answering 429 until the wait ended.
+	ErrRateLimited = errors.New("bootstrap rate limited")
+	// ErrUnexpected: bootstrap answered something this tool does not use.
+	ErrUnexpected = errors.New("unexpected bootstrap answer")
 )
 
 var keyIDPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)
@@ -175,7 +179,7 @@ func (r *Resolver) Resolve(ctx context.Context, cred Credential) (string, error)
 					return "", fmt.Errorf("%w after %s (last status %d)", ErrStillMoving, waited, code)
 				}
 
-				return "", fmt.Errorf("bootstrap rate limited after %s", waited)
+				return "", fmt.Errorf("%w after %s", ErrRateLimited, waited)
 			}
 
 			logf("bootstrap: status %d, retrying in %s", code, retry)
@@ -188,7 +192,7 @@ func (r *Resolver) Resolve(ctx context.Context, cred Credential) (string, error)
 		case code == http.StatusNotFound:
 			return "", ErrRefused
 		default:
-			return "", fmt.Errorf("bootstrap: unexpected status %d", code)
+			return "", fmt.Errorf("%w: status %d", ErrUnexpected, code)
 		}
 	}
 }
@@ -228,7 +232,7 @@ func (r *Resolver) post(ctx context.Context, client *http.Client, endpoint strin
 
 	u, err := url.Parse(out.ControlURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return 0, "", 0, errors.New("bootstrap: answer has no https control URL")
+		return 0, "", 0, fmt.Errorf("%w: no https control URL", ErrUnexpected)
 	}
 
 	return http.StatusOK, out.ControlURL, 0, nil
@@ -300,11 +304,7 @@ func Run(ctx context.Context, loginServer string, targets []string, concurrency 
 	var wg sync.WaitGroup
 
 	for i, target := range targets {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -312,6 +312,7 @@ func Run(ctx context.Context, loginServer string, targets []string, concurrency 
 
 			tctx, cancel := context.WithTimeout(ctx, perTarget)
 			out, err := run(tctx, target, loginServer)
+
 			cancel()
 
 			res.EndMS = time.Since(start).Milliseconds()
@@ -323,7 +324,7 @@ func Run(ctx context.Context, loginServer string, targets []string, concurrency 
 			}
 
 			results[i] = res
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -359,10 +360,7 @@ func Summarize(loginServer string, concurrency int, results []Result) Summary {
 			return -1
 		}
 
-		need := (len(results)*pct + 99) / 100
-		if need < 1 {
-			need = 1
-		}
+		need := max((len(results)*pct+99)/100, 1)
 
 		if need > len(done) {
 			return -1

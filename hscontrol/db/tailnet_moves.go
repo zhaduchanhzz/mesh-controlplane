@@ -4,9 +4,8 @@ import (
 	"fmt"
 
 	"github.com/go-gormigrate/gormigrate/v2"
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"gorm.io/gorm"
 )
 
 // TailnetMovesMigrationID adds tailnet_moves (P12b, owner decision Q2,

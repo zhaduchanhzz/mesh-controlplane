@@ -1,16 +1,14 @@
 package mapper
 
 import (
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"tailscale.com/tailcfg"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"tailscale.com/tailcfg"
 )
 
 // P12b (owner Q1): a planned move reaches the client in the map response:
@@ -32,6 +30,7 @@ func TestMoveNoticeInMapResponse(t *testing.T) {
 
 	resp, err = m.NewMapResponseBuilder(1).WithCapabilityVersion(117).WithMoveNotice().Build()
 	require.NoError(t, err)
+
 	dm := resp.DisplayMessages[MoveNoticeID]
 	require.NotNil(t, dm)
 	assert.Contains(t, dm.Title, "move")
@@ -43,13 +42,14 @@ func TestMoveNoticeInMapResponse(t *testing.T) {
 	old, err := m.NewMapResponseBuilder(1).WithCapabilityVersion(116).WithMoveNotice().Build()
 	require.NoError(t, err)
 	require.Len(t, old.Health, 1)
-	assert.True(t, strings.Contains(old.Health[0], "2026-11-27 10:00 UTC"))
+	assert.Contains(t, old.Health[0], "2026-11-27 10:00 UTC")
 	assert.Nil(t, old.DisplayMessages)
 
 	require.True(t, st.SetMoveNotice(nil))
 
 	resp, err = m.NewMapResponseBuilder(1).WithCapabilityVersion(117).WithMoveNotice().Build()
 	require.NoError(t, err)
+
 	v, ok := resp.DisplayMessages[MoveNoticeID]
 	assert.True(t, ok, "the cleared notice is deleted on the client")
 	assert.Nil(t, v)
@@ -58,5 +58,6 @@ func TestMoveNoticeInMapResponse(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, old.Health, "older clients: health restored")
 	assert.Empty(t, old.Health)
+
 	_ = tailcfg.DisplayMessageID("")
 }

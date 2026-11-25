@@ -34,6 +34,12 @@ import (
 )
 
 var (
+	errUsage      = errors.New("usage")
+	errBadURL     = errors.New("bootstrap returned an unusable control URL")
+	errFailed     = errors.New("targets failed")
+	errBadTargets = errors.New("bad targets file")
+	errBadCA      = errors.New("no certificate in the CA file")
+
 	targetPattern = regexp.MustCompile(`^[A-Za-z0-9._@:-]{1,253}$`)
 	loginPattern  = regexp.MustCompile(`^https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?/?$`)
 )
@@ -81,11 +87,11 @@ func run(o options) error {
 	concurrency, perTarget, out := o.concurrency, o.perTarget, o.out
 
 	if boot == "" || keyFile == "" || targetsFile == "" || cmdTmpl == "" {
-		return errors.New("-bootstrap, -authkey-file, -targets and -cmd are required")
+		return fmt.Errorf("%w: -bootstrap, -authkey-file, -targets and -cmd are required", errUsage)
 	}
 
 	if !strings.Contains(cmdTmpl, "{login_server}") {
-		return errors.New("-cmd must use {login_server}")
+		return fmt.Errorf("%w: -cmd must use {login_server}", errUsage)
 	}
 
 	targets, err := readTargets(targetsFile)
@@ -127,7 +133,7 @@ func run(o options) error {
 
 	// The URL goes into a shell command: only scheme, host and port.
 	if !loginPattern.MatchString(login) {
-		return errors.New("bootstrap returned an unusable control URL")
+		return errBadURL
 	}
 
 	log.Printf("bootstrap: control URL %s after %s; %d targets, %d at a time", login, time.Since(t0).Round(time.Millisecond), len(targets), concurrency)
@@ -141,7 +147,10 @@ func run(o options) error {
 	}
 
 	runner := func(ctx context.Context, target, login string) ([]byte, error) {
-		c := exec.CommandContext(ctx, "sh", "-c", expand(cmdTmpl, target, login))
+		// Running the operator's own -cmd through a shell is the purpose of
+		// the tool; the only values put into it are a target name and the
+		// control URL, both checked against host-like patterns above.
+		c := exec.CommandContext(ctx, "sh", "-c", expand(cmdTmpl, target, login)) //nolint:gosec // G204: operator-supplied command template, inputs validated (see above)
 		c.Env = append(os.Environ(), "MESH_TARGET="+target, "MESH_LOGIN_SERVER="+login)
 		c.WaitDelay = 5 * time.Second
 
@@ -158,12 +167,12 @@ func run(o options) error {
 
 	if out == "" {
 		fmt.Println(string(b))
-	} else if err := os.WriteFile(out, append(b, '\n'), 0o600); err != nil { //nolint:noinlineerr
+	} else if err := os.WriteFile(out, append(b, '\n'), 0o600); err != nil { //nolint:noinlineerr,gosec // G703: -out is the operator's own output path on its own machine
 		return err
 	}
 
 	if sum.Failed > 0 {
-		return fmt.Errorf("%d of %d targets failed", sum.Failed, sum.Targets)
+		return fmt.Errorf("%w: %d of %d", errFailed, sum.Failed, sum.Targets)
 	}
 
 	return nil
@@ -192,7 +201,7 @@ func readTargets(path string) ([]string, error) {
 		}
 
 		if !targetPattern.MatchString(t) {
-			return nil, fmt.Errorf("targets line %d: not a host-like name", i+1)
+			return nil, fmt.Errorf("%w: line %d is not a host-like name", errBadTargets, i+1)
 		}
 
 		if !seen[t] {
@@ -202,7 +211,7 @@ func readTargets(path string) ([]string, error) {
 	}
 
 	if len(out) == 0 {
-		return nil, errors.New("no targets")
+		return nil, fmt.Errorf("%w: no targets", errBadTargets)
 	}
 
 	return out, nil
@@ -219,7 +228,7 @@ func httpClient(caFile string) (*http.Client, error) {
 
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, errors.New("no certificate in the CA file")
+			return nil, errBadCA
 		}
 
 		tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}

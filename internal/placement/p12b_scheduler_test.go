@@ -24,6 +24,7 @@ func TestRunSchedulerRequestsDueMove(t *testing.T) {
 
 			go func() {
 				defer close(done)
+
 				RunScheduler(ctx, r, 100*time.Millisecond, t.Logf)
 			}()
 
@@ -35,6 +36,7 @@ func TestRunSchedulerRequestsDueMove(t *testing.T) {
 			assert.Equal(t, "c2", movingTo(t, gdb, id))
 
 			cancel()
+
 			select {
 			case <-done:
 			case <-time.After(5 * time.Second):

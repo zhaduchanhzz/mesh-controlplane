@@ -543,16 +543,21 @@ func TestOperatorMoves(t *testing.T) {
 
 	code, tn := e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}})
 	require.Equal(t, http.StatusCreated, code, tn)
-	id := tn["id"].(string)
-	owner := tn["owner_cluster_id"].(string)
+	id, _ := tn["id"].(string)
+	owner, _ := tn["owner_cluster_id"].(string)
+
+	require.NotEmpty(t, id)
+	require.NotEmpty(t, owner)
 	target := map[string]string{"c1": "c2", "c2": "c1"}[owner]
 
 	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/activate", key: "a1", body: map[string]any{"expected_epoch": 1}})
 	require.Equal(t, http.StatusOK, code)
 
 	when := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	sched := call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/moves", key: "s1",
-		body: map[string]any{"to_cluster": target, "scheduled_at": when, "reason": "rebalance"}}
+	sched := call{
+		method: http.MethodPost, path: "/v1/tailnets/" + id + "/moves", key: "s1",
+		body: map[string]any{"to_cluster": target, "scheduled_at": when, "reason": "rebalance"},
+	}
 
 	code, _ = e.do(t, e.client(), call{method: sched.method, path: sched.path, key: "s0", body: sched.body})
 	assert.Equal(t, http.StatusUnauthorized, code, "no certificate")
@@ -565,7 +570,8 @@ func TestOperatorMoves(t *testing.T) {
 	assert.Equal(t, "SCHEDULED", m["state"])
 	assert.Equal(t, owner, m["from_cluster_id"])
 	assert.Equal(t, target, m["to_cluster_id"])
-	moveID := m["id"].(string)
+	moveID, _ := m["id"].(string)
+	require.NotEmpty(t, moveID)
 
 	code, again := e.do(t, c, sched)
 	require.Equal(t, http.StatusCreated, code)

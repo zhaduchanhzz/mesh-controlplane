@@ -494,10 +494,12 @@ func (c *Cluster) applyMoveNotices() {
 	}
 
 	c.mu.RLock()
+
 	rts := make([]*tenantRuntime, 0, len(c.runtimes))
 	for _, rt := range c.runtimes {
 		rts = append(rts, rt)
 	}
+
 	c.mu.RUnlock()
 
 	for _, rt := range rts {
@@ -512,12 +514,11 @@ func (c *Cluster) applyMoveNotices() {
 
 		rt.h.Change(change.FullUpdate())
 
-		ev := log.Info().Str("tailnet", rt.id.String())
 		if n != nil {
-			ev = ev.Time("move_at", n.At)
+			log.Info().Str("tailnet", rt.id.String()).Time("move_at", n.At).Msg("reconcile: planned move notice set")
+		} else {
+			log.Info().Str("tailnet", rt.id.String()).Msg("reconcile: planned move notice cleared")
 		}
-
-		ev.Bool("scheduled", n != nil).Msg("reconcile: planned move notice changed")
 	}
 }
 

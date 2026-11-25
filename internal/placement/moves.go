@@ -8,10 +8,9 @@ import (
 	"time"
 	"uuid"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"gorm.io/gorm"
 )
 
 // P12b (owner decision Q2, 2026-11-26): planned moves of a tailnet to
@@ -246,6 +245,8 @@ func (r *Registry) CancelScheduledMove(ctx context.Context, op Op, moveID string
 			if res.Error != nil {
 				return Move{}, "", fmt.Errorf("withdrawing move request: %w", res.Error)
 			}
+		case MoveHandedOver, MoveCancelled, MoveFailed:
+			return Move{}, "", fmt.Errorf("%w: move %s is %s", ErrConflict, moveID, m.State)
 		default:
 			return Move{}, "", fmt.Errorf("%w: move %s is %s", ErrConflict, moveID, m.State)
 		}
@@ -363,6 +364,8 @@ func (r *Registry) RunDueMoves(ctx context.Context, op Op) (RunReport, error) {
 			rep.HandedOver = append(rep.HandedOver, m.ID)
 		case MoveCancelled:
 			rep.Cancelled = append(rep.Cancelled, m.ID)
+		case MoveFailed, MoveScheduled, MoveRequested:
+			rep.Failed = append(rep.Failed, m.ID)
 		default:
 			rep.Failed = append(rep.Failed, m.ID)
 		}

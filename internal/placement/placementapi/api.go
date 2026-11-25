@@ -205,21 +205,21 @@ type (
 	}
 	apiKeyOut        struct{ Body placement.APIKeyInfo }
 	scheduleMoveBody struct {
-		ToCluster   string    `json:"to_cluster" minLength:"1" maxLength:"63"`
-		ScheduledAt time.Time `json:"scheduled_at" doc:"when mesh-placement requests the move (RFC 3339)"`
-		Reason      string    `json:"reason,omitempty" maxLength:"256" required:"false" doc:"shown to the tenant admin and its clients"`
+		ToCluster   string    `json:"to_cluster"                                      maxLength:"63"          minLength:"1"`
+		ScheduledAt time.Time `doc:"when mesh-placement requests the move (RFC 3339)" json:"scheduled_at"`
+		Reason      string    `doc:"shown to the tenant admin and its clients"        json:"reason,omitempty" maxLength:"256" required:"false"`
 	}
 	scheduleMoveIn struct {
-		ID             string `path:"id" maxLength:"128"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		ID             string `maxLength:"128"          path:"id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 		Body           scheduleMoveBody
 	}
 	movePath struct {
-		MoveID string `path:"move_id" maxLength:"64"`
+		MoveID string `maxLength:"64" path:"move_id"`
 	}
 	cancelMoveIn struct {
-		MoveID         string `path:"move_id" maxLength:"64"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		MoveID         string `maxLength:"64"           path:"move_id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 	}
 	moveOut  struct{ Body placement.Move }
 	movesOut struct {

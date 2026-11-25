@@ -197,6 +197,7 @@ func TestRunDueMovesFailsLoudly(t *testing.T) {
 
 			// A new schedule after the failure; then the epoch moves on.
 			setLease(t, gdb, "c2", true)
+
 			r.now = base
 			m2, err := r.ScheduleMove(ctx, testOp, id, "c2", at(r, time.Minute), "")
 			require.NoError(t, err)
@@ -264,6 +265,7 @@ func TestCancelScheduledMoveAndAdoption(t *testing.T) {
 			assert.Empty(t, rep.Failed)
 
 			handOver(t, gdb, id)
+
 			_, err = r.RunDueMoves(ctx, schedOp)
 			require.NoError(t, err)
 
