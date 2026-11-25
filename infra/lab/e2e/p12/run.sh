@@ -581,7 +581,7 @@ ev.sort(); eps=[e for _,e in ev]
 print(("ok" if eps == sorted(set(eps)) else "bad"), eps)' "$ART_DIR/logs/lease-events-$c.log" | strip_cr >"$TMPD/l-$c"
     grep -q '^ok' "$TMPD/l-$c" || p="$p; $c lease epochs $(cat "$TMPD/l-$c")"
     printf '%s %s\n' "$c" "$(lease_row $c)" >>"$ART_DIR/logs/audit.txt"
-    [ "$(lease_row $c | awk '{print $3}')" = t ] || p="$p; $c has no live lease"
+    case "$(lease_row $c | awk '{print $3}')" in t|true) ;; *) false;; esac || p="$p; $c has no live lease"
   done
   f=$(findings); printf 'P11 reconcile %s\n' "$f" >>"$ART_DIR/logs/reconcile.txt"
   [ "$f" = "[]" ] || p="$p; reconcile findings $f"
