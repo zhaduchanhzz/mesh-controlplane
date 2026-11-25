@@ -1,8 +1,16 @@
 package placement
 
 import (
+	"cmp"
 	"context"
+	"database/sql"
+	"fmt"
+	"slices"
 	"time"
+
+	"gorm.io/gorm"
+
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // FindingCode names one anomaly of the cross-cluster reconcile report (P12,
@@ -49,11 +57,11 @@ const DefaultPendingMaxAge = 24 * time.Hour
 // Finding is one anomaly. It carries identifiers and counts only: no slug,
 // endpoint, key or tenant data (I15).
 type Finding struct {
-	Code      FindingCode `json:"code"`
-	ClusterID string      `json:"cluster_id,omitempty"`
-	TailnetID string      `json:"tailnet_id,omitempty"`
-	Count     int64       `json:"count,omitempty"`
-	Limit     int64       `json:"limit,omitempty"`
+	Code      FindingCode `json:"code" enum:"R1_OWNER_UNREGISTERED,R2_OWNER_DISABLED,R3_OWNER_DRAINING,R4_OWNER_NO_LIVE_LEASE,R5_CLUSTER_ACTIVE_NO_LIVE_LEASE,R6_CLUSTER_NO_NOISE_KEY,R7_CLUSTER_OVER_CAPACITY,R8_DEDICATED_MULTIPLE_TAILNETS,R9_TAILNET_PENDING_TOO_LONG" doc:"anomaly; see evidence/source-inventory-P12.md §3.2"`
+	ClusterID string      `json:"cluster_id,omitempty" doc:"cluster concerned (owner of the tailnet for R1-R4, R9)"`
+	TailnetID string      `json:"tailnet_id,omitempty" doc:"tailnet concerned (R1-R4, R9)"`
+	Count     int64       `json:"count,omitempty" doc:"R7 devices, R8 live tailnets, R9 seconds PENDING"`
+	Limit     int64       `json:"limit,omitempty" doc:"R7 max_devices, R8 1, R9 seconds allowed"`
 }
 
 // Report is the cross-cluster reconcile report.
@@ -62,8 +70,110 @@ type Report struct {
 	Findings    []Finding `json:"findings"`
 }
 
-// Reconcile reads the registry, the cluster leases and the device counts
-// and reports R1–R9. A read only.
+// Reconcile reads the registry, the cluster leases (by the database clock)
+// and the device counts, and reports R1–R9 ordered by code, cluster and
+// tailnet. A read only: on PostgreSQL one READ ONLY, REPEATABLE READ
+// transaction, so every finding comes from the same snapshot; nothing is
+// moved, changed or audited (Q4).
 func (r *Registry) Reconcile(ctx context.Context) (Report, error) {
-	return Report{GeneratedAt: r.now(), Findings: []Finding{}}, nil
+	var (
+		cs    []Cluster
+		tns   []types.Tailnet
+		usage map[string]usageRow
+		live  map[string]bool
+	)
+
+	read := func(tx *gorm.DB) error {
+		err := tx.Order("id").Find(&cs).Error
+		if err != nil {
+			return fmt.Errorf("listing clusters: %w", err)
+		}
+
+		err = tx.Select("id", "owner_cluster_id", "status", "created_at").
+			Where("deleted_at IS NULL").Order("id").Find(&tns).Error
+		if err != nil {
+			return fmt.Errorf("listing tailnets: %w", err)
+		}
+
+		usage, err = clusterUsage(tx)
+		if err != nil {
+			return err
+		}
+
+		live, err = liveLeases(tx)
+
+		return err
+	}
+
+	db := r.db.WithContext(ctx)
+
+	var opts []*sql.TxOptions
+	if isPostgres(db) {
+		opts = append(opts, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	}
+
+	err := db.Transaction(read, opts...)
+	if err != nil {
+		return Report{}, fmt.Errorf("reconcile: %w", err)
+	}
+
+	now := r.now()
+	out := []Finding{}
+	byID := make(map[string]Cluster, len(cs))
+
+	for _, c := range cs {
+		byID[c.ID] = c
+	}
+
+	for _, t := range tns {
+		owner := t.OwnerClusterID
+
+		c, registered := byID[owner]
+
+		switch {
+		case !registered:
+			out = append(out, Finding{Code: FindingOwnerUnregistered, ClusterID: owner, TailnetID: t.ID})
+		case c.State == ClusterDisabled:
+			out = append(out, Finding{Code: FindingOwnerDisabled, ClusterID: owner, TailnetID: t.ID})
+		case c.State == ClusterDraining:
+			out = append(out, Finding{Code: FindingOwnerDraining, ClusterID: owner, TailnetID: t.ID})
+		}
+
+		if t.Status == types.TailnetActive && !live[owner] {
+			out = append(out, Finding{Code: FindingOwnerNoLease, ClusterID: owner, TailnetID: t.ID})
+		}
+
+		if age := now.Sub(t.CreatedAt); t.Status == types.TailnetPending && age > r.cfg.PendingMaxAge {
+			out = append(out, Finding{
+				Code: FindingPendingTooLong, ClusterID: owner, TailnetID: t.ID,
+				Count: int64(age / time.Second), Limit: int64(r.cfg.PendingMaxAge / time.Second),
+			})
+		}
+	}
+
+	for _, c := range cs {
+		u := usage[c.ID]
+
+		if c.State == ClusterActive && !live[c.ID] {
+			out = append(out, Finding{Code: FindingClusterNoLease, ClusterID: c.ID})
+		}
+
+		if live[c.ID] && c.NoisePublicKey == "" {
+			out = append(out, Finding{Code: FindingClusterNoNoiseKey, ClusterID: c.ID})
+		}
+
+		if u.Devices > c.MaxDevices {
+			out = append(out, Finding{Code: FindingClusterOverCapacity, ClusterID: c.ID, Count: u.Devices, Limit: c.MaxDevices})
+		}
+
+		if c.Class == ClassDedicated && u.Tailnets > 1 {
+			out = append(out, Finding{Code: FindingDedicatedShared, ClusterID: c.ID, Count: u.Tailnets, Limit: 1})
+		}
+	}
+
+	slices.SortFunc(out, func(a, b Finding) int {
+		return cmp.Or(cmp.Compare(a.Code, b.Code), cmp.Compare(a.ClusterID, b.ClusterID), cmp.Compare(a.TailnetID, b.TailnetID))
+	})
+
+	return Report{GeneratedAt: now, Findings: out}, nil
 }
