@@ -25,15 +25,11 @@ func registerCluster(t *testing.T, p *Platform, id, key string) {
 func registeredKey(t *testing.T, p *Platform, id string) string {
 	t.Helper()
 
-	var keys []*string
-	require.NoError(t, p.db.Raw(`SELECT noise_public_key FROM clusters WHERE id = ?`, id).Scan(&keys).Error)
+	var keys []string
+	require.NoError(t, p.db.Raw(`SELECT COALESCE(noise_public_key, '') FROM clusters WHERE id = ?`, id).Scan(&keys).Error)
 	require.Len(t, keys, 1)
 
-	if keys[0] == nil {
-		return ""
-	}
-
-	return *keys[0]
+	return keys[0]
 }
 
 // P12, owner decision Q6: a cluster process records its Noise public key

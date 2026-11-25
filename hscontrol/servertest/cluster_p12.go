@@ -126,18 +126,14 @@ func (tc *TestCluster) MoveOwner(tb testing.TB, slug, from, to string) uint64 {
 func (tc *TestCluster) RegisteredNoiseKey(tb testing.TB) string {
 	tb.Helper()
 
-	var keys []*string
+	var keys []string
 
-	err := tc.raw.Raw(`SELECT noise_public_key FROM clusters WHERE id = ?`, tc.ClusterID).Scan(&keys).Error
+	err := tc.raw.Raw(`SELECT COALESCE(noise_public_key, '') FROM clusters WHERE id = ?`, tc.ClusterID).Scan(&keys).Error
 	if err != nil || len(keys) != 1 {
 		tb.Fatalf("servertest: registered noise key: %v (%d rows)", err, len(keys))
 	}
 
-	if keys[0] == nil {
-		return ""
-	}
-
-	return *keys[0]
+	return keys[0]
 }
 
 // SetRegisteredNoiseKey sets clusters.noise_public_key of the cluster under

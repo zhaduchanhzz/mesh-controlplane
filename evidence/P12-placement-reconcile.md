@@ -111,8 +111,48 @@ Kết quả: exit 0 (mc-ci, 2026-11-25).
 
 **Lưu ý khi gộp với `feat/P12-cli`:** nhánh đó thêm vào `MoveOwner` các kiểm tra sức chứa và lease của đích. Các kiểm tra này vẫn đúng ở bước yêu cầu, nhưng phải gộp tay vì cùng sửa thân hàm `MoveOwner`. Ngoài ra, `ReassignTailnet` của platform admin vẫn lật thẳng owner; sau khi gộp, CLI `reassign` sẽ đi qua `Registry.MoveOwner`.
 
+## Bước 4 — Noise key của cluster trong registry (Q6)
+
+**Commit:** `272a5e0` (RED) → commit GREEN ngay sau đó.
+
+**Hành vi:**
+- Khi lấy lease, process gọi `Platform.RecordNoiseKey`. Hàm này đọc key đã đăng ký của cluster trong registry:
+  - Key rỗng hoặc NULL: ghi key của process vào. Chỉ ghi một lần, và chỉ khi process đang giữ lease sống.
+  - Key trùng: không làm gì.
+  - Key khác: trả `ErrNoiseKeyMismatch`, **không ghi đè**.
+  - Cluster chưa đăng ký: không kiểm. Trường hợp này đã lộ ra qua R1/R5 trong báo cáo reconcile.
+- Khi key khác, `onLeaseAcquired` trả lỗi. Lease được nhả, process ở lại standby và thử lại theo chu kỳ (fail closed).
+
+**Kiểm chứng:**
+
+| Test | Kết quả |
+|---|---|
+| `TestRecordNoiseKey` (SQLite + PostgreSQL, `-race`) | PASS |
+| `TestClusterRecordsNoiseKeyAndRefusesMismatch` (servertest) | PASS |
+
+Servertest kiểm các điểm sau:
+- Mỗi cluster tự ghi key của mình, và key của hai cluster khác nhau.
+- Process có key lệch với registry không lên `/ready` trong 3 s, và key trong registry không bị đổi.
+- Operator xóa key sai: process ghi key đúng và phục vụ.
+
+Lần chạy đầu fail do quét NULL vào `[]*string`. Đã sửa bằng `COALESCE`. Ngay cả trong lần fail đó, process vẫn ở lại standby, đúng hành vi fail closed.
+
+## Lượt race giữa P12 (sau ADR 0010)
+
+- **Lệnh:** `go test -race ./hscontrol/ ./hscontrol/db/... ./internal/... ./cmd/...`, cùng toàn bộ cluster suite `-tags p05cluster`.
+- **Thời gian:** ~50 phút; riêng cluster suite 2520 s.
+
+**Các test fail và cách xử lý:**
+
+| Test | Nguyên nhân | Xử lý | Kết quả chạy lại |
+|---|---|---|---|
+| `TestP10bRetireWaitsForInFlightRequest` | Lỗi thật: map `retiring` là nil khi `Cluster` được dựng không qua `NewCluster` | Commit `9b4efd4` | PASS (race) |
+| `TestDNS01SolverWait` | `bind: address already in use`, cùng loại flake trùng cổng ACME đã ghi ở P08b | Không sửa code | PASS 3/3 |
+| `TestAPIv2`, `TestAPIv2OAuthScopes` | Chạy ngoài `nix shell`, thiếu `tscli`/`tofu` | Chạy lại trong `nix shell` | PASS |
+
+**Sau khi sửa:** `TestCluster*`, `TestTwoClusters*` và `TestFailoverInOneCluster*` (p05cluster) đều PASS, trên `cluster.go` mới.
+
 ## Còn lại
 
-- Bước 4: cluster tự ghi và đối chiếu Noise key khi lấy lease (Q6).
 - Bước 5: CLI đi qua Registry (Q5) và sửa docs Q10. Đã xong trên nhánh `feat/P12-cli`; chủ dự án yêu cầu giữ nhánh riêng.
 - Bước 7: E2E lab và evidence cuối.

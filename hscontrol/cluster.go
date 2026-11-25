@@ -212,16 +212,16 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 	}
 
 	c := &Cluster{
-		host:     host,
-		cfg:      cfg,
-		platform: platform,
-		noiseKey: noiseKey,
-		registry: registry,
-		front:    &Headscale{cfg: cfg, noisePrivateKey: noiseKey},
+		host:        host,
+		cfg:         cfg,
+		platform:    platform,
+		noiseKey:    noiseKey,
+		registry:    registry,
+		front:       &Headscale{cfg: cfg, noisePrivateKey: noiseKey},
 		runtimes:    make(map[tailnet.ID]*tenantRuntime),
 		retiring:    make(map[tailnet.ID]chan struct{}),
 		handingOver: make(map[tailnet.ID]bool),
-		lease:    mgr,
+		lease:       mgr,
 	}
 	c.api = newClusterAPI(c)
 
@@ -953,6 +953,16 @@ func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
 	c.waitStopping("taking the cluster lease")
 
 	c.platform.SetLease(l.Holder, l.Epoch)
+
+	// P12, Q6: the registry names this cluster's Noise key; a process
+	// serving with another key must not serve (fail closed: the lease is
+	// given back, the process stays standby and retries).
+	err := c.platform.RecordNoiseKey(c.noiseKey.Public().String())
+	if err != nil {
+		c.platform.ClearLease()
+
+		return fmt.Errorf("cluster Noise key: %w", err)
+	}
 
 	owned, err := c.platform.OwnedTailnets(c.platform.ClusterID())
 	if err != nil {
