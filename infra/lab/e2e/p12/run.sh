@@ -554,7 +554,8 @@ EOF
 ' "$s" "$r" >>"$ART_DIR/logs/placement.log"
   [ "$(jget "$r" "d.get('moving_to_cluster_id')")" = $C2_ID ] && [ "$(jget "$r" "d['owner_epoch']")" = "$e0" ] || p="$p; move request [$r]"
   # The sampler ends by itself after 80 samples (> 10 s): wait for it.
-  cp_ "for i in \$(seq 1 60); do systemctl is-active -q p12-boot-sampler || exit 0; sleep 0.5; done; exit 1" \n    || p="$p; sampler still running after 30 s"
+  cp_ "for i in \$(seq 1 60); do systemctl is-active -q p12-boot-sampler || exit 0; sleep 0.5; done; exit 1" \
+    || p="$p; sampler still running after 30 s"
   cp_ "cat /dev/shm/p12-boot-codes; rm -f /dev/shm/p12-boot-codes; ! ls /dev/shm/p12-boot.body /dev/shm/p12-sampler.sh >/dev/null 2>&1" >"$ART_DIR/logs/P10-boot-codes.txt" || p="$p; sampler file left on mc-cp"
   local codes; codes=$(awk '{print $2}' "$ART_DIR/logs/P10-boot-codes.txt" | uniq | tr '
 ' ' ')
