@@ -398,6 +398,27 @@ func (r *Registry) requestMove(ctx context.Context, op Op, m Move) (MoveState, s
 // SchedulerActor is the audit actor of the move scheduler.
 const SchedulerActor = "spiffe://mesh/placement/scheduler"
 
-// RunScheduler calls RunDueMoves every interval until ctx ends.
+// RunScheduler calls RunDueMoves every interval until ctx ends, as
+// SchedulerActor. Errors are logged and retried on the next tick.
 func RunScheduler(ctx context.Context, r *Registry, interval time.Duration, logf func(string, ...any)) {
+	op := Op{Actor: SchedulerActor}
+
+	t := time.NewTicker(interval)
+	defer t.Stop()
+
+	for {
+		rep, err := r.RunDueMoves(ctx, op)
+		if err != nil && ctx.Err() == nil {
+			logf("move scheduler: %v", err)
+		} else if len(rep.Requested)+len(rep.HandedOver)+len(rep.Cancelled)+len(rep.Failed) > 0 {
+			logf("move scheduler: requested %v handed over %v cancelled %v failed %v",
+				rep.Requested, rep.HandedOver, rep.Cancelled, rep.Failed)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

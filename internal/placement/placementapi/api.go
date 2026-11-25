@@ -204,7 +204,30 @@ type (
 		KeyID          uint64 `path:"key_id" minimum:"1"`
 		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
 	}
-	apiKeyOut    struct{ Body placement.APIKeyInfo }
+	apiKeyOut        struct{ Body placement.APIKeyInfo }
+	scheduleMoveBody struct {
+		ToCluster   string    `json:"to_cluster" minLength:"1" maxLength:"63"`
+		ScheduledAt time.Time `json:"scheduled_at" doc:"when mesh-placement requests the move (RFC 3339)"`
+		Reason      string    `json:"reason,omitempty" maxLength:"256" required:"false" doc:"shown to the tenant admin and its clients"`
+	}
+	scheduleMoveIn struct {
+		ID             string `path:"id" maxLength:"128"`
+		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		Body           scheduleMoveBody
+	}
+	movePath struct {
+		MoveID string `path:"move_id" maxLength:"64"`
+	}
+	cancelMoveIn struct {
+		MoveID         string `path:"move_id" maxLength:"64"`
+		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+	}
+	moveOut  struct{ Body placement.Move }
+	movesOut struct {
+		Body struct {
+			Moves []placement.Move `json:"moves"`
+		}
+	}
 	reconcileOut struct{ Body placement.Report }
 	auditOut     struct {
 		Body struct {
@@ -250,6 +273,14 @@ func register(api huma.API, h *handlers) {
 		Summary: "Revoke an API key of the tailnet"}, h.revokeAPIKey)
 	huma.Register(api, huma.Operation{OperationID: "reconcileReport", Method: http.MethodGet, Path: "/v1/reconcile", Tags: tag,
 		Summary: "Cross-cluster anomalies R1-R9 by id and count (read only; nothing is moved)"}, h.reconcile)
+	huma.Register(api, huma.Operation{OperationID: "scheduleTailnetMove", Method: http.MethodPost, Path: "/v1/tailnets/{id}/moves", Tags: tag,
+		Summary: "Schedule a planned move of the tailnet to another cluster (P12b); requested at scheduled_at, handed over by the owner (ADR 0010)", DefaultStatus: http.StatusCreated}, h.scheduleMove)
+	huma.Register(api, huma.Operation{OperationID: "listTailnetMoves", Method: http.MethodGet, Path: "/v1/tailnets/{id}/moves", Tags: tag,
+		Summary: "Planned moves of the tailnet, newest first"}, h.listMoves)
+	huma.Register(api, huma.Operation{OperationID: "getMove", Method: http.MethodGet, Path: "/v1/moves/{move_id}", Tags: tag,
+		Summary: "Get a planned move"}, h.getMove)
+	huma.Register(api, huma.Operation{OperationID: "cancelMove", Method: http.MethodPost, Path: "/v1/moves/{move_id}/cancel", Tags: tag,
+		Summary: "Cancel a planned move before its hand-over"}, h.cancelMove)
 	huma.Register(api, huma.Operation{OperationID: "listAudit", Method: http.MethodGet, Path: "/v1/audit", Tags: tag,
 		Summary: "Newest operator audit entries"}, h.audit)
 }
@@ -583,4 +614,65 @@ func (h *handlers) revokeAPIKey(ctx context.Context, in *revokeAPIKeyIn) (*apiKe
 	}
 
 	return &apiKeyOut{Body: info}, nil
+}
+
+func (h *handlers) scheduleMove(ctx context.Context, in *scheduleMoveIn) (*moveOut, error) {
+	o, err := op(ctx, "scheduleTailnetMove", in.IdempotencyKey, in.ID, in.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	m, err := h.reg.ScheduleMove(ctx, o, in.ID, in.Body.ToCluster, in.Body.ScheduledAt, in.Body.Reason)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	return &moveOut{Body: m}, nil
+}
+
+func (h *handlers) listMoves(ctx context.Context, in *idPath) (*movesOut, error) {
+	if err := readGuard(ctx); err != nil { //nolint:noinlineerr
+		return nil, err
+	}
+
+	ms, err := h.reg.ListMoves(ctx, in.ID)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	out := &movesOut{}
+	out.Body.Moves = ms
+
+	if out.Body.Moves == nil {
+		out.Body.Moves = []placement.Move{}
+	}
+
+	return out, nil
+}
+
+func (h *handlers) getMove(ctx context.Context, in *movePath) (*moveOut, error) {
+	if err := readGuard(ctx); err != nil { //nolint:noinlineerr
+		return nil, err
+	}
+
+	m, err := h.reg.GetMove(ctx, in.MoveID)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	return &moveOut{Body: m}, nil
+}
+
+func (h *handlers) cancelMove(ctx context.Context, in *cancelMoveIn) (*moveOut, error) {
+	o, err := op(ctx, "cancelMove", in.IdempotencyKey, in.MoveID)
+	if err != nil {
+		return nil, err
+	}
+
+	m, err := h.reg.CancelScheduledMove(ctx, o, in.MoveID)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	return &moveOut{Body: m}, nil
 }
