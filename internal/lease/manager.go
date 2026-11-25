@@ -177,6 +177,7 @@ func (m *Manager) acquire(ctx context.Context) (Lease, error) {
 
 		actx, cancel := context.WithTimeout(ctx, m.cfg.TTL-m.cfg.SafetyMargin)
 		l, err := m.store.Acquire(actx, m.cluster, m.holder, m.cfg.TTL)
+
 		cancel()
 
 		switch {
@@ -243,6 +244,7 @@ func (m *Manager) hold(ctx context.Context, l Lease) string {
 
 			go func() {
 				defer cancel()
+
 				done <- result{start: start, err: m.store.Renew(rctx, l, m.cfg.TTL)}
 			}()
 		case r := <-done:

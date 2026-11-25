@@ -724,6 +724,7 @@ func (h *Headscale) Serve(ctx context.Context) error {
 
 	stopRuntime, err := h.startRuntime(ctx, errorGroup)
 	defer stopRuntime() // also releases a partially started runtime
+
 	if err != nil {
 		return err
 	}
@@ -1564,8 +1565,8 @@ func (h *Headscale) startRuntime(ctx context.Context, errorGroup *errgroup.Group
 	var cleanups []func()
 
 	stop = func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
+		for _, cleanup := range slices.Backward(cleanups) {
+			cleanup()
 		}
 	}
 
@@ -1630,6 +1631,7 @@ func (h *Headscale) startRuntime(ctx context.Context, errorGroup *errgroup.Group
 		h.cfg.SetExtraRecords(h.extraRecordMan.Records())
 
 		go h.extraRecordMan.Run() //nolint:contextcheck // stopped by Close
+
 		cleanups = append(cleanups, h.extraRecordMan.Close)
 	}
 

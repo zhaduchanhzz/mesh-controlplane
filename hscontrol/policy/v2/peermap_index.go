@@ -111,6 +111,7 @@ func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeV
 		if !ok {
 			c = int32(len(classes)) //nolint:gosec // at most n classes
 			classByKey[string(key)] = c
+
 			classes = append(classes, peerClass{
 				src:  slices.Clone(bits[:words]),
 				dst:  slices.Clone(bits[words:]),

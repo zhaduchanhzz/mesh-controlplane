@@ -281,6 +281,7 @@ func debugRoutes(t *testing.T) []endpointRoute {
 		"/debug/", "/debug/statsviz/", "/debug/statsviz/ws", "/metrics",
 		"/debug/pprof/cmdline", "/debug/pprof/profile", "/debug/pprof/symbol", "/debug/pprof/trace",
 	}
+
 	for _, m := range debugIndexHref.FindAllStringSubmatch(rec.Body.String(), -1) {
 		p, _, _ := strings.Cut(m[1], "?")
 		paths = append(paths, p)
@@ -333,9 +334,7 @@ func clusterRoutes(t *testing.T) []endpointRoute {
 	// cluster mode (operations refused there are listed in
 	// evidence/P08a-endpoint-inventory.md).
 	v2Mux, v2API := apiv2.Handler(apiv2.Backend{Tailnet: "00000000-0000-4000-8000-000000000001"})
-	for _, r := range humaRoutes(t, "cluster-v2", v2Mux, v2API, false) {
-		out = append(out, r)
-	}
+	out = append(out, humaRoutes(t, "cluster-v2", v2Mux, v2API, false)...)
 
 	// P08b: the live admin API on the cluster's unix socket.
 	ar, ok := c.AdminHandler().(chi.Routes)

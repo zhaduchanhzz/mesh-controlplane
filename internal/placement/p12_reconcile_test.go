@@ -7,9 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"gorm.io/gorm"
 )
 
 // setNoiseKey registers a Noise public key for cluster id, as a running
@@ -153,6 +152,7 @@ func TestReconcileFindsEachAnomaly(t *testing.T) {
 						if want[i].Count == -1 {
 							age := got[i].Count
 							assert.InDelta(t, 25*3600, age, 600, "age in seconds")
+
 							got[i].Count = -1
 						}
 					}

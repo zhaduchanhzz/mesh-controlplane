@@ -30,6 +30,7 @@ func TestParseIDRejectsInvalid(t *testing.T) {
 		if !errors.Is(err, ErrInvalidID) {
 			t.Errorf("ParseID(%q) err = %v, want ErrInvalidID", in, err)
 		}
+
 		if !id.IsZero() {
 			t.Errorf("ParseID(%q) returned non-zero ID %q on error", in, id)
 		}
@@ -41,13 +42,16 @@ func TestParseIDAcceptsCanonical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseID(%q): %v", idA, err)
 	}
+
 	if id.IsZero() || id.String() != idA {
 		t.Fatalf("ParseID(%q) = %q", idA, id)
 	}
+
 	other := MustParseID(idB)
 	if id == other {
 		t.Fatal("distinct IDs compare equal")
 	}
+
 	if id != MustParseID(idA) {
 		t.Fatal("equal IDs compare unequal")
 	}
@@ -58,6 +62,7 @@ func TestZeroIDIsInvalid(t *testing.T) {
 	if !id.IsZero() || id.String() != "" {
 		t.Fatalf("zero ID = %q, IsZero=%v", id, id.IsZero())
 	}
+
 	if _, err := id.MarshalText(); !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("MarshalText of zero ID err = %v, want ErrInvalidID", err)
 	}
@@ -67,14 +72,17 @@ func TestIDTextRoundTripValidates(t *testing.T) {
 	type wrap struct {
 		ID ID `json:"id"`
 	}
+
 	b, err := json.Marshal(wrap{MustParseID(idA)})
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var got wrap
 	if err := json.Unmarshal(b, &got); err != nil || got.ID.String() != idA {
 		t.Fatalf("round trip = %q, %v", got.ID, err)
 	}
+
 	if err := json.Unmarshal([]byte(`{"id":"not-a-tailnet"}`), &got); !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("Unmarshal invalid err = %v, want ErrInvalidID", err)
 	}
@@ -85,6 +93,7 @@ func TestFromContextFailsClosed(t *testing.T) {
 	if !errors.Is(err, ErrNoScope) {
 		t.Fatalf("FromContext(empty) err = %v, want ErrNoScope", err)
 	}
+
 	if s.Valid() || !s.ID().IsZero() {
 		t.Fatalf("FromContext(empty) returned a usable scope: %+v", s)
 	}
@@ -140,6 +149,7 @@ func TestWithScopeCannotSwitchTailnet(t *testing.T) {
 	if _, err := WithScope(ctx, a); err != nil {
 		t.Fatalf("re-binding A->A: %v", err)
 	}
+
 	got, err := FromContext(ctx)
 	if err != nil || got.ID() != a.ID() {
 		t.Fatalf("FromContext = %v, %v; want %v", got.ID(), err, a.ID())
@@ -151,15 +161,19 @@ func TestRequireChecksTailnet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if _, err := Require(ctx, MustParseID(idA)); err != nil {
 		t.Fatalf("Require(A) in A: %v", err)
 	}
+
 	if _, err := Require(ctx, MustParseID(idB)); !errors.Is(err, ErrScopeMismatch) {
 		t.Fatalf("Require(B) in A err = %v, want ErrScopeMismatch", err)
 	}
+
 	if _, err := Require(context.Background(), MustParseID(idA)); !errors.Is(err, ErrNoScope) {
 		t.Fatalf("Require without scope err = %v, want ErrNoScope", err)
 	}
+
 	if _, err := Require(ctx, ID{}); !errors.Is(err, ErrScopeMismatch) {
 		t.Fatalf("Require(zero) err = %v, want ErrScopeMismatch", err)
 	}
@@ -167,9 +181,11 @@ func TestRequireChecksTailnet(t *testing.T) {
 
 func mustScope(t *testing.T, id string) Scope {
 	t.Helper()
+
 	s, err := NewScope(MustParseID(id), SourceClientSession, "node:test", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return s
 }

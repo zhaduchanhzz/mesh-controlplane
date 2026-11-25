@@ -56,15 +56,19 @@ func TestNewRejectsDuplicateAndInvalidBackends(t *testing.T) {
 	}); err == nil {
 		t.Fatal("duplicate host across tailnets accepted")
 	}
+
 	if _, err := New([]Backend{{Hosts: []string{"a.example.com"}, Target: u}}); err == nil {
 		t.Fatal("backend without tailnet accepted")
 	}
+
 	if _, err := New([]Backend{{Tailnet: tnA, Hosts: nil, Target: u}}); err == nil {
 		t.Fatal("backend without hosts accepted")
 	}
+
 	if _, err := New([]Backend{{Tailnet: tnA, Hosts: []string{"10.0.0.1"}, Target: u}}); err == nil {
 		t.Fatal("IP host accepted")
 	}
+
 	if _, err := New(nil); err == nil {
 		t.Fatal("empty door accepted")
 	}
@@ -73,6 +77,7 @@ func TestNewRejectsDuplicateAndInvalidBackends(t *testing.T) {
 // echoBackend answers with its own name and the tailnet header it saw.
 func echoBackend(t *testing.T, name string) (*httptest.Server, *url.URL) {
 	t.Helper()
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Backend", name)
 		w.Header().Set("X-Seen-Tailnet-Header", r.Header.Get("X-Tailnet-ID"))
@@ -88,6 +93,7 @@ func newDoor(t *testing.T) *Door {
 	t.Helper()
 	_, ua := echoBackend(t, "A")
 	_, ub := echoBackend(t, "B")
+
 	d, err := New([]Backend{
 		{Tailnet: tnA, Hosts: []string{"a.cp.example.com"}, Target: ua},
 		{Tailnet: tnB, Hosts: []string{"b.cp.example.com"}, Target: ub},
@@ -101,16 +107,20 @@ func newDoor(t *testing.T) *Door {
 
 func do(t *testing.T, d http.Handler, host, sni string, hdr map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
+
 	req := httptest.NewRequest(http.MethodGet, "http://"+host+"/key?v=116", nil)
+
 	req.Host = host
 	if sni != "-" {
 		req.TLS = &tls.ConnectionState{ServerName: sni}
 	} else {
 		req.TLS = nil
 	}
+
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
+
 	rec := httptest.NewRecorder()
 	d.ServeHTTP(rec, req)
 
@@ -147,6 +157,7 @@ func TestSNIMustMatchHost(t *testing.T) {
 	if rec := do(t, d, "a.cp.example.com:8443", "a.cp.example.com", nil); rec.Code != http.StatusOK {
 		t.Fatalf("matching SNI -> %d", rec.Code)
 	}
+
 	for _, sni := range []string{"b.cp.example.com", "", "zz.cp.example.com"} {
 		rec := do(t, d, "a.cp.example.com:8443", sni, nil)
 		if rec.Code != http.StatusMisdirectedRequest || rec.Header().Get("X-Backend") != "" {
@@ -157,10 +168,12 @@ func TestSNIMustMatchHost(t *testing.T) {
 
 func TestClientTailnetHeaderIgnored(t *testing.T) {
 	d := newDoor(t)
+
 	rec := do(t, d, "a.cp.example.com", "-", map[string]string{"X-Tailnet-ID": tnB.String()})
 	if rec.Header().Get("X-Backend") != "A" {
 		t.Fatalf("X-Tailnet-ID changed routing to %q", rec.Header().Get("X-Backend"))
 	}
+
 	if seen := rec.Header().Get("X-Seen-Tailnet-Header"); seen != "" {
 		t.Fatalf("client X-Tailnet-ID reached backend: %q", seen)
 	}
@@ -175,22 +188,26 @@ func TestUpgradePassesThrough(t *testing.T) {
 			http.Error(w, "no upgrade", http.StatusBadRequest)
 			return
 		}
+
 		conn, brw, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			return
 		}
 		defer conn.Close()
+
 		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: tailscale-control-protocol\r\nConnection: upgrade\r\n\r\n")
 		line, _ := brw.ReadString('\n')
 		_, _ = io.WriteString(conn, "echo:"+line)
 	}))
 	defer backend.Close()
+
 	bu, _ := url.Parse(backend.URL)
 
 	d, err := New([]Backend{{Tailnet: tnA, Hosts: []string{"a.cp.example.com"}, Target: bu}})
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	front := httptest.NewServer(d)
 	defer front.Close()
 
@@ -200,18 +217,22 @@ func TestUpgradePassesThrough(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer c.Close()
+
 		_, _ = io.WriteString(c, "POST /ts2021 HTTP/1.1\r\nHost: "+host+"\r\nUpgrade: tailscale-control-protocol\r\nConnection: upgrade\r\nContent-Length: 0\r\n\r\n")
 		br := bufio.NewReader(c)
+
 		status, _ := br.ReadString('\n')
 		if !strings.Contains(status, " 101 ") {
 			return status, ""
 		}
+
 		for {
 			l, err := br.ReadString('\n')
 			if err != nil || l == "\r\n" {
 				break
 			}
 		}
+
 		_, _ = io.WriteString(c, "hello\n")
 		reply, _ := br.ReadString('\n')
 
@@ -221,6 +242,7 @@ func TestUpgradePassesThrough(t *testing.T) {
 	if status, reply := upgrade("a.cp.example.com:8443"); !strings.Contains(status, " 101 ") || reply != "echo:hello\n" {
 		t.Fatalf("known host upgrade: status %q reply %q", status, reply)
 	}
+
 	if status, _ := upgrade("zz.cp.example.com:8443"); !strings.Contains(status, " 421 ") {
 		t.Fatalf("unknown host upgrade: status %q, want 421 before upgrade", status)
 	}

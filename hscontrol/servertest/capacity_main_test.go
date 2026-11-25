@@ -31,7 +31,8 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	err := os.MkdirAll(dir, 0o755)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "capacity:", err)
 		os.Exit(2)
 	}

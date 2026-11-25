@@ -146,8 +146,7 @@ func (c *Cluster) admin(op string, fn adminHandlerFunc) http.HandlerFunc {
 			Msg("cluster admin (unix socket)")
 
 		if err != nil {
-			var ae *adminError
-			if errors.As(err, &ae) {
+			if ae, ok := errors.AsType[*adminError](err); ok {
 				writeAdminError(w, ae.status, ae.msg)
 
 				return

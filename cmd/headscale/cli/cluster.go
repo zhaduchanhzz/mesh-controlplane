@@ -249,6 +249,7 @@ var tailnetDNSCmd = &cobra.Command{
 	Short: "Store (--file), clear (--clear) or show (--show) the DNS settings of tailnet --slug",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		chosen := 0
+
 		for _, on := range []bool{clusterDNSFile != "", clusterDNSClear, clusterDNSShow} {
 			if on {
 				chosen++
@@ -466,7 +467,7 @@ func createTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug string)
 	return reg.CreateTailnetOn(ctx, cliOp(cluster), slug, cluster)
 }
 
-// reassignTailnetCLI moves tailnet slug from cluster (its owner) to to at
+// reassignTailnetCLI moves tailnet slug from cluster (its owner) to at
 // the next owner_epoch through the registry's MoveOwner (Q5): to must be
 // registered and ACTIVE, hold a live lease, with room for the tailnet's
 // devices; to == cluster is a new epoch on the same cluster (no lease

@@ -23,7 +23,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
@@ -70,9 +69,11 @@ func (c *ca) issue(t *testing.T, cn string, usage x509.ExtKeyUsage, uri string, 
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{usage},
 		DNSNames: dns,
 	}
+
 	if uri != "" {
 		u, err := url.Parse(uri)
 		require.NoError(t, err)
+
 		tmpl.URIs = []*url.URL{u}
 	}
 
@@ -162,9 +163,11 @@ func (e *env) do(t *testing.T, c *http.Client, cl call) (int, map[string]any) {
 	t.Helper()
 
 	var rd io.Reader
+
 	if cl.body != nil {
 		b, err := json.Marshal(cl.body)
 		require.NoError(t, err)
+
 		rd = bytes.NewReader(b)
 	}
 
@@ -192,6 +195,7 @@ func (e *env) do(t *testing.T, c *http.Client, cl call) (int, map[string]any) {
 	require.NoError(t, err)
 
 	var m map[string]any
+
 	_ = json.Unmarshal(raw, &m)
 
 	return resp.StatusCode, m
@@ -208,8 +212,10 @@ func TestOperatorAuth(t *testing.T) {
 	code, _ := e.do(t, e.client(), call{method: http.MethodGet, path: "/v1/clusters", bearer: "hskey-api-TENANTKEY-secret"})
 	assert.Equal(t, http.StatusForbidden, code, "tenant credential without certificate")
 
-	code, _ = e.do(t, e.client(), call{method: http.MethodPost, path: "/v1/tailnets", key: "k", bearer: "tskey-api-x",
-		body: map[string]any{"slug": "x", "class": "shared"}})
+	code, _ = e.do(t, e.client(), call{
+		method: http.MethodPost, path: "/v1/tailnets", key: "k", bearer: "tskey-api-x",
+		body: map[string]any{"slug": "x", "class": "shared"},
+	})
 	assert.Equal(t, http.StatusForbidden, code)
 
 	// No certificate, no credential.
@@ -291,8 +297,10 @@ func TestOperatorFlow(t *testing.T) {
 	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/activate", key: "a1", body: map[string]any{"expected_epoch": 1}})
 	require.Equal(t, http.StatusOK, code)
 
-	move := call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/owner", key: "m1",
-		body: map[string]any{"from_cluster": "c1", "from_epoch": 1, "to_cluster": "c2"}}
+	move := call{
+		method: http.MethodPost, path: "/v1/tailnets/" + id + "/owner", key: "m1",
+		body: map[string]any{"from_cluster": "c1", "from_epoch": 1, "to_cluster": "c2"},
+	}
 	code, moved := e.do(t, c, move)
 	require.Equal(t, http.StatusOK, code, moved)
 	assert.EqualValues(t, 1, moved["owner_epoch"], "a move request (ADR 0010)")
@@ -379,6 +387,7 @@ func TestOperatorAPIKeys(t *testing.T) {
 
 	code, tn := e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}})
 	require.Equal(t, http.StatusCreated, code)
+
 	id := tn["id"].(string)
 
 	mint := call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/apikeys", key: "k1", body: map[string]any{"expires_in_seconds": 3600}}

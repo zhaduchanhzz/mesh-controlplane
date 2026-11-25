@@ -9,11 +9,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-	"tailscale.com/types/key"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
+	"gorm.io/gorm"
+	"tailscale.com/types/key"
 )
 
 // addNodeIPs inserts a node with the given overlay addresses (nil = NULL)
@@ -152,6 +151,7 @@ func TestMigrationNodeIPUnique(t *testing.T) {
 
 			p := openPlatform(t, cfg)
 			require.Len(t, nodeIPIndexes(t, p.db), 2, "a fresh database has both indexes")
+
 			for _, def := range nodeIPIndexes(t, p.db) {
 				assert.Contains(t, strings.ToUpper(def), "UNIQUE")
 				assert.Contains(t, strings.ToUpper(def), "IS NOT NULL")

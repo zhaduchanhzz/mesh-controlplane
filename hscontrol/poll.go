@@ -184,6 +184,7 @@ func (m *mapSession) serveLongPoll() {
 	defer m.h.clientStreamsOpen.Done()
 
 	sessions := tailnetMapSessions.WithLabelValues(tenantlabel.Label(m.h.state.TailnetID()))
+
 	sessions.Inc()
 	defer sessions.Dec()
 

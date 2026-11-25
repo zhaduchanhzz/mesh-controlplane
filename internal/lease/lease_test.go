@@ -200,7 +200,8 @@ func TestEpochTriggerRefusesDecreaseAndSilentHolderChange(t *testing.T) {
 		"decrease":          `UPDATE cluster_leases SET epoch = 0 WHERE cluster_id = 'c1'`,
 		"holder same epoch": `UPDATE cluster_leases SET holder = 'z' WHERE cluster_id = 'c1'`,
 	} {
-		if err := s.db.WithContext(ctx).Exec(q).Error; err == nil {
+		err := s.db.WithContext(ctx).Exec(q).Error
+		if err == nil {
 			t.Errorf("%s: update accepted", name)
 		}
 	}
@@ -257,7 +258,8 @@ func TestConcurrentAcquireExactlyOneWins(t *testing.T) {
 }
 
 func TestConfigValidate(t *testing.T) {
-	if err := DefaultConfig.Validate(); err != nil {
+	err := DefaultConfig.Validate()
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -298,8 +300,7 @@ func TestManagerSelfFencesWhenRenewHangs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	acquired := make(chan time.Time, 1)
 	lost := make(chan string, 1)
@@ -354,22 +355,25 @@ func TestManagerStandbyTakesOverAfterCrash(t *testing.T) {
 		a.Run(actx, func(context.Context, Lease) error { aUp <- struct{}{}; return nil }, func(Lease, string) {})
 		close(aDone)
 	}()
+
 	<-aUp
 
 	crash := time.Now()
+
 	acancel()
 	<-aDone
 
 	// Undo a's graceful release, as a crash would not have done it: put the
 	// expiry back to the future.
-	if err := s.db.Exec(`UPDATE cluster_leases SET expires_at = ` + s.nowPlus(fast.TTL) + ` WHERE cluster_id = 'c1'`).Error; err != nil {
+	err := s.db.Exec(`UPDATE cluster_leases SET expires_at = ` + s.nowPlus(fast.TTL) + ` WHERE cluster_id = 'c1'`).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	bctx, bcancel := context.WithCancel(context.Background())
-	defer bcancel()
+	bctx := t.Context()
 
 	bUp := make(chan Lease, 1)
+
 	go b.Run(bctx, func(_ context.Context, l Lease) error { bUp <- l; return nil }, func(Lease, string) {})
 
 	select {
@@ -406,16 +410,18 @@ func TestManagerReleaseOnShutdown(t *testing.T) {
 		a.Run(actx, func(context.Context, Lease) error { aUp <- struct{}{}; return nil }, func(Lease, string) {})
 		close(aDone)
 	}()
+
 	<-aUp
 
-	bctx, bcancel := context.WithCancel(context.Background())
-	defer bcancel()
+	bctx := t.Context()
 
 	bUp := make(chan struct{}, 1)
+
 	go b.Run(bctx, func(context.Context, Lease) error { bUp <- struct{}{}; return nil }, func(Lease, string) {})
 
 	acancel()
 	<-aDone
+
 	t0 := time.Now()
 
 	select {
@@ -433,10 +439,10 @@ func TestManagerStartFailureReleases(t *testing.T) {
 	s := openStore(t)
 	a, _ := newManager(s, "c1", "a", fast)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	var tries atomic.Int32
+
 	lost := make(chan string, 4)
 
 	go a.Run(ctx, func(context.Context, Lease) error {

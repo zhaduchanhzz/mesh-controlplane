@@ -16,12 +16,11 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/frontdoor"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"golang.org/x/sync/errgroup"
 )
 
 // serve-tailnets is the P02 proof of concept: several tailnets in ONE process,
@@ -169,7 +168,7 @@ type tailnetSpec struct {
 func parseTailnetSpec(s string) (tailnetSpec, error) {
 	var ts tailnetSpec
 
-	for _, part := range strings.Split(s, ";") {
+	for part := range strings.SplitSeq(s, ";") {
 		k, v, ok := strings.Cut(part, "=")
 		if !ok {
 			return ts, fmt.Errorf("--tailnet %q: expected key=value", part)
@@ -184,7 +183,7 @@ func parseTailnetSpec(s string) (tailnetSpec, error) {
 
 			ts.id = id
 		case "hosts":
-			for _, h := range strings.Split(v, ",") {
+			for h := range strings.SplitSeq(v, ",") {
 				if h = strings.TrimSpace(h); h != "" {
 					ts.hosts = append(ts.hosts, h)
 				}

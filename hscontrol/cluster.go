@@ -386,10 +386,13 @@ func (c *Cluster) reconcile() {
 	}
 
 	c.mu.RLock()
+
 	var stale, policyChanged, configChanged []*tenantRuntime
+
 	loaded := make(map[string]bool, len(c.runtimes))
 	for id, rt := range c.runtimes {
 		loaded[id.String()] = true
+
 		tn, ok := want[id.String()]
 		switch {
 		case !ok || tn.OwnerEpoch != rt.epoch:
@@ -404,6 +407,7 @@ func (c *Cluster) reconcile() {
 			}
 		}
 	}
+
 	c.mu.RUnlock()
 
 	for _, rt := range configChanged {
@@ -549,11 +553,7 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 	// stopRuntime marks it retired before anything else.
 	rt.h.retired.Store(true)
 
-	c.stopping.Add(1)
-
-	go func() {
-		defer c.stopping.Done()
-
+	c.stopping.Go(func() {
 		c.stopRuntime(rt)
 		close(stopped)
 
@@ -562,7 +562,7 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 			delete(c.retiring, rt.id)
 		}
 		c.mu.Unlock()
-	}()
+	})
 }
 
 // handOverRequested gives away the tailnets this cluster owns with a move
@@ -609,17 +609,13 @@ func (c *Cluster) handOverRequested() {
 		stopped := c.retiring[id]
 		c.mu.RUnlock()
 
-		c.stopping.Add(1)
-
-		go func() {
-			defer c.stopping.Done()
-
+		c.stopping.Go(func() {
 			if stopped != nil {
 				<-stopped
 			}
 
 			c.handOver(id, epoch, to)
-		}()
+		})
 	}
 }
 
@@ -1180,6 +1176,7 @@ func (c *Cluster) Serve(ctx context.Context) error {
 	}
 
 	var ln net.Listener
+
 	if tlsBundle.Config != nil {
 		srv.TLSConfig = tlsBundle.Config
 		ln, err = tls.Listen("tcp", string(c.cfg.Addr), tlsBundle.Config)
@@ -1293,6 +1290,7 @@ func (c *Cluster) Serve(ctx context.Context) error {
 // shutdownRuntimes stops every runtime, then closes the shared pool.
 func (c *Cluster) shutdownRuntimes() {
 	c.mu.Lock()
+
 	rts := make([]*tenantRuntime, 0, len(c.order))
 	for _, id := range c.order {
 		rts = append(rts, c.runtimes[id])

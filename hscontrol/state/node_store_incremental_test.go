@@ -345,6 +345,7 @@ func TestNodeStoreIncrementalPolicyChangeAlwaysFull(t *testing.T) {
 	h.sync(t)
 
 	before := now()
+
 	h.store.PutNode(h.newNode(1))
 	h.sync(t)
 	require.Equal(t, counts{1, 1}, delta(before), "a join under allow-all patches")
@@ -355,24 +356,29 @@ func TestNodeStoreIncrementalPolicyChangeAlwaysFull(t *testing.T) {
 	require.NoError(t, err)
 	h.store.RebuildPeerMaps()
 	h.pol = incPolicyHosts
+
 	require.Equal(t, counts{1, 0}, delta(before), "a policy swap builds in full")
 	h.check(t, "policy")
 
 	before = now()
+
 	h.store.PutNode(h.newNode(0))
 	h.sync(t)
 	require.Equal(t, counts{1, 1}, delta(before), "a join under the new, local policy patches")
 	h.check(t, "join after policy")
 
 	before = now()
+
 	users := append(slices.Clone(h.users), types.User{ID: 3, Name: "u3"})
 	_, _, err = h.pm.SetUsers(users)
 	require.NoError(t, err)
+
 	h.users = users
 	h.store.RebuildPeerMaps()
 	require.Equal(t, counts{1, 0}, delta(before), "a user change builds in full")
 
 	before = now()
+
 	h.store.RebuildPeerMaps()
 	require.Equal(t, counts{1, 0}, delta(before), "an explicit rebuild builds in full")
 	h.check(t, "rebuild")

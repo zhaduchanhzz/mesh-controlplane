@@ -32,12 +32,11 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
-
-	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
-	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
 const (
@@ -220,7 +219,8 @@ func stampOne(db *gorm.DB, f *schema.Field, rv reflect.Value, id string) {
 		}
 	}
 
-	if err := f.Set(db.Statement.Context, rv, id); err != nil {
+	err := f.Set(db.Statement.Context, rv, id)
+	if err != nil {
 		_ = db.AddError(err)
 	}
 }
@@ -228,7 +228,7 @@ func stampOne(db *gorm.DB, f *schema.Field, rv reflect.Value, id string) {
 func stampMap(db *gorm.DB, f *schema.Field, rv reflect.Value, id string) {
 	for _, k := range []string{f.Name, f.DBName} {
 		if v := rv.MapIndex(reflect.ValueOf(k)); v.IsValid() {
-			if s, ok := v.Interface().(string); !ok || s != id {
+			if s, ok := reflect.TypeAssert[string](v); !ok || s != id {
 				_ = db.AddError(fmt.Errorf("%w: %v", ErrForeignTenant, v.Interface()))
 
 				return
@@ -287,7 +287,7 @@ var OwnershipLockTimeout = 5 * time.Second
 // (SET LOCAL lock_timeout, for the rest of the transaction). No-op on
 // SQLite, which serialises writers.
 func LockOwnership(tx *gorm.DB, id string) error {
-	if tx.Dialector.Name() != "postgres" {
+	if tx.Name() != "postgres" {
 		return nil
 	}
 
@@ -327,7 +327,7 @@ func checkFence(db *gorm.DB) {
 	// deleting a tailnet does not bump its epoch, so a runtime not retired
 	// yet, or a request still in flight, must be stopped here.
 	q := `SELECT owner_cluster_id, owner_epoch, status, deleted_at IS NULL FROM tailnets WHERE id = ?`
-	if db.Dialector.Name() == "postgres" {
+	if db.Name() == "postgres" {
 		// The shared advisory lock is taken before the row lock (LockRows
 		// runs above the join): see LockOwnership for why both.
 		q = `SELECT t.owner_cluster_id, t.owner_epoch, t.status, t.deleted_at IS NULL
@@ -379,7 +379,7 @@ func checkLease(db *gorm.DB, f tailnet.Fence) {
 	}
 
 	q := `SELECT holder, epoch, expires_at > ` + lease.SQLiteNow + ` FROM cluster_leases WHERE cluster_id = ?`
-	if db.Dialector.Name() == "postgres" {
+	if db.Name() == "postgres" {
 		q = `SELECT holder, epoch, expires_at > ` + lease.PostgresNow + ` FROM cluster_leases WHERE cluster_id = $1 FOR SHARE`
 	}
 

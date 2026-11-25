@@ -41,7 +41,8 @@ func (f *fakeStore) LookupAuthKey(_ context.Context, keyID string) (Record, bool
 	return r, ok, nil
 }
 
-func ptr[T any](v T) *T { return &v }
+//go:fix inline
+func ptr[T any](v T) *T { return new(v) }
 
 func storedHash(secret string) []byte { return []byte(hashPrefixSHA256 + ProofOf(secret)) }
 
@@ -51,7 +52,7 @@ func rec(secret string) Record {
 	return Record{
 		TailnetID: "tn-acme", Hash: storedHash(secret), Reusable: true,
 		TailnetSlug: "acme", TailnetState: "ACTIVE",
-		ClusterEndpoint: ptr(urlA), ClusterState: ptr("ACTIVE"),
+		ClusterEndpoint: new(urlA), ClusterState: new("ACTIVE"),
 	}
 }
 
@@ -73,14 +74,14 @@ func fixture() *fakeStore {
 	add("a00000000006", func(r *Record) { r.TailnetState = "PENDING" })
 	add("a00000000007", func(r *Record) { r.TailnetState = "DELETING" })
 	add("a00000000008", func(r *Record) { r.Deleted = true })
-	add("a00000000009", func(r *Record) { r.MovingTo = ptr("c2") })
-	add("a0000000000a", func(r *Record) { r.ClusterState = ptr("DISABLED") })
+	add("a00000000009", func(r *Record) { r.MovingTo = new("c2") })
+	add("a0000000000a", func(r *Record) { r.ClusterState = new("DISABLED") })
 	add("a0000000000b", func(r *Record) { r.ClusterEndpoint, r.ClusterState = nil, nil })
-	add("a0000000000c", func(r *Record) { r.Expiration = &future; r.ClusterState = ptr("DRAINING") })
+	add("a0000000000c", func(r *Record) { r.Expiration = &future; r.ClusterState = new("DRAINING") })
 	add("a0000000000d", func(r *Record) { r.Hash = []byte("$2a$10$legacybcrypthashvalue") })
 
 	b := rec(secretB)
-	b.TailnetID, b.TailnetSlug, b.ClusterEndpoint = "tn-beta", "beta", ptr(urlB)
+	b.TailnetID, b.TailnetSlug, b.ClusterEndpoint = "tn-beta", "beta", new(urlB)
 	m["b00000000001"] = b
 
 	return &fakeStore{recs: m}
@@ -306,10 +307,12 @@ func TestBootstrapNoSecretsInLogs(t *testing.T) {
 
 	saved, savedLevel := log.Logger, zerolog.GlobalLevel()
 	log.Logger = zerolog.New(&buf)
+
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 
 	t.Cleanup(func() {
 		log.Logger = saved
+
 		zerolog.SetGlobalLevel(savedLevel)
 	})
 

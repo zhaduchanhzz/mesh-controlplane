@@ -7,9 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"gorm.io/gorm"
 )
 
 // lookupSQL is the one statement bootstrap runs (reviewed raw SQL on the

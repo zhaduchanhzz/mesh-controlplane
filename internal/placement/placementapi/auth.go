@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 )
@@ -111,7 +110,7 @@ func (a *Authorizer) identity(leaf *x509.Certificate) (string, bool) {
 // handshake failure; a certificate that does not verify fails the handshake.
 func TLSConfig(cert tls.Certificate, clientCAs *x509.CertPool) (*tls.Config, error) {
 	if clientCAs == nil {
-		return nil, fmt.Errorf("client CA pool is required")
+		return nil, errors.New("client CA pool is required")
 	}
 
 	return &tls.Config{

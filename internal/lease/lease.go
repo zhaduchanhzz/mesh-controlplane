@@ -104,7 +104,7 @@ type Store struct {
 
 // NewStore wraps db (SQLite or PostgreSQL).
 func NewStore(db *gorm.DB) *Store {
-	return &Store{db: db, postgres: db.Dialector.Name() == "postgres"}
+	return &Store{db: db, postgres: db.Name() == "postgres"}
 }
 
 // nowPlus is the database expression for now() + d.

@@ -12,10 +12,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"tailscale.com/types/key"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
+	"tailscale.com/types/key"
 )
 
 // backend opens runtimes on one shared database: a SQLite file, or one
@@ -227,13 +226,16 @@ func TestAmbiguousTailnetsRefused(t *testing.T) {
 
 func TestRejectsHeadscaleDatabases(t *testing.T) {
 	var dumps []string
+
 	for _, dir := range []string{"testdata/sqlite", "testdata/sqlite_too_old"} {
 		entries, err := os.ReadDir(dir)
 		require.NoError(t, err)
+
 		for _, e := range entries {
 			dumps = append(dumps, filepath.Join(dir, e.Name()))
 		}
 	}
+
 	require.NotEmpty(t, dumps)
 
 	for _, dump := range dumps {
@@ -264,10 +266,10 @@ func TestScopedContextKeepsTailnet(t *testing.T) {
 	require.NoError(t, err)
 
 	var n int64
+
 	err = hsdb.DB.WithContext(t.Context()).Model(&types.User{}).Count(&n).Error
 	require.Error(t, err, "a scope-less context must fail closed")
 
 	require.NoError(t, hsdb.DB.WithContext(hsdb.ScopedContext(t.Context())).Model(&types.User{}).Count(&n).Error)
 	assert.EqualValues(t, 1, n)
-
 }

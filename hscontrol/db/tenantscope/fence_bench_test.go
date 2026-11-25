@@ -3,15 +3,15 @@ package tenantscope
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
 )
 
 // Benchmarks of the ownership fence (P10 review B3). Every INSERT/UPDATE/
@@ -32,6 +32,7 @@ import (
 // withoutFence removes the fence callbacks, leaving scoping in place.
 func withoutFence(b *testing.B, db *gorm.DB) {
 	b.Helper()
+
 	cb := db.Callback()
 	for _, err := range []error{
 		cb.Create().Remove(name + ":fence_create"),
@@ -55,29 +56,37 @@ const (
 
 func benchDB(b *testing.B, mode string) (*gorm.DB, context.Context, uint64) {
 	b.Helper()
+
 	db := openDB(b)
 	if mode == modeNoFence {
 		withoutFence(b, db)
 	}
-	if sqlDB, err := db.DB(); err == nil && db.Dialector.Name() == "postgres" {
+
+	if sqlDB, err := db.DB(); err == nil && db.Name() == "postgres" {
 		sqlDB.SetMaxOpenConns(64)
 		sqlDB.SetMaxIdleConns(64)
 	}
+
 	ctx := ctxFor(b, idA)
+
 	if mode == modeLease {
 		ddl := lease.SQLiteDDL
-		if db.Dialector.Name() == "postgres" {
+		if db.Name() == "postgres" {
 			ddl = lease.PostgresDDL
 		}
+
 		if err := db.Exec(ddl).Error; err != nil {
 			b.Fatal(err)
 		}
+
 		l, err := lease.NewStore(db).Acquire(context.Background(), testCluster, "bench", time.Hour)
 		if err != nil {
 			b.Fatal(err)
 		}
+
 		ctx = leaseCtx(b, idA, l.Holder, l.Epoch)
 	}
+
 	var it item
 	if err := db.WithContext(ctx).Order("id").First(&it).Error; err != nil {
 		b.Fatal(err)
@@ -91,17 +100,19 @@ func benchDB(b *testing.B, mode string) (*gorm.DB, context.Context, uint64) {
 // the item itself).
 func BenchmarkFenceWrite(b *testing.B) {
 	for _, mode := range []string{modeNoFence, modeFence, modeLease} {
-
 		b.Run(mode+"/update/serial", func(b *testing.B) {
 			db, ctx, ownerID := benchDB(b, mode)
+
 			it := item{Name: "bench", OwnerID: ownerID}
 			if err := db.WithContext(ctx).Create(&it).Error; err != nil {
 				b.Fatal(err)
 			}
+
 			b.ResetTimer()
+
 			for i := 0; b.Loop(); i++ {
 				if err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
-					Update("name", fmt.Sprint(i)).Error; err != nil {
+					Update("name", strconv.Itoa(i)).Error; err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -110,6 +121,7 @@ func BenchmarkFenceWrite(b *testing.B) {
 		b.Run(mode+"/create/serial", func(b *testing.B) {
 			db, ctx, ownerID := benchDB(b, mode)
 			b.ResetTimer()
+
 			for b.Loop() {
 				if err := db.WithContext(ctx).Create(&item{Name: "c", OwnerID: ownerID}).Error; err != nil {
 					b.Fatal(err)
@@ -119,19 +131,23 @@ func BenchmarkFenceWrite(b *testing.B) {
 
 		b.Run(mode+"/tx10/serial", func(b *testing.B) {
 			db, ctx, ownerID := benchDB(b, mode)
+
 			ids := make([]uint64, 10)
 			for k := range ids {
 				it := item{Name: "t", OwnerID: ownerID}
 				if err := db.WithContext(ctx).Create(&it).Error; err != nil {
 					b.Fatal(err)
 				}
+
 				ids[k] = it.ID
 			}
+
 			b.ResetTimer()
+
 			for i := 0; b.Loop(); i++ {
 				err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 					for _, id := range ids {
-						if err := tx.Model(&item{}).Where("id = ?", id).Update("name", fmt.Sprint(i)).Error; err != nil {
+						if err := tx.Model(&item{}).Where("id = ?", id).Update("name", strconv.Itoa(i)).Error; err != nil {
 							return err
 						}
 					}
@@ -146,24 +162,29 @@ func BenchmarkFenceWrite(b *testing.B) {
 
 		b.Run(mode+"/update/parallel-one-tailnet", func(b *testing.B) {
 			db, ctx, ownerID := benchDB(b, mode)
-			if db.Dialector.Name() != "postgres" {
+			if db.Name() != "postgres" {
 				b.Skip("SQLite serialises writers; hot-row contention is a PostgreSQL question")
 			}
+
 			var mu sync.Mutex
+
 			b.ResetTimer()
 			b.RunParallel(func(pb *testing.PB) {
 				it := item{Name: "p", OwnerID: ownerID}
+
 				mu.Lock()
 				err := db.WithContext(ctx).Create(&it).Error
 				mu.Unlock()
+
 				if err != nil {
 					b.Error(err)
 
 					return
 				}
+
 				for i := 0; pb.Next(); i++ {
 					if err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
-						Update("name", fmt.Sprint(i)).Error; err != nil {
+						Update("name", strconv.Itoa(i)).Error; err != nil {
 						b.Error(err)
 
 						return
@@ -191,11 +212,11 @@ func writeLoad(tb testing.TB, db *gorm.DB, ownerID uint64, n int, epoch *atomic.
 		if err := db.WithContext(ctxFor(tb, idA)).Create(&it).Error; err != nil {
 			tb.Fatal(err)
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+
+		wg.Go(func() {
 			for i := 0; !done.Load(); i++ {
 				ctx := fencedCtx(tb, idA, testCluster, tailnet.Epoch(epoch.Load()))
+
 				err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
 					Update("name", fmt.Sprintf("%d-%d", w, i)).Error
 				if err == nil {
@@ -203,7 +224,7 @@ func writeLoad(tb testing.TB, db *gorm.DB, ownerID uint64, n int, epoch *atomic.
 				}
 				// ErrFenced right after a move is the fence working.
 			}
-		}()
+		})
 	}
 
 	return func() int64 {
@@ -233,24 +254,29 @@ func BenchmarkFenceOwnerMoveUnderLoad(b *testing.B) {
 	for _, writers := range []int{0, 8, 32} {
 		b.Run(fmt.Sprintf("writers=%d", writers), func(b *testing.B) {
 			db, _, ownerID := benchDB(b, modeFence)
-			if db.Dialector.Name() != "postgres" {
+			if db.Name() != "postgres" {
 				b.Skip("FOR SHARE is PostgreSQL only")
 			}
 
 			var epoch atomic.Int64
 			epoch.Store(testEpoch)
 			stop := writeLoad(b, db, ownerID, writers, &epoch)
+
 			time.Sleep(200 * time.Millisecond) // writers running
 
 			start := time.Now()
+
 			for b.Loop() {
 				next := epoch.Load() + 1
 				if err := moveEpoch(db, next); err != nil {
 					b.Fatal(err)
 				}
+
 				epoch.Store(next)
 			}
+
 			elapsed := time.Since(start)
+
 			b.StopTimer()
 			b.ReportMetric(float64(stop())/elapsed.Seconds(), "writes/s")
 		})

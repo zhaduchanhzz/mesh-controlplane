@@ -7,10 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"gorm.io/gorm"
 	"tailscale.com/types/key"
-
-	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // TestNodeKeyPairOneTailnet: (machine_key, node_key) resolves a Noise
@@ -48,8 +47,10 @@ func TestNodeKeyPairOneTailnet(t *testing.T) {
 
 			// Nodes created without keys are exempt; the platform never
 			// resolves them.
-			var zeroM key.MachinePublic
-			var zeroN key.NodePublic
+			var (
+				zeroM key.MachinePublic
+				zeroN key.NodePublic
+			)
 			require.NoError(t, addNode(t, a, zeroM, zeroN))
 			require.NoError(t, addNode(t, bdb, zeroM, zeroN))
 		})

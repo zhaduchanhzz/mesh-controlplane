@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/frontdoor"
 )
 

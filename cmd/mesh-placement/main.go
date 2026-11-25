@@ -129,6 +129,7 @@ func run() error {
 
 	go func() {
 		log.Printf("mesh-placement: serving the operator API on %s (mTLS)", *listen)
+
 		errc <- srv.ListenAndServeTLS("", "")
 	}()
 

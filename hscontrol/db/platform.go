@@ -8,13 +8,12 @@ import (
 	"sync"
 
 	"github.com/go-gormigrate/gormigrate/v2"
-	"gorm.io/gorm"
-	"tailscale.com/types/key"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
+	"tailscale.com/types/key"
 )
 
 var (

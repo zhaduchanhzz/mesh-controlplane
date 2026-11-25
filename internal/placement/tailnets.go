@@ -6,10 +6,9 @@ import (
 	"slices"
 	"uuid"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"gorm.io/gorm"
 )
 
 // DenyAllPolicy is the policy every new tailnet starts with (AGENTS rule 8):

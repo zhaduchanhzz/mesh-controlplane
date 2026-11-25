@@ -41,5 +41,4 @@ func TestP06ClusterRefusesTenantDNSInConfig(t *testing.T) {
 		set(c)
 		require.Error(t, validateClusterConfig(c), name)
 	}
-
 }

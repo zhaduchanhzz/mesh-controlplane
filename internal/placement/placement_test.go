@@ -8,10 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
 )
 
 var ctx = context.Background()
@@ -148,6 +147,7 @@ func TestPlacement(t *testing.T) {
 			assert.Equal(t, "s1", c.ID)
 
 			addNodes(t, gdb, a.ID, 4) // s1 full
+
 			_, err = r.CreateTailnet(ctx, testOp, "c", ClassShared)
 			require.ErrorIs(t, err, ErrNoCapacity, "draining/disabled clusters are never chosen")
 

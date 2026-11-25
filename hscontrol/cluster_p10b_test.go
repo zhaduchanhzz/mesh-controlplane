@@ -40,6 +40,7 @@ func TestP10bRetireWaitsForInFlightRequest(t *testing.T) {
 	require.NoError(t, err, "a bound session admits a request")
 
 	start := time.Now()
+
 	c.retire(rt, "test")
 	assert.Less(t, time.Since(start), time.Second, "retire must not wait for the runtime's requests")
 

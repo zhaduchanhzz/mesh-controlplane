@@ -27,7 +27,6 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog/log"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
@@ -182,7 +181,7 @@ func NormalizeHost(h string) (string, error) {
 		return "", fmt.Errorf("%w: IP literal %q", ErrBadHost, h)
 	}
 
-	for _, label := range strings.Split(host, ".") {
+	for label := range strings.SplitSeq(host, ".") {
 		if !validLabel(label) {
 			return "", fmt.Errorf("%w: %q", ErrBadHost, h)
 		}

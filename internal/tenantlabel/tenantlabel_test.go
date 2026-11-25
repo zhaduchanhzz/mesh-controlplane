@@ -60,7 +60,8 @@ func value(t *testing.T, m prometheus.Metric) float64 {
 	t.Helper()
 
 	var d dto.Metric
-	if err := m.Write(&d); err != nil {
+	err := m.Write(&d)
+	if err != nil {
 		t.Fatal(err)
 	}
 

@@ -99,6 +99,7 @@ func run() error {
 
 	go func() {
 		log.Printf("mesh-bootstrap: serving %s on %s", *hostname, *listen)
+
 		errc <- srv.ListenAndServeTLS("", "")
 	}()
 

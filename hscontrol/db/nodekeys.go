@@ -20,7 +20,7 @@ import (
 // exempt.
 const (
 	nodeKeyPairMigrationID = "202611230000-nodes-key-pair-one-tailnet"
-	idxNodesMachineNodeKey  = "idx_nodes_machine_key_node_key"
+	idxNodesMachineNodeKey = "idx_nodes_machine_key_node_key"
 )
 
 var errDuplicateNodeKeys = errors.New("a (machine_key, node_key) pair is used in several tailnets")

@@ -6,10 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
 )
 
 // leaseDB is openDB plus the cluster_leases table of P11b.
@@ -18,11 +17,12 @@ func leaseDB(t *testing.T) (*gorm.DB, *lease.Store) {
 	db := openDB(t)
 
 	ddl := lease.SQLiteDDL
-	if db.Dialector.Name() == "postgres" {
+	if db.Name() == "postgres" {
 		ddl = lease.PostgresDDL
 	}
 
-	if err := db.Exec(ddl).Error; err != nil {
+	err := db.Exec(ddl).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -32,6 +32,7 @@ func leaseDB(t *testing.T) (*gorm.DB, *lease.Store) {
 // leaseCtx is ctxFor(id) whose fence also claims the lease (holder, epoch).
 func leaseCtx(t testing.TB, id, holder string, epoch uint64) context.Context {
 	t.Helper()
+
 	f, err := tailnet.NewFence(testCluster, testEpoch)
 	if err != nil {
 		t.Fatal(err)
@@ -137,8 +138,9 @@ func TestLeaseFenceOperatorWriteNeedsNoLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := db.WithContext(ctxFor(t, idA)).Model(&item{}).Where("name LIKE ?", "i0-%").
-		Update("name", "operator").Error; err != nil {
+	err := db.WithContext(ctxFor(t, idA)).Model(&item{}).Where("name LIKE ?", "i0-%").
+		Update("name", "operator").Error
+	if err != nil {
 		t.Fatalf("operator write: %v", err)
 	}
 }

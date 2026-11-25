@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -404,8 +405,12 @@ func goldenChange(c change.Change) string {
 		on   bool
 		name string
 	}{
-		{c.IncludeSelf, "self"}, {c.IncludeDERPMap, "derp"}, {c.IncludeDNS, "dns"},
-		{c.IncludeDomain, "domain"}, {c.IncludePolicy, "policy"}, {c.SendAllPeers, "allpeers"},
+		{c.IncludeSelf, "self"},
+		{c.IncludeDERPMap, "derp"},
+		{c.IncludeDNS, "dns"},
+		{c.IncludeDomain, "domain"},
+		{c.IncludePolicy, "policy"},
+		{c.SendAllPeers, "allpeers"},
 		{c.RequiresRuntimePeerComputation, "runtime"},
 	} {
 		if f.on {
@@ -480,7 +485,7 @@ func goldenFrame(r *tailcfg.MapResponse) string {
 		for _, p := range r.PeersChangedPatch {
 			on := "-"
 			if p.Online != nil {
-				on = fmt.Sprint(*p.Online)
+				on = strconv.FormatBool(*p.Online)
 			}
 
 			ps = append(ps, fmt.Sprintf("%d:%s", p.NodeID, on))
@@ -556,6 +561,7 @@ func runNetmapScenario(g *netmapGolden) string {
 	// HA subnet routers: removing the primary moves the route to the
 	// standby, which every peer must learn; never a local removal.
 	lan := netip.MustParsePrefix("10.9.0.0/24")
+
 	g.join("alice", "r1")
 	g.join("bob", "r2")
 	g.router("r1", lan)
