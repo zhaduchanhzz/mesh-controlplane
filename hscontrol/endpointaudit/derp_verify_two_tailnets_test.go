@@ -6,6 +6,7 @@ package endpointaudit_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -58,11 +59,15 @@ func tailnetRuntimeConfig(t *testing.T, name string, regionID tailcfg.DERPRegion
 	return &cfg
 }
 
+var errPanic = errors.New("panic")
+
 // newRuntime runs NewHeadscale and turns a panic into an error.
+//
+//nolint:nonamedreturns // recover can only replace the result through a named return
 func newRuntime(cfg *types.Config) (app *hscontrol.Headscale, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v", r)
+			err = fmt.Errorf("%w: %v", errPanic, r)
 		}
 	}()
 
@@ -147,6 +152,6 @@ func TestP08aDERPVerifyTwoTailnetsOneProcess(t *testing.T) {
 
 	// The old fixed URL must not reach any runtime.
 	admitted, err = derpVerify(t, derpServer.DerpVerifyScheme+"://verify", nodeA.NodeKey)
-	assert.Error(t, err, "the old process-wide verify URL must not be routed to any runtime")
+	require.Error(t, err, "the old process-wide verify URL must not be routed to any runtime")
 	assert.False(t, admitted)
 }

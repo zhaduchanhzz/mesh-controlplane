@@ -8,11 +8,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"tailscale.com/types/key"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"tailscale.com/types/key"
 )
 
 func openPlatform(t *testing.T, cfg *types.Config) *Platform {
@@ -32,6 +31,7 @@ func platformTailnet(t *testing.T, p *Platform, cluster string, status types.Tai
 
 	id := uuid.NewV4().String()
 	now := time.Now().UTC()
+
 	tn := &types.Tailnet{
 		ID: id, Slug: "tn-" + id[:8], Status: status,
 		OwnerClusterID: cluster, OwnerEpoch: 1, PolicyRevision: 1, ConfigRevision: 1,
@@ -80,9 +80,11 @@ func TestPlatformTailnetForAuthKey(t *testing.T) {
 				hsdb := tenantDB(t, p, id)
 				u, err := hsdb.CreateUser(types.User{Name: "alice"})
 				require.NoError(t, err)
+
 				uid := types.UserID(u.ID)
 				pak, err := hsdb.CreatePreAuthKey(&uid, true, false, nil, nil)
 				require.NoError(t, err)
+
 				keys[id] = pak.Key
 			}
 
@@ -96,10 +98,12 @@ func TestPlatformTailnetForAuthKey(t *testing.T) {
 			// identifier, so the caller cannot tell which half was wrong.
 			k := keys[idA]
 			last := k[len(k)-1]
+
 			flip := byte('0')
 			if last == '0' {
 				flip = '1'
 			}
+
 			wrongSecret := k[:len(k)-1] + string(flip)
 			unknownID := authKeyPrefix + strings.Repeat("a", keyIdentifierLength) + "-" + strings.Repeat("b", keySecretLength)
 
@@ -273,6 +277,7 @@ func TestPlatformPostgresSimpleProtocol(t *testing.T) {
 
 	u, err := hsdb.CreateUser(types.User{Name: "alice"})
 	require.NoError(t, err)
+
 	uid := types.UserID(u.ID)
 	pak, err := hsdb.CreatePreAuthKey(&uid, false, false, nil, nil)
 	require.NoError(t, err)

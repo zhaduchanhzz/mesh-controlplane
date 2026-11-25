@@ -119,7 +119,7 @@ func setDatabaseVersion(db *gorm.DB, version string) error {
 
 	err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"version", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"version", colUpdatedAt}),
 	}).Create(&DatabaseVersion{ID: 1, Version: version, UpdatedAt: now}).Error
 	if err != nil {
 		return fmt.Errorf("upserting database version: %w", err)
@@ -172,10 +172,6 @@ func isDev(version string) bool {
 
 	return ok
 }
-
-// upgradePath is the documented route for any database older than v0.29.0.
-const upgradePath = "upgrade one minor release at a time, using the latest patch of each, " +
-	"to the latest v0.29.x first, release page: https://github.com/juanfont/headscale/releases"
 
 // checkVersionUpgradePath verifies that the running headscale version
 // is compatible with the version that last used this database.

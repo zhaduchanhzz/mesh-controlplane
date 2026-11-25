@@ -13,14 +13,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-	"zombiezen.com/go/postgrestest"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
+	"zombiezen.com/go/postgrestest"
 )
 
 var testOp = placement.Op{Actor: "spiffe://mesh/operator/test"}
@@ -94,7 +93,8 @@ func splitKey(t *testing.T, key string) (string, string) {
 func closeGorm(t *testing.T, g *gorm.DB) {
 	t.Helper()
 	t.Cleanup(func() {
-		if s, err := g.DB(); err == nil {
+		s, err := g.DB()
+		if err == nil {
 			_ = s.Close()
 		}
 	})
@@ -139,6 +139,7 @@ func TestBootstrapStoreFollowsOwner(t *testing.T) {
 			require.NoError(t, err)
 			u, err := tdb.CreateUser(types.User{Name: "alice"})
 			require.NoError(t, err)
+
 			uid := types.UserID(u.ID)
 			pak, err := tdb.CreatePreAuthKey(&uid, true, false, nil, nil)
 			require.NoError(t, err)
@@ -213,6 +214,7 @@ func TestOpenReadOnlyRefusesUnusableDatabase(t *testing.T) {
 
 	_, err := db.OpenReadOnly(cfg)
 	require.ErrorIs(t, err, db.ErrSchemaNotCurrent)
+
 	_, statErr := os.Stat(cfg.SQLitePath())
 	require.True(t, os.IsNotExist(statErr), "no database file was created")
 

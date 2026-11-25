@@ -46,6 +46,7 @@ const (
 	minFullMapInterval   = time.Minute
 )
 
+//nolint:gocyclo // one check per config key; the list reads top to bottom
 func Validate(c *types.Config) error {
 	v := &configValidator{}
 

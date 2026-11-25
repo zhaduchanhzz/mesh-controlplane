@@ -37,6 +37,7 @@ import (
 )
 
 var (
+	errClusterNoID = errors.New("cluster mode needs a cluster ID")
 	errClusterOIDC = errors.New(
 		"cluster mode serves auth-key registration only; OIDC/web registration per tailnet is P04b",
 	)
@@ -234,7 +235,7 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 func validateClusterConfig(cfg *types.Config) error {
 	switch {
 	case cfg.ClusterID == "":
-		return errors.New("cluster mode needs a cluster ID")
+		return errClusterNoID
 	case cfg.OIDC.Issuer != "":
 		return errClusterOIDC
 	case cfg.DERP.Server.Enabled:
@@ -386,10 +387,13 @@ func (c *Cluster) reconcile() {
 	}
 
 	c.mu.RLock()
+
 	var stale, policyChanged, configChanged []*tenantRuntime
+
 	loaded := make(map[string]bool, len(c.runtimes))
 	for id, rt := range c.runtimes {
 		loaded[id.String()] = true
+
 		tn, ok := want[id.String()]
 		switch {
 		case !ok || tn.OwnerEpoch != rt.epoch:
@@ -404,6 +408,7 @@ func (c *Cluster) reconcile() {
 			}
 		}
 	}
+
 	c.mu.RUnlock()
 
 	for _, rt := range configChanged {
@@ -591,11 +596,7 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 	// stopRuntime marks it retired before anything else.
 	rt.h.retired.Store(true)
 
-	c.stopping.Add(1)
-
-	go func() {
-		defer c.stopping.Done()
-
+	c.stopping.Go(func() {
 		c.stopRuntime(rt)
 		close(stopped)
 
@@ -604,7 +605,7 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 			delete(c.retiring, rt.id)
 		}
 		c.mu.Unlock()
-	}()
+	})
 }
 
 // handOverRequested gives away the tailnets this cluster owns with a move
@@ -651,17 +652,13 @@ func (c *Cluster) handOverRequested() {
 		stopped := c.retiring[id]
 		c.mu.RUnlock()
 
-		c.stopping.Add(1)
-
-		go func() {
-			defer c.stopping.Done()
-
+		c.stopping.Go(func() {
 			if stopped != nil {
 				<-stopped
 			}
 
 			c.handOver(id, epoch, to)
-		}()
+		})
 	}
 }
 
@@ -999,14 +996,14 @@ func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
 	// P12, Q6: the registry names this cluster's Noise key; a process
 	// serving with another key must not serve (fail closed: the lease is
 	// given back, the process stays standby and retries).
-	err := c.platform.RecordNoiseKey(c.noiseKey.Public().String())
+	err := c.platform.RecordNoiseKey(c.noiseKey.Public().String()) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
 	if err != nil {
 		c.platform.ClearLease()
 
 		return fmt.Errorf("cluster Noise key: %w", err)
 	}
 
-	owned, err := c.platform.OwnedTailnets(c.platform.ClusterID())
+	owned, err := c.platform.OwnedTailnets(c.platform.ClusterID()) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
 	if err != nil {
 		c.platform.ClearLease()
 
@@ -1014,7 +1011,7 @@ func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
 	}
 
 	for _, tn := range owned {
-		err := c.load(tn)
+		err := c.load(tn) //nolint:contextcheck // Platform bounds its own lookups (lookupContext); runtimes live on the cluster's serve context, not this callback's
 		if err != nil {
 			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: loading tailnet")
 
@@ -1027,9 +1024,9 @@ func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
 		rt := c.runtimes[id]
 		c.mu.RUnlock()
 
-		if err := c.start(rt); err != nil { //nolint:noinlineerr
+		if err := c.start(rt); err != nil { //nolint:noinlineerr,contextcheck // runtimes live on the cluster's serve context, not this callback's
 			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: starting tailnet")
-			c.retire(rt, "failed to start")
+			c.retire(rt, "failed to start") //nolint:contextcheck // runtimes live on the cluster's serve context, not this callback's
 		}
 	}
 
@@ -1206,7 +1203,7 @@ func (c *Cluster) Serve(ctx context.Context) error {
 	errorGroup, ctx := errgroup.WithContext(ctx)
 	c.serveCtx, c.serveGroup = ctx, errorGroup
 
-	defer c.shutdownRuntimes()
+	defer c.shutdownRuntimes() //nolint:contextcheck // shutdown runs after ctx is done and bounds itself
 
 	tlsBundle, err := c.front.getTLSSettings(ctx)
 	if err != nil {
@@ -1222,6 +1219,7 @@ func (c *Cluster) Serve(ctx context.Context) error {
 	}
 
 	var ln net.Listener
+
 	if tlsBundle.Config != nil {
 		srv.TLSConfig = tlsBundle.Config
 		ln, err = tls.Listen("tcp", string(c.cfg.Addr), tlsBundle.Config)
@@ -1261,7 +1259,7 @@ func (c *Cluster) Serve(ctx context.Context) error {
 	var adminSrv *http.Server
 
 	if c.cfg.UnixSocket != "" {
-		aln, err := listenAdminSocket(c.cfg)
+		aln, err := listenAdminSocket(ctx, c.cfg)
 		if err != nil {
 			return err
 		}
@@ -1295,7 +1293,7 @@ func (c *Cluster) Serve(ctx context.Context) error {
 			case <-ctx.Done():
 				return nil
 			case <-t.C:
-				c.reconcile()
+				c.reconcile() //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
 			}
 		}
 	})
@@ -1335,6 +1333,7 @@ func (c *Cluster) Serve(ctx context.Context) error {
 // shutdownRuntimes stops every runtime, then closes the shared pool.
 func (c *Cluster) shutdownRuntimes() {
 	c.mu.Lock()
+
 	rts := make([]*tenantRuntime, 0, len(c.order))
 	for _, id := range c.order {
 		rts = append(rts, c.runtimes[id])

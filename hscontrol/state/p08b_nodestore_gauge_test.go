@@ -27,6 +27,7 @@ func TestP08bNodeStoreGaugeIsNotLastWriter(t *testing.T) {
 
 	a := NewNodeStore(p08bNodes(1, 2), allowAllPeersFunc, TestBatchSize, TestBatchTimeout)
 	a.SetMetricsTailnet("11111111-1111-4111-8111-111111111111")
+
 	a.Start()
 	defer a.Stop()
 
@@ -74,7 +75,9 @@ func p08bValue(t *testing.T, m prometheus.Metric) float64 {
 	t.Helper()
 
 	var d dto.Metric
-	if err := m.Write(&d); err != nil {
+
+	err := m.Write(&d)
+	if err != nil {
 		t.Fatal(err)
 	}
 

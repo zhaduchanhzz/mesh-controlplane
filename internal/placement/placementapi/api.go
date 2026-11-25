@@ -17,7 +17,6 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
@@ -93,44 +92,44 @@ func view(tn types.Tailnet) TailnetView {
 }
 
 type idPath struct {
-	ID string `path:"id" maxLength:"128"`
+	ID string `maxLength:"128" path:"id"`
 }
 
 type (
 	clusterBody struct {
-		ID             string `json:"id" maxLength:"63"`
-		EndpointURL    string `json:"endpoint_url" maxLength:"512"`
-		Class          string `json:"class" enum:"shared,dedicated"`
-		State          string `json:"state,omitempty" enum:"ACTIVE,DRAINING,DISABLED" required:"false"`
-		NoisePublicKey string `json:"noise_public_key,omitempty" maxLength:"128" required:"false"`
-		MaxDevices     int64  `json:"max_devices" minimum:"1"`
+		ID             string `json:"id"                         maxLength:"63"`
+		EndpointURL    string `json:"endpoint_url"               maxLength:"512"`
+		Class          string `enum:"shared,dedicated"           json:"class"`
+		State          string `enum:"ACTIVE,DRAINING,DISABLED"   json:"state,omitempty" required:"false"`
+		NoisePublicKey string `json:"noise_public_key,omitempty" maxLength:"128"        required:"false"`
+		MaxDevices     int64  `json:"max_devices"                minimum:"1"`
 	}
 	createClusterIn struct {
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 		Body           clusterBody
 	}
 	clusterPatchBody struct {
-		EndpointURL    *string `json:"endpoint_url,omitempty" maxLength:"512" required:"false"`
+		EndpointURL    *string `json:"endpoint_url,omitempty"     maxLength:"512" required:"false"`
 		NoisePublicKey *string `json:"noise_public_key,omitempty" maxLength:"128" required:"false"`
-		MaxDevices     *int64  `json:"max_devices,omitempty" minimum:"1" required:"false"`
+		MaxDevices     *int64  `json:"max_devices,omitempty"      minimum:"1"     required:"false"`
 	}
 	updateClusterIn struct {
-		ID             string `path:"id" maxLength:"128"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		ID             string `maxLength:"128"          path:"id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 		Body           clusterPatchBody
 	}
 	clusterStateBody struct {
-		State            string `json:"state" enum:"ACTIVE,DRAINING,DISABLED"`
-		ExpectedRevision uint64 `json:"expected_revision,omitempty" required:"false" doc:"compare-and-swap on the cluster revision; 0 = any"`
+		State            string `enum:"ACTIVE,DRAINING,DISABLED"                         json:"state"`
+		ExpectedRevision uint64 `doc:"compare-and-swap on the cluster revision; 0 = any" json:"expected_revision,omitempty" required:"false"`
 	}
 	clusterStateIn struct {
-		ID             string `path:"id" maxLength:"128"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		ID             string `maxLength:"128"          path:"id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 		Body           clusterStateBody
 	}
 	deleteClusterIn struct {
-		ID             string `path:"id" maxLength:"128"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		ID             string `maxLength:"128"          path:"id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 	}
 	clusterOut  struct{ Body placement.ClusterUsage }
 	clustersOut struct {
@@ -139,32 +138,32 @@ type (
 		}
 	}
 	placementIn struct {
-		Class string `query:"class" enum:"shared,dedicated" required:"true"`
+		Class string `enum:"shared,dedicated" query:"class" required:"true"`
 	}
 	createTailnetBody struct {
-		Slug  string `json:"slug" maxLength:"63"`
-		Class string `json:"class" enum:"shared,dedicated"`
+		Slug  string `json:"slug"             maxLength:"63"`
+		Class string `enum:"shared,dedicated" json:"class"`
 	}
 	createTailnetIn struct {
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 		Body           createTailnetBody
 	}
 	epochBody struct {
 		ExpectedEpoch uint64 `json:"expected_epoch" minimum:"1"`
 	}
 	statusIn struct {
-		ID             string `path:"id" maxLength:"128"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		ID             string `maxLength:"128"          path:"id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 		Body           epochBody
 	}
 	moveBody struct {
 		FromCluster string `json:"from_cluster" maxLength:"63"`
-		FromEpoch   uint64 `json:"from_epoch" minimum:"1"`
-		ToCluster   string `json:"to_cluster" maxLength:"63"`
+		FromEpoch   uint64 `json:"from_epoch"   minimum:"1"`
+		ToCluster   string `json:"to_cluster"   maxLength:"63"`
 	}
 	moveIn struct {
-		ID             string `path:"id" maxLength:"128"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		ID             string `maxLength:"128"          path:"id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 		Body           moveBody
 	}
 	tailnetOut struct{ Body TailnetView }
@@ -176,22 +175,22 @@ type (
 		}
 	}
 	auditIn struct {
-		Limit int `query:"limit" minimum:"1" maximum:"1000" default:"100"`
+		Limit int `default:"100" maximum:"1000" minimum:"1" query:"limit"`
 	}
 	createAPIKeyBody struct {
-		ExpiresInSeconds int64  `json:"expires_in_seconds" minimum:"1" maximum:"31536000" doc:"lifetime of the key, at most 365 days"`
-		User             string `json:"user,omitempty" maxLength:"256" required:"false" doc:"user of the tailnet the key acts as; must exist"`
+		ExpiresInSeconds int64  `doc:"lifetime of the key, at most 365 days"           json:"expires_in_seconds" maximum:"31536000" minimum:"1"`
+		User             string `doc:"user of the tailnet the key acts as; must exist" json:"user,omitempty"     maxLength:"256"    required:"false"`
 	}
 	createAPIKeyIn struct {
-		ID             string `path:"id" maxLength:"128"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		ID             string `maxLength:"128"          path:"id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 		Body           createAPIKeyBody
 	}
 	apiKeyCreated struct {
 		placement.APIKeyInfo
 
-		Key      string `json:"key,omitempty" doc:"the API key; shown only by the call that created it"`
-		Replayed bool   `json:"replayed,omitempty" doc:"an idempotent replay: the key was shown by the first call and cannot be shown again"`
+		Key      string `doc:"the API key; shown only by the call that created it"                                 json:"key,omitempty"`
+		Replayed bool   `doc:"an idempotent replay: the key was shown by the first call and cannot be shown again" json:"replayed,omitempty"`
 	}
 	apiKeyCreatedOut struct{ Body apiKeyCreated }
 	apiKeysOut       struct {
@@ -200,9 +199,9 @@ type (
 		}
 	}
 	revokeAPIKeyIn struct {
-		ID             string `path:"id" maxLength:"128"`
-		KeyID          uint64 `path:"key_id" minimum:"1"`
-		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		ID             string `maxLength:"128"          path:"id"`
+		KeyID          uint64 `minimum:"1"              path:"key_id"`
+		IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" minLength:"1" required:"true"`
 	}
 	apiKeyOut        struct{ Body placement.APIKeyInfo }
 	scheduleMoveBody struct {
@@ -239,50 +238,95 @@ type (
 func register(api huma.API, h *handlers) {
 	tag := []string{"placement"}
 
-	huma.Register(api, huma.Operation{OperationID: "listClusters", Method: http.MethodGet, Path: "/v1/clusters", Tags: tag,
-		Summary: "List clusters with their tailnet and device counts"}, h.listClusters)
-	huma.Register(api, huma.Operation{OperationID: "createCluster", Method: http.MethodPost, Path: "/v1/clusters", Tags: tag,
-		Summary: "Register a cluster (DISABLED unless state is given)", DefaultStatus: http.StatusCreated}, h.createCluster)
-	huma.Register(api, huma.Operation{OperationID: "getCluster", Method: http.MethodGet, Path: "/v1/clusters/{id}", Tags: tag,
-		Summary: "Get a cluster"}, h.getCluster)
-	huma.Register(api, huma.Operation{OperationID: "updateCluster", Method: http.MethodPatch, Path: "/v1/clusters/{id}", Tags: tag,
-		Summary: "Change endpoint, Noise public key or device budget"}, h.updateCluster)
-	huma.Register(api, huma.Operation{OperationID: "updateClusterState", Method: http.MethodPut, Path: "/v1/clusters/{id}/state", Tags: tag,
-		Summary: "Set the cluster state (revision only grows; owner epochs untouched)"}, h.updateClusterState)
-	huma.Register(api, huma.Operation{OperationID: "deleteCluster", Method: http.MethodDelete, Path: "/v1/clusters/{id}", Tags: tag,
-		Summary: "Delete a cluster that no tailnet references", DefaultStatus: http.StatusNoContent}, h.deleteCluster)
-	huma.Register(api, huma.Operation{OperationID: "placeTailnet", Method: http.MethodGet, Path: "/v1/placement", Tags: tag,
-		Summary: "Preview the cluster a new tailnet of a class would get"}, h.placeTailnet)
-	huma.Register(api, huma.Operation{OperationID: "createTailnet", Method: http.MethodPost, Path: "/v1/tailnets", Tags: tag,
-		Summary: "Place and create a tailnet: PENDING, owner, deny-all policy, one transaction", DefaultStatus: http.StatusCreated}, h.createTailnet)
-	huma.Register(api, huma.Operation{OperationID: "getTailnet", Method: http.MethodGet, Path: "/v1/tailnets/{id}", Tags: tag,
-		Summary: "Get a tailnet with its device count"}, h.getTailnet)
-	huma.Register(api, huma.Operation{OperationID: "activateTailnet", Method: http.MethodPost, Path: "/v1/tailnets/{id}/activate", Tags: tag,
-		Summary: "PENDING/SUSPENDED → ACTIVE at the expected owner epoch"}, h.activateTailnet)
-	huma.Register(api, huma.Operation{OperationID: "suspendTailnet", Method: http.MethodPost, Path: "/v1/tailnets/{id}/suspend", Tags: tag,
-		Summary: "PENDING/ACTIVE → SUSPENDED at the expected owner epoch"}, h.suspendTailnet)
-	huma.Register(api, huma.Operation{OperationID: "moveTailnetOwner", Method: http.MethodPost, Path: "/v1/tailnets/{id}/owner", Tags: tag,
-		Summary: "Request a move to another cluster (moving_to; the owner hands it over, owner_epoch + 1, ADR 0010), or bump the epoch on the same cluster"}, h.moveOwner)
-	huma.Register(api, huma.Operation{OperationID: "getTailnetQuota", Method: http.MethodGet, Path: "/v1/tailnets/{id}/quota", Tags: tag,
-		Summary: "Enrollment quota decision of a tailnet"}, h.quota)
-	huma.Register(api, huma.Operation{OperationID: "createTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys", Tags: tag,
-		Summary: "Mint an API key bound to the tailnet (tenant /api/v2); the key is shown once", DefaultStatus: http.StatusCreated}, h.createAPIKey)
-	huma.Register(api, huma.Operation{OperationID: "listTailnetAPIKeys", Method: http.MethodGet, Path: "/v1/tailnets/{id}/apikeys", Tags: tag,
-		Summary: "List the API keys of a tailnet (no secrets)"}, h.listAPIKeys)
-	huma.Register(api, huma.Operation{OperationID: "revokeTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys/{key_id}/revoke", Tags: tag,
-		Summary: "Revoke an API key of the tailnet"}, h.revokeAPIKey)
-	huma.Register(api, huma.Operation{OperationID: "reconcileReport", Method: http.MethodGet, Path: "/v1/reconcile", Tags: tag,
-		Summary: "Cross-cluster anomalies R1-R9 by id and count (read only; nothing is moved)"}, h.reconcile)
-	huma.Register(api, huma.Operation{OperationID: "scheduleTailnetMove", Method: http.MethodPost, Path: "/v1/tailnets/{id}/moves", Tags: tag,
-		Summary: "Schedule a planned move of the tailnet to another cluster (P12b); requested at scheduled_at, handed over by the owner (ADR 0010)", DefaultStatus: http.StatusCreated}, h.scheduleMove)
-	huma.Register(api, huma.Operation{OperationID: "listTailnetMoves", Method: http.MethodGet, Path: "/v1/tailnets/{id}/moves", Tags: tag,
-		Summary: "Planned moves of the tailnet, newest first"}, h.listMoves)
-	huma.Register(api, huma.Operation{OperationID: "getMove", Method: http.MethodGet, Path: "/v1/moves/{move_id}", Tags: tag,
-		Summary: "Get a planned move"}, h.getMove)
-	huma.Register(api, huma.Operation{OperationID: "cancelMove", Method: http.MethodPost, Path: "/v1/moves/{move_id}/cancel", Tags: tag,
-		Summary: "Cancel a planned move before its hand-over"}, h.cancelMove)
-	huma.Register(api, huma.Operation{OperationID: "listAudit", Method: http.MethodGet, Path: "/v1/audit", Tags: tag,
-		Summary: "Newest operator audit entries"}, h.audit)
+	huma.Register(api, huma.Operation{
+		OperationID: "listClusters", Method: http.MethodGet, Path: "/v1/clusters", Tags: tag,
+		Summary: "List clusters with their tailnet and device counts",
+	}, h.listClusters)
+	huma.Register(api, huma.Operation{
+		OperationID: "createCluster", Method: http.MethodPost, Path: "/v1/clusters", Tags: tag,
+		Summary: "Register a cluster (DISABLED unless state is given)", DefaultStatus: http.StatusCreated,
+	}, h.createCluster)
+	huma.Register(api, huma.Operation{
+		OperationID: "getCluster", Method: http.MethodGet, Path: "/v1/clusters/{id}", Tags: tag,
+		Summary: "Get a cluster",
+	}, h.getCluster)
+	huma.Register(api, huma.Operation{
+		OperationID: "updateCluster", Method: http.MethodPatch, Path: "/v1/clusters/{id}", Tags: tag,
+		Summary: "Change endpoint, Noise public key or device budget",
+	}, h.updateCluster)
+	huma.Register(api, huma.Operation{
+		OperationID: "updateClusterState", Method: http.MethodPut, Path: "/v1/clusters/{id}/state", Tags: tag,
+		Summary: "Set the cluster state (revision only grows; owner epochs untouched)",
+	}, h.updateClusterState)
+	huma.Register(api, huma.Operation{
+		OperationID: "deleteCluster", Method: http.MethodDelete, Path: "/v1/clusters/{id}", Tags: tag,
+		Summary: "Delete a cluster that no tailnet references", DefaultStatus: http.StatusNoContent,
+	}, h.deleteCluster)
+	huma.Register(api, huma.Operation{
+		OperationID: "placeTailnet", Method: http.MethodGet, Path: "/v1/placement", Tags: tag,
+		Summary: "Preview the cluster a new tailnet of a class would get",
+	}, h.placeTailnet)
+	huma.Register(api, huma.Operation{
+		OperationID: "createTailnet", Method: http.MethodPost, Path: "/v1/tailnets", Tags: tag,
+		Summary: "Place and create a tailnet: PENDING, owner, deny-all policy, one transaction", DefaultStatus: http.StatusCreated,
+	}, h.createTailnet)
+	huma.Register(api, huma.Operation{
+		OperationID: "getTailnet", Method: http.MethodGet, Path: "/v1/tailnets/{id}", Tags: tag,
+		Summary: "Get a tailnet with its device count",
+	}, h.getTailnet)
+	huma.Register(api, huma.Operation{
+		OperationID: "activateTailnet", Method: http.MethodPost, Path: "/v1/tailnets/{id}/activate", Tags: tag,
+		Summary: "PENDING/SUSPENDED → ACTIVE at the expected owner epoch",
+	}, h.activateTailnet)
+	huma.Register(api, huma.Operation{
+		OperationID: "suspendTailnet", Method: http.MethodPost, Path: "/v1/tailnets/{id}/suspend", Tags: tag,
+		Summary: "PENDING/ACTIVE → SUSPENDED at the expected owner epoch",
+	}, h.suspendTailnet)
+	huma.Register(api, huma.Operation{
+		OperationID: "moveTailnetOwner", Method: http.MethodPost, Path: "/v1/tailnets/{id}/owner", Tags: tag,
+		Summary: "Request a move to another cluster (moving_to; the owner hands it over, owner_epoch + 1, ADR 0010), or bump the epoch on the same cluster",
+	}, h.moveOwner)
+	huma.Register(api, huma.Operation{
+		OperationID: "getTailnetQuota", Method: http.MethodGet, Path: "/v1/tailnets/{id}/quota", Tags: tag,
+		Summary: "Enrollment quota decision of a tailnet",
+	}, h.quota)
+	huma.Register(api, huma.Operation{
+		OperationID: "createTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys", Tags: tag,
+		Summary: "Mint an API key bound to the tailnet (tenant /api/v2); the key is shown once", DefaultStatus: http.StatusCreated,
+	}, h.createAPIKey)
+	huma.Register(api, huma.Operation{
+		OperationID: "listTailnetAPIKeys", Method: http.MethodGet, Path: "/v1/tailnets/{id}/apikeys", Tags: tag,
+		Summary: "List the API keys of a tailnet (no secrets)",
+	}, h.listAPIKeys)
+	huma.Register(api, huma.Operation{
+		OperationID: "revokeTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys/{key_id}/revoke", Tags: tag,
+		Summary: "Revoke an API key of the tailnet",
+	}, h.revokeAPIKey)
+	huma.Register(api, huma.Operation{
+		OperationID: "reconcileReport", Method: http.MethodGet, Path: "/v1/reconcile", Tags: tag,
+		Summary: "Cross-cluster anomalies R1-R9 by id and count (read only; nothing is moved)",
+	}, h.reconcile)
+	huma.Register(api, huma.Operation{
+		OperationID: "scheduleTailnetMove", Method: http.MethodPost, Path: "/v1/tailnets/{id}/moves", Tags: tag,
+		Summary:       "Schedule a planned move of the tailnet to another cluster (P12b); requested at scheduled_at, handed over by the owner (ADR 0010)",
+		DefaultStatus: http.StatusCreated,
+	}, h.scheduleMove)
+	huma.Register(api, huma.Operation{
+		OperationID: "listTailnetMoves", Method: http.MethodGet, Path: "/v1/tailnets/{id}/moves", Tags: tag,
+		Summary: "Planned moves of the tailnet, newest first",
+	}, h.listMoves)
+	huma.Register(api, huma.Operation{
+		OperationID: "getMove", Method: http.MethodGet, Path: "/v1/moves/{move_id}", Tags: tag,
+		Summary: "Get a planned move",
+	}, h.getMove)
+	huma.Register(api, huma.Operation{
+		OperationID: "cancelMove", Method: http.MethodPost, Path: "/v1/moves/{move_id}/cancel", Tags: tag,
+		Summary: "Cancel a planned move before its hand-over",
+	}, h.cancelMove)
+	huma.Register(api, huma.Operation{
+		OperationID: "listAudit", Method: http.MethodGet, Path: "/v1/audit", Tags: tag,
+		Summary: "Newest operator audit entries",
+	}, h.audit)
 }
 
 // op builds the placement.Op of a mutation: the verified operator identity

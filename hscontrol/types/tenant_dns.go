@@ -128,7 +128,8 @@ func atOrBelow(name, domain string) bool {
 // URL; the config file's looser check (any URL) is not enough for input a
 // tenant controls.
 func validTenantNameserver(ns string) bool {
-	if _, err := netip.ParseAddr(ns); err == nil {
+	_, err := netip.ParseAddr(ns)
+	if err == nil {
 		return true
 	}
 
@@ -163,6 +164,8 @@ func (l TenantDNSLimits) orDefaults() TenantDNSLimits {
 // outside the cluster's entirely; split domains and search domains must be
 // DNS names, split domains outside the cluster's base; nameservers IP
 // addresses or https URLs. Every violation is listed.
+//
+//nolint:gocyclo // one check per field; every violation is collected
 func (d *TenantDNS) Validate(slug, clusterBase string, lim TenantDNSLimits) error {
 	if d == nil {
 		return nil

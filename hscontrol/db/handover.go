@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
 )
 
 // ADR 0010: a move to another cluster is requested (tailnets.
@@ -27,7 +26,7 @@ var ErrHandoverStale = errors.New("tailnet hand-over: move no longer pending at 
 
 // dbNow is the database clock of p's dialect (as cluster_leases uses).
 func (p *Platform) dbNow() string {
-	if p.db.Name() == "postgres" {
+	if p.db.Name() == dialectPostgres {
 		return lease.PostgresNow
 	}
 

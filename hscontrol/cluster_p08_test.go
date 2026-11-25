@@ -81,7 +81,7 @@ func TestP08ClusterServerURLMustBeHostname(t *testing.T) {
 
 	for _, u := range []string{"http://127.0.0.1:8080", "https://[::1]:8443", "", "not a url", "https://"} {
 		_, err := clusterHost(u)
-		assert.ErrorIs(t, err, errClusterServerURL, u)
+		require.ErrorIs(t, err, errClusterServerURL, u)
 	}
 
 	for _, u := range []string{"http://localhost:8080", "https://c1.cp.gta5web.online:8443"} {

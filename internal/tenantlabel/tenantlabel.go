@@ -86,5 +86,6 @@ func reset() {
 
 	admitted = map[string]struct{}{}
 	limit = DefaultLimit
+
 	labelled.Set(0)
 }

@@ -94,7 +94,14 @@ func writeAPIError(w http.ResponseWriter, status int, msg string) {
 	}
 
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"message": msg, "status": status})
+
+	err := json.NewEncoder(w).Encode(struct {
+		Message string `json:"message"`
+		Status  int    `json:"status"`
+	}{msg, status})
+	if err != nil {
+		log.Debug().Err(err).Msg("cluster API: writing error response")
+	}
 }
 
 // apiToken extracts the API key of a request: Bearer, or HTTP Basic with the
@@ -144,7 +151,7 @@ func (c *Cluster) APIv2Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, keyID, err := c.platform.TailnetForAPIKey(token)
+	id, keyID, err := c.platform.TailnetForAPIKey(token) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
 	if err != nil {
 		if errors.Is(err, db.ErrUnknownTenant) {
 			clusterAPIRefused.WithLabelValues("unauthenticated").Inc()
