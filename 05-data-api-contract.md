@@ -52,7 +52,7 @@ Một PostgreSQL cho mọi cluster (ADR 0005). SQLite chỉ cho dev/unit test, c
 
 | Table/concept | Scope bắt buộc | Constraint/Index bắt buộc |
 |---|---|---|
-| `tailnets` | Nền tảng (đọc bởi cluster sở hữu, bootstrap, placement) | Unique ID và slug, status enum, `owner_cluster_id` FK `clusters`, `owner_epoch` ≥ 1 đơn điệu |
+| `tailnets` | Nền tảng (đọc bởi cluster sở hữu, bootstrap, placement) | Unique ID và slug, status enum, `owner_cluster_id` (không FK tới `clusters`, P12 Q10: owner chưa đăng ký = R1 trong báo cáo reconcile), `owner_epoch` ≥ 1 đơn điệu |
 | `users`, memberships | Tailnet | `(tailnet_id, principal_id)` unique, composite FK |
 | `nodes` | Tailnet | Index `(tailnet_id, machine_key)`; `(machine_key, node_key)` phân giải tối đa một node toàn DB (I01) |
 | `routes`, `exit_node_approvals` | Tailnet | composite FK node belongs to same tailnet |
@@ -77,18 +77,24 @@ CREATE TABLE clusters (
   id TEXT PRIMARY KEY,
   endpoint_url TEXT NOT NULL UNIQUE,     -- https://cluster-2.cp.gta5web.online:8443
   class TEXT NOT NULL CHECK (class IN ('shared','dedicated')),
-  state TEXT NOT NULL CHECK (state IN ('READY','DRAINING','MAINTENANCE','UNAVAILABLE')),
-  noise_public_key TEXT NOT NULL,        -- chỉ public key, để đối chiếu
+  state TEXT NOT NULL DEFAULT 'DISABLED' CHECK (state IN ('ACTIVE','DRAINING','DISABLED')),
+  noise_public_key TEXT,                 -- chỉ public key, để đối chiếu (P12 Q6: cluster ghi lần đầu khi lấy lease)
   software_version TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
 CREATE TABLE cluster_leases (
-  cluster_id TEXT PRIMARY KEY REFERENCES clusters(id),
+  cluster_id TEXT PRIMARY KEY,           -- không FK (P12 Q10)
   holder TEXT NOT NULL,
   epoch BIGINT NOT NULL CHECK (epoch >= 1),
   expires_at TIMESTAMPTZ NOT NULL
 );
 -- tailnets.owner_cluster_id / owner_epoch: xem PLAN §4.
+-- state (P10, P12 Q10): ACTIVE = placement có thể chọn; DRAINING = giữ tailnet đang có, không nhận tailnet mới;
+-- DISABLED = mặc định khi đăng ký, không nhận tailnet mới, bootstrap trả 503. Process vẫn phục vụ tailnet
+-- mình sở hữu ở mọi state (Q3). Schema thật: hscontrol/db/schema_postgres.sql.
+-- Không có FK tailnets.owner_cluster_id → clusters(id) và cluster_leases.cluster_id → clusters(id)
+-- (P12 Q10): owner chưa đăng ký được báo cáo là R1 qua GET /v1/reconcile của mesh-placement;
+-- CLI và API placement từ chối tạo/chuyển tailnet tới cluster chưa đăng ký hoặc không ACTIVE (Q5).
 
 -- Mọi mutation tenant (helper fencing, P10 + P11b), trong CÙNG transaction:
 --   SELECT 1 FROM cluster_leases
