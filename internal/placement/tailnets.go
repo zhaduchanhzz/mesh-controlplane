@@ -97,6 +97,13 @@ func (r *Registry) CreateTailnet(ctx context.Context, op Op, slug string, class 
 	})
 }
 
+// CreateTailnetOn creates a tailnet owned by the cluster the operator
+// names (CLI `cluster --cluster-id X tailnet create`, P12 owner decision
+// Q5). Stub (RED).
+func (r *Registry) CreateTailnetOn(ctx context.Context, op Op, slug, clusterID string) (types.Tailnet, error) {
+	return types.Tailnet{}, fmt.Errorf("%w: not implemented", ErrInvalid)
+}
+
 // ActivateTailnet makes a PENDING or SUSPENDED tailnet ACTIVE, if its
 // owner_epoch is still expectedEpoch and it has a policy row. A running
 // cluster process picks the change up on restart (live reload is the

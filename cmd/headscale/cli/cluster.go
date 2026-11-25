@@ -166,7 +166,10 @@ var tailnetCreateCmd = &cobra.Command{
 	Short: "Create tailnet --slug as PENDING with a deny-all policy",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return withPlatform(func(p *db.Platform) error {
-			tn, err := p.CreateTailnet(clusterSlug)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			tn, err := createTailnetCLI(ctx, p, clusterID, clusterSlug)
 			if err != nil {
 				return err
 			}
@@ -391,22 +394,15 @@ var tailnetReassignCmd = &cobra.Command{
 	Short: "Move tailnet --slug to cluster --to at the next owner_epoch (compare-and-swap)",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return withPlatform(func(p *db.Platform) error {
-			tn, err := p.TailnetBySlug(clusterSlug)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			tn, err := reassignTailnetCLI(ctx, p, clusterID, clusterSlug, clusterMoveTo)
 			if err != nil {
 				return err
 			}
 
-			id, err := tailnet.ParseID(tn.ID)
-			if err != nil {
-				return err
-			}
-
-			epoch, err := p.ReassignTailnet(id, tn.OwnerEpoch, clusterMoveTo)
-			if err != nil {
-				return err
-			}
-
-			return printJSON(map[string]any{"id": tn.ID, "slug": tn.Slug, "owner": clusterMoveTo, "epoch": epoch})
+			return printJSON(map[string]any{"id": tn.ID, "slug": tn.Slug, "owner": tn.OwnerClusterID, "epoch": tn.OwnerEpoch})
 		})
 	},
 }
@@ -445,4 +441,33 @@ var clusterRegisterCmd = &cobra.Command{
 			return printJSON(map[string]any{"id": c.ID, "class": c.Class, "state": c.State, "max_devices": c.MaxDevices})
 		})
 	},
+}
+
+// createTailnetCLI creates tailnet slug owned by cluster, PENDING with a
+// deny-all policy.
+func createTailnetCLI(_ context.Context, p *db.Platform, _ string, slug string) (types.Tailnet, error) {
+	return p.CreateTailnet(slug)
+}
+
+// reassignTailnetCLI moves tailnet slug from cluster (its owner) to to at
+// the next owner_epoch.
+func reassignTailnetCLI(_ context.Context, p *db.Platform, _ string, slug, to string) (types.Tailnet, error) {
+	tn, err := p.TailnetBySlug(slug)
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	id, err := tailnet.ParseID(tn.ID)
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	epoch, err := p.ReassignTailnet(id, tn.OwnerEpoch, to)
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	tn.OwnerClusterID, tn.OwnerEpoch = to, epoch
+
+	return tn, nil
 }
