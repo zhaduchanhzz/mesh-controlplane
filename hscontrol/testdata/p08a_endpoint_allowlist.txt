@@ -45,6 +45,7 @@ cluster-v2 GET /api/v2/tailnet/{tailnet}/acl auth
 cluster-v2 GET /api/v2/tailnet/{tailnet}/devices auth
 cluster-v2 GET /api/v2/tailnet/{tailnet}/keys auth
 cluster-v2 GET /api/v2/tailnet/{tailnet}/keys/{keyId} auth
+cluster-v2 GET /api/v2/tailnet/{tailnet}/scheduled-move auth
 cluster-v2 GET /api/v2/tailnet/{tailnet}/settings auth
 cluster-v2 GET /api/v2/tailnet/{tailnet}/users auth
 cluster-v2 GET /api/v2/users/{id} auth
@@ -136,6 +137,7 @@ public GET /api/v2/tailnet/{tailnet}/acl auth
 public GET /api/v2/tailnet/{tailnet}/devices auth
 public GET /api/v2/tailnet/{tailnet}/keys auth
 public GET /api/v2/tailnet/{tailnet}/keys/{keyId} auth
+public GET /api/v2/tailnet/{tailnet}/scheduled-move auth
 public GET /api/v2/tailnet/{tailnet}/settings auth
 public GET /api/v2/tailnet/{tailnet}/users auth
 public GET /api/v2/users/{id} auth
@@ -218,6 +220,7 @@ unix GET /api/v2/tailnet/{tailnet}/acl local-trust
 unix GET /api/v2/tailnet/{tailnet}/devices local-trust
 unix GET /api/v2/tailnet/{tailnet}/keys local-trust
 unix GET /api/v2/tailnet/{tailnet}/keys/{keyId} local-trust
+unix GET /api/v2/tailnet/{tailnet}/scheduled-move local-trust
 unix GET /api/v2/tailnet/{tailnet}/settings local-trust
 unix GET /api/v2/tailnet/{tailnet}/users local-trust
 unix GET /api/v2/users/{id} local-trust

@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	_ = registerScheduledMove // RED: not registered yet
+	registrations = append(registrations, registerScheduledMove)
 }
 
 // ScheduledMove is the planned move of the tailnet to another control
