@@ -70,6 +70,7 @@ Nhánh `feat/P08b-control-plane` → `master`. Evidence đầy đủ: `evidence/
   - SQL thô (tenantscope không lọc): mọi câu `INSERT/UPDATE/SELECT` đều có `tailnet_id` của tailnet được nêu;
   - `RevokeAPIKey` có điều kiện `tailnet_id = ? AND kind = 'api' AND id = ?`;
   - user của key tra bằng `tailnet_id = ? AND name = ?`, và trigger `credentials` chặn thêm một lần.
+- [ ] Hai câu ghi `credentials` chạy dưới `tenantscope.LockOwnership` (như `SetTailnetDNS`). Mục mới trong `rawTenantWriteAllowlist` (`hscontrol/db/raw_write_guard_test.go`) có lý do rõ; không có file nào khác được thêm vào allowlist.
 - [ ] Key không được lưu và không được ghi log. `platform_idempotency.response` và `platform_audit.detail` chỉ chứa metadata (test `TestAPIKeyLifecycle`, `TestOperatorAPIKeys`, E2E K01).
 - [ ] Placement API: ba operation mới dùng `op()` (mutation) và `readGuard` (đọc). Mutation bắt buộc `Idempotency-Key`. Thời hạn tối đa 365 ngày.
 - [ ] CLI `apikey create` in key ra stdout đúng một lần (công cụ của operator). Harness redact key trong mọi artifact (E2E S01).

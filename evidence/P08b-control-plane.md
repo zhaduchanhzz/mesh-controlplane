@@ -109,7 +109,21 @@ Các test RED đều được chạy bằng `go test -race -count=1 [-tags p05cl
 
 ### Lần chạy cuối
 
-RACE_RESULTS
+Script `p08b-final.sh` trên mc-ci, cây `1923634`, log ở `~/p08b-full/final/`.
+
+| Bước | Lệnh | Exit | Thời gian |
+|---|---|---|---|
+| vet | `go vet ./...` | 0 | 12 s |
+| vet-cluster | `go vet -tags p05cluster ./hscontrol/servertest/` | 0 | 3 s |
+| race-all | `nix shell --inputs-from . nixpkgs#tscli nixpkgs#opentofu -c go test -race -count=1 -timeout 45m ./hscontrol/... ./internal/... ./cmd/...` | 0 | 2080 s |
+| race-pg | `MESH_TEST_POSTGRES_DSN=<pg tạm> go test -race -count=1 -timeout 30m ./hscontrol/db/... ./internal/...` | 0 | 163 s |
+| cluster-suite | `go test -race -count=1 -timeout 40m -tags p05cluster -run 'Cluster\|P11b\|P08b\|P08a' ./hscontrol/servertest/` | 0 | 656 s |
+
+**Lần chạy trước (cây `10b738b`) có FAIL, đã sửa:**
+- `TestNoRawTenantWritesOutsideFence`: hai câu SQL thô ghi `credentials` trong `internal/placement/apikeys.go` chưa được review. Đã đưa vào dưới `tenantscope.LockOwnership` và thêm vào allowlist có lý do (`1923634`).
+- `TestACMETLSSettings`: trùng cổng loopback khi bind, không liên quan P08b; chạy lại riêng 3/3 PASS, và PASS trong lần chạy đầy đủ ở trên.
+
+Sau khi sửa đã chạy lại E2E: 16/16 ×2 (`artifacts/1923634/P08b/e2e-20261125T025226Z`, `…T025500Z`).
 
 ## E2E artifacts / protocol map redacted
 
