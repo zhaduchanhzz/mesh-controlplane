@@ -1,6 +1,6 @@
 # ADR 0009 — DERP relay ngoài cho cluster mode: một region mỗi cluster, verify theo cluster
 
-- **Trạng thái:** Đề xuất (P09, 2026-11-26). Chờ chủ dự án duyệt trước khi cài.
+- **Trạng thái:** Chấp nhận. Chủ dự án duyệt ngày 2026-11-26.
 - **Ticket:** P09 (Gate N1, S15). Quyết định Q1 ngày 2026-11-25: relay riêng `mc-relay` (VMID 7714, 10.77.40.30) trên underlay `mcsvc`.
 - **Liên quan:**
   - ADR 0005: một Noise key cho mỗi cluster; lease active/standby.
