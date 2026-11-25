@@ -424,6 +424,15 @@ func (b *MapResponseBuilder) WithPeersRemoved(removedIDs ...types.NodeID) *MapRe
 }
 
 // Build finalizes the response and returns marshaled bytes.
+// MoveNoticeID is the DisplayMessages key of a planned tailnet move (P12b).
+const MoveNoticeID tailcfg.DisplayMessageID = "mesh-tailnet-move"
+
+// WithMoveNotice tells the client about a planned move of its tailnet
+// (P12b, owner decision Q1).
+func (b *MapResponseBuilder) WithMoveNotice() *MapResponseBuilder {
+	return b
+}
+
 func (b *MapResponseBuilder) Build() (*tailcfg.MapResponse, error) {
 	if len(b.errs) > 0 {
 		return nil, multierr.New(b.errs...)

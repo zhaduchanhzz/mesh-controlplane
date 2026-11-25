@@ -216,6 +216,11 @@ type sshCheckAuthRecord struct {
 // See [policy.PolicyManager] for policy evaluation and [NodeStore] for the
 // in-memory node cache.
 type State struct {
+	// moveNotice is the planned move of this tailnet (P12b); moveNoticeSeen
+	// is set once one was ever announced.
+	moveNotice     atomic.Pointer[types.MoveNotice]
+	moveNoticeSeen atomic.Bool
+
 	// cfg holds the current Headscale configuration
 	cfg *types.Config
 

@@ -873,6 +873,12 @@ func (c *TestClient) ReconnectAfter(tb testing.TB, d time.Duration) {
 
 // --- State accessors ---
 
+// HealthMessages returns the client's current health warnings, including
+// those the control plane sent (Health / DisplayMessages).
+func (c *TestClient) HealthMessages() []string {
+	return c.tracker.Strings()
+}
+
 // Netmap returns the latest [netmap.NetworkMap], or nil if none received yet.
 func (c *TestClient) Netmap() *netmap.NetworkMap {
 	c.mu.RLock()
