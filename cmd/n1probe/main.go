@@ -4,15 +4,18 @@
 //	n1probe switch-tenant --url U --key-a FILE --key-b FILE
 //	n1probe flood --kind enroll|bootstrap|mapstream --url U [--bootstrap-url B]
 //	              [--tenant SLUG] --key FILE --rate R --duration D [--max-inflight N]
+//	n1probe derp-check --host H --ip IP --port P [--count N] [--timeout D]
 //
 // Keys are read from files ("-" for stdin, one key) and never printed. The
 // output is JSON on stdout: one line per switch-tenant case, one object for
 // a flood.
 //
-// Exit status: 0 all cases pass / flood ran; 1 a switch-tenant case leaked
-// (an answer to a refused request, or an identifier of the other tenant);
-// 2 usage or setup error (no case ran); 3 no leak but an expectation failed
-// (a positive control, a refusal or a session close).
+// Exit status: 0 all cases pass / flood ran / no DERP attempt admitted;
+// 1 a switch-tenant case leaked (an answer to a refused request, or an
+// identifier of the other tenant), or a derp-check attempt with an unknown
+// node key was admitted; 2 usage or setup error (nothing ran); 3 no leak
+// but an expectation failed (a positive control, a refusal or a session
+// close).
 package main
 
 import (
@@ -37,7 +40,8 @@ func main() {
 const usage = `usage:
   n1probe switch-tenant --url U --key-a FILE --key-b FILE
   n1probe flood --kind enroll|bootstrap|mapstream --url U [--bootstrap-url B] [--tenant SLUG]
-                --key FILE --rate R --duration D [--max-inflight N]`
+                --key FILE --rate R --duration D [--max-inflight N]
+  n1probe derp-check --host H --ip IP --port P [--count N] [--timeout D]`
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -54,6 +58,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return switchTenant(ctx, args[1:], stdin, stdout, stderr)
 	case "flood":
 		return flood(ctx, args[1:], stdin, stdout, stderr)
+	case "derp-check":
+		return derpCheck(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, usage)
 
@@ -187,4 +193,45 @@ func flood(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 	_ = json.NewEncoder(stdout).Encode(res)
 
 	return 0
+}
+
+// derpCheck connects to a DERP node with fresh random node keys (S15, ADR
+// 0009): a relay that verifies clients against the control plane must not
+// admit any of them.
+func derpCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("derp-check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	host := fs.String("host", "", "DERP hostname (SNI and certificate name)")
+	ip := fs.String("ip", "", "IPv4 address to dial")
+	port := fs.Int("port", 443, "DERP TLS port")
+	count := fs.Int("count", 3, "attempts, each with a new random node key")
+	timeout := fs.Duration("timeout", 10*time.Second, "per attempt")
+
+	if fs.Parse(args) != nil || *host == "" || *ip == "" {
+		fmt.Fprintln(stderr, usage)
+
+		return 2
+	}
+
+	attempts, err := n1probe.DERPCheck(ctx, n1probe.DERPCheckConfig{
+		Host: *host, IP: *ip, Port: *port, Count: *count, Timeout: *timeout,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+
+		return 2
+	}
+
+	enc := json.NewEncoder(stdout)
+	code := 0
+
+	for _, a := range attempts {
+		_ = enc.Encode(a)
+
+		if a.Admitted {
+			code = 1
+		}
+	}
+
+	return code
 }
