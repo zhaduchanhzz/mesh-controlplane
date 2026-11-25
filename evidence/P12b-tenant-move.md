@@ -21,6 +21,8 @@
 | Q5 re-bootstrap | `internal/rebootstrap`, `cmd/mesh-rebootstrap` (công cụ vận hành; test viết cùng code, không có commit RED riêng) | `996ce77` |
 | Q6 B3 | `bench-db b3 -designs …,registry`: đo đường `MoveOwner` + `HandOver` thật | `3749ec8` (build/vet, chưa chạy) |
 | Q7 E2E | `infra/lab/e2e/p12b/run.sh` (`bash -n` sạch; shellcheck không có trên máy; chưa chạy) | `c0667d2` |
+| Merge master | `44e523a` (feat/CI-green) vào nhánh; xung đột duy nhất `placementapi/api.go` (định dạng route của master + 4 route move) | `4088df8` |
+| Lint | golangci-lint 2.15.0 từ flake.lock (như `ci.yml`): 46 → **0 issues**; hai `//nolint:gosec` có lý do (G204, G703) trong `cmd/mesh-rebootstrap` | `464aac3` |
 
 ## ADR note (ghi nhận thiết kế, theo yêu cầu coordinator)
 
