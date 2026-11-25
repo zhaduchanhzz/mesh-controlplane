@@ -262,7 +262,7 @@ Metadata, policy deny, settings và owner nằm **cùng một transaction trên 
 
 | ID | Công việc | Trạng thái | Phụ thuộc | Bằng chứng merge |
 |---|---|---|---|---|
-| P00 | Rebaseline snapshot v0.1, provenance, sửa lệch docs, CI baseline | **Đã merge** (`aef014f`); toolchain gate `Verified` trên `mc-ci` (`evidence/P00-toolchain-ci.md`); CI GitHub chưa chạy; chưa `Reviewed` | — | commit hash, `PROVENANCE.md`, baseline Linux |
+| P00 | Rebaseline snapshot v0.1, provenance, sửa lệch docs, CI baseline | **Đã merge** (`aef014f`); toolchain gate `Verified` trên `mc-ci` (`evidence/P00-toolchain-ci.md`); CI GitHub xanh trên `master` từ `44e523a` (2026-11-26); `PROVENANCE.md` có; **Gate N0 `Verified`** (`evidence/N0-gate.md`), chờ nghiệm thu; chưa `Reviewed` | — | commit hash, `PROVENANCE.md`, baseline Linux |
 | P00b | Benchmark single-process 1k/5k/10k node | **Đã merge** (`a17872f`), `Verified`, chưa `Reviewed` (`evidence/P00b-capacity-baseline.md`) | P00 | `evidence/P00b-capacity-baseline.md` |
 | P01 | Module rename, typed TailnetID (`internal/tailnet`) | **Đã merge** (`634c806`), `Verified`, chưa `Reviewed` (`evidence/source-inventory-P01.md`) | P00 | `evidence/source-inventory-P01.md` |
 | P02 | POC Noise key theo tenant + front door theo Host | **Đã merge** (`7adf255`, POC `Verified`, `evidence/source-inventory-P02.md`). **Thiết kế đã bị thay** bởi ADR 0005; giữ làm hồ sơ | P01 | `evidence/source-inventory-P02.md` |
