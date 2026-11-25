@@ -184,7 +184,8 @@ func (r *Registry) DeleteCluster(ctx context.Context, op Op, id string) error {
 
 		var n int64
 
-		err = tx.Raw(`SELECT count(*) FROM tailnets WHERE owner_cluster_id = ?`, id).Scan(&n).Error
+		// Owner, or target of a pending move (ADR 0010).
+		err = tx.Raw(`SELECT count(*) FROM tailnets WHERE owner_cluster_id = ? OR moving_to_cluster_id = ?`, id, id).Scan(&n).Error
 		if err != nil {
 			return struct{}{}, "", fmt.Errorf("counting tailnets: %w", err)
 		}

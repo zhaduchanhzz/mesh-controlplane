@@ -78,6 +78,8 @@ type TailnetView struct {
 	PolicyRevision uint64    `json:"policy_revision"`
 	ConfigRevision uint64    `json:"config_revision"`
 	Devices        *int64    `json:"devices,omitempty"`
+	// MovingToClusterID is the target of a pending move (ADR 0010).
+	MovingToClusterID *string `json:"moving_to_cluster_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
@@ -86,7 +88,7 @@ func view(tn types.Tailnet) TailnetView {
 	return TailnetView{
 		ID: tn.ID, Slug: tn.Slug, Status: string(tn.Status), OwnerClusterID: tn.OwnerClusterID,
 		OwnerEpoch: tn.OwnerEpoch, PolicyRevision: tn.PolicyRevision, ConfigRevision: tn.ConfigRevision,
-		CreatedAt: tn.CreatedAt, UpdatedAt: tn.UpdatedAt,
+		CreatedAt: tn.CreatedAt, UpdatedAt: tn.UpdatedAt, MovingToClusterID: tn.MovingToClusterID,
 	}
 }
 
@@ -237,7 +239,7 @@ func register(api huma.API, h *handlers) {
 	huma.Register(api, huma.Operation{OperationID: "suspendTailnet", Method: http.MethodPost, Path: "/v1/tailnets/{id}/suspend", Tags: tag,
 		Summary: "PENDING/ACTIVE → SUSPENDED at the expected owner epoch"}, h.suspendTailnet)
 	huma.Register(api, huma.Operation{OperationID: "moveTailnetOwner", Method: http.MethodPost, Path: "/v1/tailnets/{id}/owner", Tags: tag,
-		Summary: "Compare-and-swap the owner cluster; owner_epoch + 1"}, h.moveOwner)
+		Summary: "Request a move to another cluster (moving_to; the owner hands it over, owner_epoch + 1, ADR 0010), or bump the epoch on the same cluster"}, h.moveOwner)
 	huma.Register(api, huma.Operation{OperationID: "getTailnetQuota", Method: http.MethodGet, Path: "/v1/tailnets/{id}/quota", Tags: tag,
 		Summary: "Enrollment quota decision of a tailnet"}, h.quota)
 	huma.Register(api, huma.Operation{OperationID: "createTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys", Tags: tag,

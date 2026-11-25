@@ -66,11 +66,11 @@ const DefaultMoveMaxAge = 5 * time.Minute
 // Finding is one anomaly. It carries identifiers and counts only: no slug,
 // endpoint, key or tenant data (I15).
 type Finding struct {
-	Code      FindingCode `json:"code" enum:"R1_OWNER_UNREGISTERED,R2_OWNER_DISABLED,R3_OWNER_DRAINING,R4_OWNER_NO_LIVE_LEASE,R5_CLUSTER_ACTIVE_NO_LIVE_LEASE,R6_CLUSTER_NO_NOISE_KEY,R7_CLUSTER_OVER_CAPACITY,R8_DEDICATED_MULTIPLE_TAILNETS,R9_TAILNET_PENDING_TOO_LONG" doc:"anomaly; see evidence/source-inventory-P12.md §3.2"`
-	ClusterID string      `json:"cluster_id,omitempty" doc:"cluster concerned (owner of the tailnet for R1-R4, R9)"`
-	TailnetID string      `json:"tailnet_id,omitempty" doc:"tailnet concerned (R1-R4, R9)"`
-	Count     int64       `json:"count,omitempty" doc:"R7 devices, R8 live tailnets, R9 seconds PENDING"`
-	Limit     int64       `json:"limit,omitempty" doc:"R7 max_devices, R8 1, R9 seconds allowed"`
+	Code      FindingCode `json:"code" enum:"R1_OWNER_UNREGISTERED,R2_OWNER_DISABLED,R3_OWNER_DRAINING,R4_OWNER_NO_LIVE_LEASE,R5_CLUSTER_ACTIVE_NO_LIVE_LEASE,R6_CLUSTER_NO_NOISE_KEY,R7_CLUSTER_OVER_CAPACITY,R8_DEDICATED_MULTIPLE_TAILNETS,R9_TAILNET_PENDING_TOO_LONG,R10_MOVE_PENDING_TOO_LONG" doc:"anomaly; see evidence/source-inventory-P12.md §3.2"`
+	ClusterID string      `json:"cluster_id,omitempty" doc:"cluster concerned (owner of the tailnet for R1-R4, R9, R10)"`
+	TailnetID string      `json:"tailnet_id,omitempty" doc:"tailnet concerned (R1-R4, R9, R10)"`
+	Count     int64       `json:"count,omitempty" doc:"R7 devices, R8 live tailnets, R9 seconds PENDING, R10 seconds since the move was requested"`
+	Limit     int64       `json:"limit,omitempty" doc:"R7 max_devices, R8 1, R9 and R10 seconds allowed"`
 }
 
 // Report is the cross-cluster reconcile report.
@@ -98,7 +98,7 @@ func (r *Registry) Reconcile(ctx context.Context) (Report, error) {
 			return fmt.Errorf("listing clusters: %w", err)
 		}
 
-		err = tx.Select("id", "owner_cluster_id", "status", "created_at").
+		err = tx.Select("id", "owner_cluster_id", "status", "created_at", "updated_at", "moving_to_cluster_id").
 			Where("deleted_at IS NULL").Order("id").Find(&tns).Error
 		if err != nil {
 			return fmt.Errorf("listing tailnets: %w", err)
@@ -156,6 +156,17 @@ func (r *Registry) Reconcile(ctx context.Context) (Report, error) {
 			out = append(out, Finding{
 				Code: FindingPendingTooLong, ClusterID: owner, TailnetID: t.ID,
 				Count: int64(age / time.Second), Limit: int64(r.cfg.PendingMaxAge / time.Second),
+			})
+		}
+	}
+
+	for _, t := range tns {
+		// The request sets updated_at; nothing else updates a tailnet
+		// whose move is pending but the hand-over, which clears it.
+		if age := now.Sub(t.UpdatedAt); t.MovingToClusterID != nil && age > r.cfg.MoveMaxAge {
+			out = append(out, Finding{
+				Code: FindingMovePendingTooLong, ClusterID: t.OwnerClusterID, TailnetID: t.ID,
+				Count: int64(age / time.Second), Limit: int64(r.cfg.MoveMaxAge / time.Second),
 			})
 		}
 	}

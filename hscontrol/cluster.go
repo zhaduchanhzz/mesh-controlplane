@@ -107,6 +107,11 @@ type Cluster struct {
 	mu       sync.RWMutex
 	runtimes map[tailnet.ID]*tenantRuntime
 	order    []tailnet.ID
+	// retiring holds, per tailnet, a channel closed once its retired
+	// runtime stopped serving (ADR 0010: a hand-over waits for it);
+	// handingOver marks tailnets whose hand-over is under way. Under mu.
+	retiring    map[tailnet.ID]chan struct{}
+	handingOver map[tailnet.ID]bool
 
 	// Set by Serve: runtimes loaded later are started under them.
 	serveCtx   context.Context //nolint:containedctx // lifetime of Serve
@@ -213,7 +218,9 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		noiseKey: noiseKey,
 		registry: registry,
 		front:    &Headscale{cfg: cfg, noisePrivateKey: noiseKey},
-		runtimes: make(map[tailnet.ID]*tenantRuntime),
+		runtimes:    make(map[tailnet.ID]*tenantRuntime),
+		retiring:    make(map[tailnet.ID]chan struct{}),
+		handingOver: make(map[tailnet.ID]bool),
 		lease:    mgr,
 	}
 	c.api = newClusterAPI(c)
@@ -359,6 +366,12 @@ func (c *Cluster) reconcile() {
 	if !c.ready.Load() || !c.leaseHeld() {
 		return // standby, or the lease is ending: onLeaseLost retires
 	}
+
+	// ADR 0010: first give away the tailnets with a move requested (they
+	// are not in OwnedTailnets any more) and take in those whose owner
+	// cluster is dead, so the listing below loads them in this tick.
+	c.handOverRequested()
+	c.takeOverOrphans()
 
 	owned, err := c.platform.OwnedTailnets(c.platform.ClusterID())
 	if err != nil {
@@ -518,6 +531,9 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 
 	delete(c.runtimes, rt.id)
 	c.order = removeID(c.order, rt.id)
+
+	stopped := make(chan struct{})
+	c.retiring[rt.id] = stopped
 	c.mu.Unlock()
 
 	log.Warn().Str("tailnet", rt.id.String()).Str("slug", rt.slug).Uint64("epoch", rt.epoch).
@@ -535,7 +551,115 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 		defer c.stopping.Done()
 
 		c.stopRuntime(rt)
+		close(stopped)
+
+		c.mu.Lock()
+		if c.retiring[rt.id] == stopped {
+			delete(c.retiring, rt.id)
+		}
+		c.mu.Unlock()
 	}()
+}
+
+// handOverRequested gives away the tailnets this cluster owns with a move
+// requested (ADR 0010): the runtime, if any, is retired; once it stopped
+// serving (out of routing, sessions closed, map streams ended, requests
+// drained or the drain timed out with the runtime refusing everything),
+// the owner is flipped to the target. A failed flip is retried next tick.
+func (c *Cluster) handOverRequested() {
+	moving, err := c.platform.PendingHandovers()
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: listing hand-overs")
+
+		return
+	}
+
+	for _, tn := range moving {
+		id, err := tailnet.ParseID(tn.ID)
+		if err != nil || tn.MovingToClusterID == nil {
+			continue
+		}
+
+		to, epoch := *tn.MovingToClusterID, tn.OwnerEpoch
+
+		c.mu.Lock()
+		if c.handingOver[id] {
+			c.mu.Unlock()
+
+			continue
+		}
+
+		c.handingOver[id] = true
+		rt := c.runtimes[id]
+		c.mu.Unlock()
+
+		if rt != nil {
+			c.retire(rt, "move to cluster "+to+" requested")
+		}
+
+		c.mu.RLock()
+		stopped := c.retiring[id]
+		c.mu.RUnlock()
+
+		c.stopping.Add(1)
+
+		go func() {
+			defer c.stopping.Done()
+
+			if stopped != nil {
+				<-stopped
+			}
+
+			c.handOver(id, epoch, to)
+		}()
+	}
+}
+
+func (c *Cluster) handOver(id tailnet.ID, epoch uint64, to string) {
+	defer func() {
+		c.mu.Lock()
+		delete(c.handingOver, id)
+		c.mu.Unlock()
+	}()
+
+	newOwner, err := c.platform.HandOver(id, epoch)
+	if err != nil {
+		log.Warn().Err(err).Str("tailnet", id.String()).Str("to", to).Uint64("epoch", epoch).
+			Msg("tailnet hand-over not done; retried on the next reconcile")
+
+		return
+	}
+
+	log.Info().Str("tailnet", id.String()).Str("to", newOwner).Uint64("owner_epoch", epoch+1).
+		Msg("tailnet handed over: no longer served here")
+}
+
+// takeOverOrphans completes the moves to this cluster whose owner cluster
+// has no live lease: no process of it serves them (ADR 0010 §4).
+func (c *Cluster) takeOverOrphans() {
+	orphans, err := c.platform.OrphanedIncoming()
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: listing orphaned moves")
+
+		return
+	}
+
+	for _, tn := range orphans {
+		id, err := tailnet.ParseID(tn.ID)
+		if err != nil {
+			continue
+		}
+
+		err = c.platform.TakeOver(id, tn.OwnerClusterID, tn.OwnerEpoch)
+		if err != nil {
+			log.Warn().Err(err).Str("tailnet", tn.ID).Str("from", tn.OwnerClusterID).Msg("tailnet take-over not done")
+
+			continue
+		}
+
+		log.Warn().Str("tailnet", tn.ID).Str("from", tn.OwnerClusterID).Uint64("owner_epoch", tn.OwnerEpoch+1).
+			Msg("tailnet taken over from a cluster with no live lease")
+	}
 }
 
 func (c *Cluster) stopRuntime(rt *tenantRuntime) {

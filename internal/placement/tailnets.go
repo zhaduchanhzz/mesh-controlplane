@@ -181,16 +181,27 @@ func (r *Registry) GetTailnet(ctx context.Context, id string) (TailnetInfo, erro
 	return TailnetInfo{Tailnet: tn, Devices: n}, nil
 }
 
-// MoveOwner hands tailnet id from fromCluster at fromEpoch to toCluster,
-// raising owner_epoch by one, as a compare-and-swap:
+// MoveOwner moves tailnet id from fromCluster at fromEpoch to toCluster.
 //
-//	UPDATE tailnets SET owner_cluster_id = to, owner_epoch = owner_epoch + 1
+// To another cluster it is a request (ADR 0010), a compare-and-swap that
+// changes neither owner nor epoch:
+//
+//	UPDATE tailnets SET moving_to_cluster_id = to
 //	 WHERE id = ? AND owner_cluster_id = from AND owner_epoch = fromEpoch
+//	   AND moving_to_cluster_id IS NULL
 //
-// Of concurrent callers with the same (from, epoch) exactly one wins; the
-// others get ErrStaleEpoch and change nothing. toCluster must be registered
-// and ACTIVE; a dedicated one must own no other live tailnet. Moving a
-// tenant's clients is P12b (re-bootstrap, new ControlURL, new login).
+// The owner cluster stops serving the tailnet, then hands it over (owner =
+// to, owner_epoch + 1; db.Platform.HandOver), or the target takes it over
+// if the owner cluster has no live lease; so two clusters never serve it at
+// once. One move is pending at a time: a second request is ErrConflict; a
+// stale owner or epoch is ErrStaleEpoch. CancelMove withdraws a request.
+//
+// To fromCluster itself it raises owner_epoch at once (one process retires
+// and reloads the runtime).
+//
+// toCluster must be registered and ACTIVE; a dedicated one must own no
+// other live tailnet. Moving a tenant's clients is P12b (re-bootstrap, new
+// ControlURL, new login).
 func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string, fromEpoch uint64, toCluster string) (types.Tailnet, error) {
 	if fromCluster == "" || toCluster == "" || fromEpoch == 0 {
 		return types.Tailnet{}, fmt.Errorf("%w: from cluster, from epoch and to cluster are required", ErrInvalid)
@@ -227,9 +238,17 @@ func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string,
 			}
 		}
 
-		res := tx.Exec(`UPDATE tailnets SET owner_cluster_id = ?, owner_epoch = owner_epoch + 1, updated_at = ?
-			WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND deleted_at IS NULL`,
-			toCluster, r.now(), id, fromCluster, fromEpoch)
+		var res *gorm.DB
+		if toCluster == fromCluster {
+			res = tx.Exec(`UPDATE tailnets SET owner_epoch = owner_epoch + 1, updated_at = ?
+				WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id IS NULL AND deleted_at IS NULL`,
+				r.now(), id, fromCluster, fromEpoch)
+		} else {
+			res = tx.Exec(`UPDATE tailnets SET moving_to_cluster_id = ?, updated_at = ?
+				WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id IS NULL AND deleted_at IS NULL`,
+				toCluster, r.now(), id, fromCluster, fromEpoch)
+		}
+
 		if res.Error != nil {
 			return types.Tailnet{}, "", fmt.Errorf("moving tailnet: %w", res.Error)
 		}
@@ -240,18 +259,58 @@ func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string,
 		}
 
 		if res.RowsAffected != 1 {
-			return types.Tailnet{}, "", fmt.Errorf("%w: tailnet %s is owned by %s at epoch %d",
-				ErrStaleEpoch, id, tn.OwnerClusterID, tn.OwnerEpoch)
+			return types.Tailnet{}, "", moveRefused(tn, fromCluster, fromEpoch)
 		}
 
 		return tn, "", nil
 	})
 }
 
+// moveRefused explains a MoveOwner compare-and-swap that changed nothing.
+func moveRefused(tn types.Tailnet, fromCluster string, fromEpoch uint64) error {
+	if tn.OwnerClusterID == fromCluster && tn.OwnerEpoch == fromEpoch && tn.MovingToClusterID != nil {
+		return fmt.Errorf("%w: a move of tailnet %s to %s is pending", ErrConflict, tn.ID, *tn.MovingToClusterID)
+	}
+
+	return fmt.Errorf("%w: tailnet %s is owned by %s at epoch %d", ErrStaleEpoch, tn.ID, tn.OwnerClusterID, tn.OwnerEpoch)
+}
+
 // CancelMove withdraws the move of tailnet id requested at epoch (ADR 0010),
-// while the owner has not handed it over yet.
+// while the owner has not handed it over yet: owner and epoch unchanged.
+// No move pending is ErrConflict; another epoch is ErrStaleEpoch.
 func (r *Registry) CancelMove(ctx context.Context, op Op, id string, epoch uint64) (types.Tailnet, error) {
-	return types.Tailnet{}, ErrInvalid
+	if epoch == 0 {
+		return types.Tailnet{}, fmt.Errorf("%w: epoch is required", ErrInvalid)
+	}
+
+	return mutate(ctx, r, op, "CancelMove", id, map[string]any{"epoch": epoch}, func(tx *gorm.DB) (types.Tailnet, string, error) {
+		err := tenantscope.LockOwnership(tx, id)
+		if err != nil {
+			return types.Tailnet{}, "", err
+		}
+
+		res := tx.Exec(`UPDATE tailnets SET moving_to_cluster_id = NULL, updated_at = ?
+			WHERE id = ? AND owner_epoch = ? AND moving_to_cluster_id IS NOT NULL AND deleted_at IS NULL`,
+			r.now(), id, epoch)
+		if res.Error != nil {
+			return types.Tailnet{}, "", fmt.Errorf("cancelling move: %w", res.Error)
+		}
+
+		tn, err := loadTailnet(tx, id)
+		if err != nil {
+			return types.Tailnet{}, "", err
+		}
+
+		if res.RowsAffected != 1 {
+			if tn.OwnerEpoch != epoch {
+				return types.Tailnet{}, "", fmt.Errorf("%w: tailnet %s is at epoch %d", ErrStaleEpoch, id, tn.OwnerEpoch)
+			}
+
+			return types.Tailnet{}, "", fmt.Errorf("%w: no move of tailnet %s pending", ErrConflict, id)
+		}
+
+		return tn, "", nil
+	})
 }
 
 func loadTailnet(db *gorm.DB, id string) (types.Tailnet, error) {
