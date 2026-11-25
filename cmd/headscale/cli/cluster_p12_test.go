@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 )
 
@@ -77,6 +79,14 @@ func p12Register(t *testing.T, p *db.Platform, id string, class placement.Class,
 	require.NoError(t, err)
 }
 
+// p12Live takes cluster id's lease as its running process would.
+func p12Live(t *testing.T, p *db.Platform, id string) {
+	t.Helper()
+
+	_, err := lease.NewStore(p.RegistryDB()).Acquire(context.Background(), id, "test-"+id, time.Hour)
+	require.NoError(t, err)
+}
+
 func p12Count(t *testing.T, p *db.Platform, q string, args ...any) int64 {
 	t.Helper()
 
@@ -89,7 +99,7 @@ func p12Count(t *testing.T, p *db.Platform, q string, args ...any) int64 {
 // P12, owner decision Q5: `cluster --cluster-id X tailnet create` goes
 // through the placement registry: X must be registered and ACTIVE, with
 // room (dedicated: no other live tailnet); it is audited as the CLI of X.
-// X's process need not run yet (no lease required for a named cluster).
+// X's process must hold X's lease (owner decision 2026-11-25).
 func TestCLITailnetCreateFollowsRegistry(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
@@ -101,6 +111,11 @@ func TestCLITailnetCreateFollowsRegistry(t *testing.T) {
 			assert.Zero(t, p12Count(t, p, `SELECT count(*) FROM tailnets WHERE slug = 'a'`))
 
 			p12Register(t, p, "c1", placement.ClassDedicated, placement.ClusterActive, 100)
+
+			_, err = createTailnetCLI(ctx, p, "c1", "a")
+			require.ErrorIs(t, err, placement.ErrNoLiveLease, "registered, but no process of c1 runs")
+
+			p12Live(t, p, "c1")
 
 			tn, err := createTailnetCLI(ctx, p, "c1", "a")
 			require.NoError(t, err)
@@ -128,6 +143,7 @@ func TestCLITailnetReassignFollowsRegistry(t *testing.T) {
 			p12Register(t, p, "c1", placement.ClassShared, placement.ClusterActive, 100)
 			p12Register(t, p, "c3", placement.ClassShared, placement.ClusterDisabled, 100)
 			p12Register(t, p, "c2", placement.ClassShared, placement.ClusterActive, 100)
+			p12Live(t, p, "c1")
 
 			tn, err := createTailnetCLI(ctx, p, "c1", "a")
 			require.NoError(t, err)
@@ -143,6 +159,11 @@ func TestCLITailnetReassignFollowsRegistry(t *testing.T) {
 			got, err := reassignTailnetCLI(ctx, p, "c1", "a", "c1")
 			require.NoError(t, err)
 			assert.Equal(t, uint64(2), got.OwnerEpoch, "same cluster: new epoch")
+
+			_, err = reassignTailnetCLI(ctx, p, "c1", "a", "c2")
+			require.ErrorIs(t, err, placement.ErrNoLiveLease, "c2 registered but no process of c2 runs")
+
+			p12Live(t, p, "c2")
 
 			got, err = reassignTailnetCLI(ctx, p, "c1", "a", "c2")
 			require.NoError(t, err)

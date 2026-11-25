@@ -13,8 +13,9 @@ import (
 // P12, owner decision Q5: a tailnet created on a cluster the operator names
 // (CLI) follows the registry rules: the cluster is registered and ACTIVE,
 // a dedicated cluster takes one live tailnet, a shared one must have room.
-// A live lease is NOT required: the operator names the cluster and may
-// create its tailnets before its process starts (lab harnesses do).
+// Owner decision 2026-11-25 (overrides the first Q5 design): the named
+// cluster must also have a process holding its lease, like automatic
+// placement (Q2): no tailnet is ever created where nothing serves it.
 func TestCreateTailnetOnNamedCluster(t *testing.T) {
 	for _, b := range backends() {
 		t.Run(b.name, func(t *testing.T) {
@@ -46,7 +47,23 @@ func TestCreateTailnetOnNamedCluster(t *testing.T) {
 				assert.Equal(t, before, count(t, gdb, `SELECT count(*) FROM tailnets`), "%s: nothing created", tc.cluster)
 			}
 
-			// Named cluster without a live lease: allowed.
+			// Named cluster without a live lease: refused, nothing created,
+			// both for a cluster that never ran and one whose lease expired.
+			for _, live := range []bool{false, true} {
+				if live {
+					setLease(t, gdb, "cold", false) // ran, then stopped renewing
+				}
+
+				before := count(t, gdb, `SELECT count(*) FROM tailnets`)
+				_, err := r.CreateTailnetOn(ctx, testOp, "cold-1", "cold")
+				require.ErrorIs(t, err, ErrNoLiveLease)
+				require.ErrorIs(t, err, ErrNoCapacity, "still a capacity refusal for API callers (503)")
+				assert.Equal(t, before, count(t, gdb, `SELECT count(*) FROM tailnets`))
+			}
+
+			// Once its process holds the lease: created.
+			setLease(t, gdb, "cold", true)
+
 			tn, err := r.CreateTailnetOn(ctx, testOp, "cold-1", "cold")
 			require.NoError(t, err)
 			assert.Equal(t, "cold", tn.OwnerClusterID)
@@ -107,13 +124,24 @@ func TestMoveOwnerChecksTargetCapacity(t *testing.T) {
 			row := count(t, gdb, `SELECT owner_epoch FROM tailnets WHERE id = ?`, moving.ID)
 			assert.Equal(t, int64(moving.OwnerEpoch), row, "nothing changed")
 
-			// Same cluster again: a new epoch, whatever the load.
+			// Same cluster again: a new epoch, whatever the load and even
+			// without a live lease (owner decision 2026-11-25).
+			setLease(t, gdb, "src", false)
+
 			tn, err := r.MoveOwner(ctx, testOp, moving.ID, "src", moving.OwnerEpoch, "src")
 			require.NoError(t, err)
 			assert.Equal(t, moving.OwnerEpoch+1, tn.OwnerEpoch)
 
-			// Room made at dst: the move fits (2 + 1 <= 3).
+			// Room made at dst: the move fits (2 + 1 <= 3), but not while no
+			// process of dst holds its lease (owner decision 2026-11-25).
 			require.NoError(t, gdb.Exec(`DELETE FROM nodes WHERE id IN (SELECT id FROM nodes WHERE tailnet_id <> ? LIMIT 1)`, moving.ID).Error)
+			setLease(t, gdb, "dst", false)
+
+			_, err = r.MoveOwner(ctx, testOp, moving.ID, "src", tn.OwnerEpoch, "dst")
+			require.ErrorIs(t, err, ErrNoLiveLease)
+			require.ErrorIs(t, err, ErrNoCapacity)
+
+			setLease(t, gdb, "dst", true)
 
 			tn, err = r.MoveOwner(ctx, testOp, moving.ID, "src", tn.OwnerEpoch, "dst")
 			require.NoError(t, err)
