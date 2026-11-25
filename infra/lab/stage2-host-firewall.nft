@@ -2,10 +2,13 @@
 # mesh-controlplane lab, stage 2 for Gate N1 (P09): underlay isolation on the
 # PVE host. HUMAN-APPLIED (AGENTS.md rule 3): see infra/lab/stage2-n1.md.
 #
-# Scope: only packets from or to 10.77.0.0/16 (the stage-2 SDN VNets). Every
-# other packet is accepted by these chains, so this table changes nothing for
-# vmbr0, lan10, the existing VMs or the host's own services. It does not touch
-# pve-firewall (disabled on this host on 2026-11-25) or the SDN SNAT rules.
+# Scope: the stage-2 SDN VNets (10.77.0.0/16). The input chain only judges
+# packets from them. The forward chain also drops every other ROUTED packet,
+# which keeps the host routing nothing outside the lab after ip_forward is
+# turned on (it was 0 on 2026-11-25); bridged traffic of the existing VMs does
+# not reach these hooks (no br_netfilter). It does not touch pve-firewall
+# (disabled on this host on 2026-11-25), iptables (tailscale) or the SDN SNAT
+# rules. IPv6 forwarding stays off.
 #
 # Policy (owner decision Q1, 2026-11-25):
 #   - client A (10.77.20.0/24) and client B (10.77.30.0/24) never reach each
@@ -31,10 +34,15 @@ table inet mclab
 delete table inet mclab
 table inet mclab {
   chain forward {
-    # Before any other forward hook; policy accept: only lab traffic is judged.
+    # Before any other forward hook. br_netfilter is not loaded on this host,
+    # so this hook sees ROUTED packets only (bridged VM traffic never comes
+    # here). Before stage 2, net.ipv4.ip_forward was 0: the host routed
+    # nothing. Turning forwarding on for the lab must not start routing between
+    # vmbr0, lan10 and tailscale0, so every routed IPv4 packet that is not lab
+    # traffic is dropped: outside the lab the host keeps routing nothing.
     type filter hook forward priority filter - 1; policy accept;
 
-    ip saddr != $LAB ip daddr != $LAB accept
+    ip saddr != $LAB ip daddr != $LAB counter drop
     ct state established,related accept
     ct state invalid drop
 
