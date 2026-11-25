@@ -44,11 +44,61 @@ import (
 // transport wanted to redial, which would open a new, unbound session.
 var ErrSessionUsed = errors.New("n1probe: noise session already used its one connection")
 
+// ErrNotURLPort reports a dial to a port other than the control URL's. The
+// ts2021 transport also tries a plain-HTTP fallback on port 80 even for an
+// https URL with an explicit port (the lab clusters are on 8443 and 8445,
+// and port 80 of the VPS answers EOF); such a dial is refused without using
+// the session's one connection.
+var ErrNotURLPort = errors.New("n1probe: dial to a port other than the control URL's")
+
+// urlPort is u's port, or the scheme's default.
+func urlPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+
+	if u.Scheme == "http" {
+		return "80"
+	}
+
+	return "443"
+}
+
+// systemDial opens the session's one TCP connection, to the URL's port
+// only: another port is refused (ErrNotURLPort) and does not count; a
+// second connection is refused (ErrSessionUsed).
+func (s *Session) systemDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port != s.port {
+		return nil, fmt.Errorf("%w: %s (want %s)", ErrNotURLPort, addr, s.port)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.conns) > 0 {
+		return nil, ErrSessionUsed
+	}
+
+	var d net.Dialer
+
+	conn, err := d.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	tc := &trackedConn{Conn: conn}
+	s.conns = append(s.conns, tc)
+
+	return tc, nil
+}
+
 // Session is one Noise session (one machine key, one TCP connection).
 type Session struct {
 	client *ts2021.Client
 	dialer *tsdial.Dialer
 	host   string
+	port   string // the URL's port: the only one the session dials
 
 	mu    sync.Mutex
 	conns []*trackedConn
@@ -91,29 +141,10 @@ func NewSession(serverURL string, serverKey key.MachinePublic, mk key.MachinePri
 		logf = logger.Discard
 	}
 
-	s := &Session{host: u.Hostname()}
+	s := &Session{host: u.Hostname(), port: urlPort(u)}
 
 	dialer := tsdial.NewDialer(netmon.NewStatic())
-	dialer.SetSystemDialer(func(ctx context.Context, network, addr string) (net.Conn, error) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		if len(s.conns) > 0 {
-			return nil, ErrSessionUsed
-		}
-
-		var d net.Dialer
-
-		conn, err := d.DialContext(ctx, network, addr)
-		if err != nil {
-			return nil, err
-		}
-
-		tc := &trackedConn{Conn: conn}
-		s.conns = append(s.conns, tc)
-
-		return tc, nil
-	})
+	dialer.SetSystemDialer(s.systemDial)
 
 	client, err := ts2021.NewClient(ts2021.ClientOpts{
 		ServerURL:    serverURL,
