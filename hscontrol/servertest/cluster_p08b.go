@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 )
 
 // Admin calls the live admin API (P08b) on the unix socket of process p
@@ -57,4 +59,30 @@ func (tc *TestCluster) Admin(tb testing.TB, p *ClusterProcess, method, path stri
 	out, _ := io.ReadAll(resp.Body)
 
 	return resp.StatusCode, out
+}
+
+// MintAPIKey mints an API key for tailnet slug through the platform
+// registry, as the operator CLI and API do (P08b).
+func (tc *TestCluster) MintAPIKey(tb testing.TB, slug string) string {
+	tb.Helper()
+
+	return tc.MintUserAPIKey(tb, slug, "")
+}
+
+// MintUserAPIKey is [TestCluster.MintAPIKey] for a key acting as user of the
+// tailnet.
+func (tc *TestCluster) MintUserAPIKey(tb testing.TB, slug, user string) string {
+	tb.Helper()
+
+	reg, err := placement.New(tc.Platform(tb).RegistryDB(), placement.Config{})
+	if err != nil {
+		tb.Fatalf("servertest: registry: %v", err)
+	}
+
+	_, key, err := reg.CreateAPIKey(tb.Context(), placement.Op{Actor: "servertest"}, tc.Tailnet(tb, slug).ID.String(), time.Hour, user)
+	if err != nil {
+		tb.Fatalf("servertest: CreateAPIKey: %v", err)
+	}
+
+	return key
 }

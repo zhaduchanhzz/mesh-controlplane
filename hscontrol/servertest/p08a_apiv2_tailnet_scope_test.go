@@ -19,18 +19,12 @@ type p08aTailnet struct {
 	DeviceID string
 }
 
-// p08aTwoTailnets returns two tailnets on ONE runtime (one process, one
-// database). It cannot exist on master 2b3e98d: there is no tailnet_id, no
-// CreateTailnet and no tailnet-bound API key (P03b schema, P04 credential
-// binding, P05 shared runtime). It returns ok=false until then. Do not
-// emulate tailnets with users (AGENTS.md: users are not tailnets) and do not
-// use serve-tailnets: its runtimes have separate databases, so a pass there
-// would prove nothing about the shared runtime.
-func p08aTwoTailnets(t *testing.T) (url string, a, b p08aTailnet, ok bool) {
-	t.Helper()
-
-	return "", p08aTailnet{}, p08aTailnet{}, false
-}
+// p08aTwoTailnets returns two tailnets of ONE cluster process (one
+// database, one listener) with a platform-issued API key bound to each and a
+// device each (P08b). Do not emulate tailnets with users (AGENTS.md: users
+// are not tailnets). It needs the cluster harness (build tag p05cluster);
+// without the tag it returns ok=false and the test is skipped, which is not
+// a pass: the cluster suite runs it (p08a_twotailnets_cluster_test.go).
 
 func p08aDo(t *testing.T, method, url, apiKey, body string) (int, string) {
 	t.Helper()
@@ -67,14 +61,12 @@ func p08aDo(t *testing.T, method, url, apiKey, body string) (int, string) {
 //   - /api/v1 (all-access, headscale-native) is a platform-admin API and
 //     never answers a tenant-bound key with another tailnet's data.
 //
-// Status: SKIPPED, blocked on P04/P05 (no way to build two tailnets on one
-// runtime yet). This is not a pass.
+// Status (P08b): runs in the cluster suite (-tags p05cluster) against the
+// public /api/v2 of a cluster; skipped without the tag (not a pass).
 func TestP08aAPIv2AdminKeyCannotAddressOtherTailnet(t *testing.T) {
 	url, a, b, ok := p08aTwoTailnets(t)
 	if !ok {
-		t.Skip("BLOCKED (P04/P05): master has no tailnet_id, CreateTailnet or tailnet-bound API key, " +
-			"and /api/v2 only accepts tailnet \"-\". Cross-tailnet API isolation cannot be exercised yet; " +
-			"see evidence/P08a-endpoint-inventory.md. Not a pass.")
+		t.Skip("needs the cluster harness: run with -tags p05cluster (P08b). Not a pass.")
 	}
 
 	// Positive control: A's key on A's own tailnet works.
@@ -84,7 +76,9 @@ func TestP08aAPIv2AdminKeyCannotAddressOtherTailnet(t *testing.T) {
 	cross := []struct{ method, path, body string }{
 		{http.MethodGet, "/api/v2/tailnet/" + b.ID + "/devices", ""},
 		{http.MethodGet, "/api/v2/tailnet/" + b.ID + "/keys", ""},
-		{http.MethodPost, "/api/v2/tailnet/" + b.ID + "/keys", `{"capabilities":{}}`},
+		// A valid body: huma validates bodies (422) before the handler
+		// checks the tailnet, the same 422 for any tailnet.
+		{http.MethodPost, "/api/v2/tailnet/" + b.ID + "/keys", `{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":false,"preauthorized":true}}}}`},
 		{http.MethodGet, "/api/v2/tailnet/" + b.ID + "/users", ""},
 		{http.MethodGet, "/api/v2/tailnet/" + b.ID + "/acl", ""},
 		{http.MethodPost, "/api/v2/tailnet/" + b.ID + "/acl", `{"grants":[]}`},
@@ -113,7 +107,7 @@ func TestP08aAPIv2AdminKeyCannotAddressOtherTailnet(t *testing.T) {
 	code, _ = p08aDo(t, http.MethodGet, url+"/api/v2/device/"+b.DeviceID, b.AdminKey, "")
 	assert.Equal(t, http.StatusOK, code)
 
-	// v1 never serves a tenant-bound key.
+	// v1 never serves a tenant-bound key (P08b: not mounted on a cluster).
 	code, _ = p08aDo(t, http.MethodGet, url+"/api/v1/node", a.AdminKey, "")
-	assert.Contains(t, []int{http.StatusUnauthorized, http.StatusForbidden}, code)
+	assert.Contains(t, []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound}, code)
 }

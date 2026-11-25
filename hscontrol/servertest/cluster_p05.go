@@ -143,6 +143,8 @@ type ClusterOptions struct {
 	// EphemeralTimeout, when set, replaces
 	// node.ephemeral.inactivity_timeout (P11b).
 	EphemeralTimeout time.Duration
+	// TenantAPI, when set, replaces tuning.tenant_api (P08b).
+	TenantAPI *types.TenantAPIConfig
 }
 
 // NewTestClusterWith is [NewTestCluster] with cluster-wide options.
@@ -205,6 +207,10 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 
 	if o.EphemeralTimeout > 0 {
 		cfg.Node.Ephemeral.InactivityTimeout = o.EphemeralTimeout
+	}
+
+	if o.TenantAPI != nil {
+		cfg.Tuning.TenantAPI = *o.TenantAPI
 	}
 
 	cfg.MetricsAddr = ""

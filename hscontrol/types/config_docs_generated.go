@@ -136,6 +136,12 @@ var configFieldDocs = map[string]string{
 	"TailSQLConfig.Enabled":                               "Runs tailsql. It needs `database.type` sqlite.",
 	"TailSQLConfig.StateDir":                              "Holds the node's identity. Losing it registers a new node, `tailsql-1`, and leaves the old one for an admin to delete.",
 	"TaildropConfig.Enabled":                              "Gives every node the file-sharing capability. False omits it from the baseline; a policy `nodeAttrs` grant can still give it.",
+	"TenantAPIConfig.GlobalBurst":                         "",
+	"TenantAPIConfig.GlobalRate":                          "Requests per second for the whole process, counted before authentication; GlobalBurst is its bucket size.",
+	"TenantAPIConfig.KeyBurst":                            "",
+	"TenantAPIConfig.KeyRate":                             "Requests per second per API key; KeyBurst is its bucket size.",
+	"TenantAPIConfig.TailnetBurst":                        "",
+	"TenantAPIConfig.TailnetRate":                         "Requests per second per tailnet, all of its keys together; TailnetBurst is its bucket size.",
 	"TenantDNSLimits.MaxConfigBytes":                      "The largest a tailnet's DNS settings may be, as stored JSON.",
 	"TenantDNSLimits.MaxExtraRecords":                     "The most extra DNS records a tailnet may store.",
 	"TenantDNSLimits.MaxNameservers":                      "The most nameservers a tailnet may store, global and split together.",
@@ -150,6 +156,8 @@ var configFieldDocs = map[string]string{
 	"Tuning.NodeStoreBatchTimeout":                        "The longest a partial batch of node changes waits before the rebuild; must be positive. Lower values answer single changes faster at the cost of more rebuilds.",
 	"Tuning.RegisterCacheExpiration":                      "How long a pending registration waits to be completed. Zero uses the default.",
 	"Tuning.RegisterCacheMaxEntries":                      "Bounds pending registrations. At capacity, new registrations are refused without evicting pending ones; SSH checks have a small reserve beyond it. Zero uses the default. See [Pending authentication limits](https://headscale.net/stable/ref/registration/#pending-authentication-limits).",
+	"Tuning.TailnetMetricLabelLimit":                      "How many tailnets get a `tailnet` label of their own on the per-tailnet metrics of a cluster process (headscale_tailnet_*, operator metrics listener only); the others are summed under tailnet=\"other\". The label is the tailnet ID.",
+	"Tuning.TenantAPI":                                    "Limits the request rate of the public /api/v2 of a cluster, where each request is authenticated by an API key bound to one tailnet (P08b). Cluster mode only.",
 	"Tuning.TenantDNS":                                    "Bounds the DNS settings each tailnet may store in cluster mode (ADR 0008).",
 }
 

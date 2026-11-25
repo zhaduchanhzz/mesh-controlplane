@@ -161,6 +161,13 @@ func TestConfigFields(t *testing.T) {
 		"tuning.cluster_lease.renew_interval",
 		"tuning.cluster_lease.acquire_interval",
 		"tuning.cluster_lease.safety_margin",
+		"tuning.tenant_api.global_rate",
+		"tuning.tenant_api.global_burst",
+		"tuning.tenant_api.tailnet_rate",
+		"tuning.tenant_api.tailnet_burst",
+		"tuning.tenant_api.key_rate",
+		"tuning.tenant_api.key_burst",
+		"tuning.tailnet_metric_label_limit",
 	}
 	// dns.extra_records is a list, a leaf like any other.
 	wantOpen := []string{"dns.nameservers.split", "dns.challenge.provider", "oidc.extra_params"}
@@ -254,6 +261,7 @@ func TestConfigTree(t *testing.T) {
 		"tuning.tenant_dns",
 		"tuning.incremental_netmap",
 		"tuning.cluster_lease",
+		"tuning.tenant_api",
 	}
 
 	var cfg Config

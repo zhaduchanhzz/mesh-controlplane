@@ -42,7 +42,32 @@ type Backend struct {
 	// online through the disconnect grace period, but only a stream can
 	// carry a c2n request.
 	Connected func(types.NodeID) bool
+	// Tailnet is set in cluster mode (P08b) to the ID of the tailnet this
+	// API serves, the tailnet of the API key that reached it: {tailnet}
+	// accepts this ID or "-"; only API keys authenticate (no OAuth access
+	// tokens, no token endpoint); the operations in [clusterForbidden] are
+	// refused, since the policy, DNS and device trust settings of a tenant
+	// tailnet belong to the platform operator (owner decision Q3).
+	Tailnet string
 }
+
+// clusterForbidden are the operations a tenant API key may not call in
+// cluster mode (P08b, owner decision Q3): writes of the policy (setACL) and
+// of tailnet settings (updateTailnetSettings), which the operator manages
+// through the database and its revisions, and device operations outside
+// the tenant's set (authorize a device, disable key expiry, push a client
+// update). Reads stay allowed. OAuth clients are refused in the keys
+// handlers.
+var clusterForbidden = map[string]bool{
+	"setACL":                true,
+	"updateTailnetSettings": true,
+	"authorizeDevice":       true,
+	"setDeviceKey":          true,
+	"updateDeviceClient":    true,
+}
+
+// errClusterForbidden is the refusal of a [clusterForbidden] operation.
+const errClusterForbidden = "managed by the platform operator for this tailnet"
 
 // security is the requirement applied to authenticated operations: an API key
 // presented as HTTP Basic (the key as username, what the Tailscale SDK sends)
@@ -109,8 +134,11 @@ func NewAPI(router chi.Router, backend Backend) huma.API {
 	Register(api, backend)
 
 	// The OAuth token endpoint is a plain route, not a Huma operation (see
-	// oauth.go); register it on the same router.
-	registerOAuthToken(router, backend)
+	// oauth.go); register it on the same router. Not in cluster mode, where
+	// only platform-issued API keys authenticate (P08b).
+	if backend.Tailnet == "" {
+		registerOAuthToken(router, backend)
+	}
 
 	return api
 }
@@ -192,6 +220,13 @@ func authMiddleware(api huma.API, b Backend) func(huma.Context, func(huma.Contex
 			return
 		}
 
+		// Cluster mode (P08b): platform-issued API keys only.
+		if b.Tailnet != "" && strings.HasPrefix(token, types.AccessTokenPrefix) {
+			_ = huma.WriteErr(api, ctx, http.StatusUnauthorized, "unauthorized")
+
+			return
+		}
+
 		// An OAuth access token is scope-limited; an admin API key is all-access.
 		// They are told apart by prefix so a scoped token can never be mistaken
 		// for an all-access key.
@@ -224,6 +259,29 @@ func authMiddleware(api huma.API, b Backend) func(huma.Context, func(huma.Contex
 		key, err := b.State.AuthenticateAPIKey(token)
 		if err != nil {
 			_ = huma.WriteErr(api, ctx, http.StatusUnauthorized, "unauthorized")
+
+			return
+		}
+
+		// Cluster mode (P08b): never the operations reserved to the operator.
+		// Another tailnet, or a device not in this one, is still 404 like
+		// everywhere else, so the refusal is no existence oracle.
+		if b.Tailnet != "" && clusterForbidden[ctx.Operation().OperationID] {
+			if t := ctx.Param("tailnet"); t != "" && requireTailnet(b, t) != nil {
+				_ = huma.WriteErr(api, ctx, http.StatusNotFound, "tailnet not found")
+
+				return
+			}
+
+			if id := ctx.Param("id"); id != "" {
+				if _, err := lookupNode(b, id); err != nil { //nolint:noinlineerr
+					_ = huma.WriteErr(api, ctx, http.StatusNotFound, "no manageable device matching this ID found")
+
+					return
+				}
+			}
+
+			_ = huma.WriteErr(api, ctx, http.StatusForbidden, errClusterForbidden)
 
 			return
 		}
@@ -286,15 +344,17 @@ func principalTags(ctx context.Context) ([]string, bool) {
 	return tags, ok
 }
 
-// requireDefaultTailnet rejects any tailnet other than "-". Headscale is
-// single-tailnet; the Tailscale SDK sends "-" (its default tailnet). A non-"-"
-// value is "no such tailnet", a 404, which lets the SDK's IsNotFound behave.
-func requireDefaultTailnet(tailnet string) error {
-	if tailnet != "-" {
-		return huma.Error404NotFound("tailnet not found")
+// requireTailnet rejects any tailnet other than "-" and, in cluster mode,
+// the ID of the tailnet b serves (the tailnet of the request's API key).
+// The Tailscale SDK sends "-" (its default tailnet). Anything else is "no
+// such tailnet", a 404, which lets the SDK's IsNotFound behave and does not
+// tell another tailnet's ID from a made-up one.
+func requireTailnet(b Backend, tailnet string) error {
+	if tailnet == "-" || (b.Tailnet != "" && tailnet == b.Tailnet) {
+		return nil
 	}
 
-	return nil
+	return huma.Error404NotFound("tailnet not found")
 }
 
 // The scope vocabulary and the grant predicate live in the hscontrol/scope

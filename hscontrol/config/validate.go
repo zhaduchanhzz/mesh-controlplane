@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"encoding"
 	"errors"
 	"fmt"
@@ -260,6 +261,31 @@ func Validate(c *types.Config) error {
 				Hint:    fmt.Sprintf("set to a positive number (default: %d)", l.def),
 			})
 		}
+	}
+
+	// P08b: the public /api/v2 of a cluster is always rate limited.
+	if ta := c.Tuning.TenantAPI; ta.GlobalRate < 1 || ta.GlobalBurst < 1 || ta.TailnetRate < 1 ||
+		ta.TailnetBurst < 1 || ta.KeyRate < 1 || ta.KeyBurst < 1 {
+		v.Add(&types.ConfigError{
+			Reason: "tuning.tenant_api: every rate and burst must be at least 1 (the public /api/v2 is never unlimited)",
+			Current: []types.KV{
+				{Key: "tuning.tenant_api.global_rate", Value: strconv.Itoa(ta.GlobalRate)},
+				{Key: "tuning.tenant_api.global_burst", Value: strconv.Itoa(ta.GlobalBurst)},
+				{Key: "tuning.tenant_api.tailnet_rate", Value: strconv.Itoa(ta.TailnetRate)},
+				{Key: "tuning.tenant_api.tailnet_burst", Value: strconv.Itoa(ta.TailnetBurst)},
+				{Key: "tuning.tenant_api.key_rate", Value: strconv.Itoa(ta.KeyRate)},
+				{Key: "tuning.tenant_api.key_burst", Value: strconv.Itoa(ta.KeyBurst)},
+			},
+			Hint: "defaults: global 200/s burst 400, tailnet 20/s burst 40, key 10/s burst 20",
+		})
+	}
+
+	if c.Tuning.TailnetMetricLabelLimit < 1 {
+		v.Add(&types.ConfigError{
+			Reason:  "tuning.tailnet_metric_label_limit must be at least 1",
+			Current: []types.KV{{Key: "tuning.tailnet_metric_label_limit", Value: strconv.Itoa(c.Tuning.TailnetMetricLabelLimit)}},
+			Hint:    "default 2000; tailnets past it share the label \"other\"",
+		})
 	}
 
 	// P11b: the active process renews, and stops serving, well before its

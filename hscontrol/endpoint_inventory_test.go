@@ -320,10 +320,30 @@ func clusterRoutes(t *testing.T) []endpointRoute {
 			a = "disabled-404" // clusterRegistrationDisabled
 		}
 
+		if route == "/api/v2/*" {
+			a = "api-key-tailnet" // P08b: dispatched by the key's tailnet
+		}
+
 		out = append(out, endpointRoute{"cluster", method, route, a})
 	})
 
 	require.NotEmpty(t, out)
+
+	// P08b: what /api/v2/* reaches, the v2 API of the key's runtime in
+	// cluster mode (operations refused there are listed in
+	// evidence/P08a-endpoint-inventory.md).
+	v2Mux, v2API := apiv2.Handler(apiv2.Backend{Tailnet: "00000000-0000-4000-8000-000000000001"})
+	for _, r := range humaRoutes(t, "cluster-v2", v2Mux, v2API, false) {
+		out = append(out, r)
+	}
+
+	// P08b: the live admin API on the cluster's unix socket.
+	ar, ok := c.AdminHandler().(chi.Routes)
+	require.True(t, ok, "cluster AdminHandler must be a chi router")
+
+	walkChi(t, ar, func(method, route string) {
+		out = append(out, endpointRoute{"cluster-unix", method, route, "local-trust"})
+	})
 
 	return out
 }

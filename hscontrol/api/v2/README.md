@@ -23,7 +23,7 @@ headscale's own conventions. The headscale-native admin API stays at `/api/v1`
   no body, `200 {}` once the node started the update, `404 "not found"` for
   every device it will not update. It reaches the node as c2n `POST /update`.
 - The `{tailnet}` path segment must be `-` (the single Headscale tailnet);
-  anything else is `404`. See `requireDefaultTailnet`.
+  anything else is `404`. See `requireTailnet` (in cluster mode the ID of the API key's tailnet is accepted too, P08b).
 - Errors use **Tailscale's** body (`{"message","data","status"}`), installed as
   a per-API transform (`tailscaleErrorTransformer` in `errors.go`). A future
   headscale-native v2 operation would keep Huma's RFC 9457 problem+json.

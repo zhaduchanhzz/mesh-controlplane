@@ -81,7 +81,7 @@ func registerACL(api huma.API, b Backend) {
 		Security:    security,
 		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusInternalServerError},
 	}, scope.PolicyFileRead), func(ctx context.Context, in *getACLInput) (*huma.StreamResponse, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}
@@ -114,7 +114,7 @@ func registerACL(api huma.API, b Backend) {
 			http.StatusNotFound, http.StatusPreconditionFailed, http.StatusInternalServerError,
 		},
 	}, scope.PolicyFile), func(ctx context.Context, in *setACLInput) (*huma.StreamResponse, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}
@@ -174,7 +174,7 @@ func registerValidateACL(api huma.API, b Backend, aclTags []string) {
 			http.StatusNotFound, http.StatusInternalServerError,
 		},
 	}, scope.PolicyFileRead), func(ctx context.Context, in *validateACLInput) (*validateACLOutput, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}

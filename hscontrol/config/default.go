@@ -100,6 +100,12 @@ func Default() types.Config {
 				AcquireInterval: time.Second,
 				SafetyMargin:    2 * time.Second,
 			},
+			TenantAPI: types.TenantAPIConfig{
+				GlobalRate: 200, GlobalBurst: 400,
+				TailnetRate: 20, TailnetBurst: 40,
+				KeyRate: 10, KeyBurst: 20,
+			},
+			TailnetMetricLabelLimit: 2000,
 		},
 	}
 }
