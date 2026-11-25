@@ -79,6 +79,8 @@ func TestP08bTailnetMetrics(t *testing.T) {
 			m[series("headscale_tailnet_map_sessions", idB)] == 1
 	}, 10*time.Second, 100*time.Millisecond, "map sessions by tailnet: %v", m)
 
+	assert.Positive(t, m[series("headscale_tailnet_mapresponses_sent_total", idA)])
+	assert.Positive(t, m[series("headscale_tailnet_mapresponses_sent_total", idB)])
 	assert.EqualValues(t, 2, m[series("headscale_tailnet_nodes", idA)])
 	assert.EqualValues(t, 1, m[series("headscale_tailnet_nodes", idB)])
 	assert.GreaterOrEqual(t, m["headscale_nodestore_nodes"], float64(3), "the sum over runtimes, not one runtime's count")

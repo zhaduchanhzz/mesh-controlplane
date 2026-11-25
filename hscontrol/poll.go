@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
@@ -58,6 +59,11 @@ type mapSession struct {
 
 	node types.NodeView
 	w    http.ResponseWriter
+
+	// tailnetSent counts this session's frames on
+	// headscale_tailnet_mapresponses_sent_total (P08b); nil until the
+	// first write.
+	tailnetSent prometheus.Counter
 
 	log zerolog.Logger
 }
@@ -425,6 +431,12 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 	}
 
 	mapResponseSent.WithLabelValues("ok", sentType).Inc()
+
+	if m.tailnetSent == nil {
+		m.tailnetSent = tailnetMapSent.WithLabelValues(tenantlabel.Label(m.h.state.TailnetID()))
+	}
+
+	m.tailnetSent.Inc()
 
 	m.log.Trace().
 		Caller().
