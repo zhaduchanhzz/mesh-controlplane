@@ -386,9 +386,14 @@ t_s02() {
   for k in $ka; do grep -q "$k" <<<"$(ts_json $B1)$(ts_json $B2)" && p="$p; A key ${k:8:8} visible in B"; done
   grep -qE 'n1-b[12]' <<<"$(ts_json $A1)" && p="$p; B hostname in a1's view"
   grep -qE 'n1-a[12]' <<<"$(ts_json $B1)" && p="$p; A hostname in b1's view"
-  TS $A1 "ping -c 1 --timeout 3s $(selfip $B1)" >/dev/null 2>&1 && p="$p; a1 reaches b1's tailnet IP"
+  # Per-tailnet IPAM: A and B reuse the same addresses (S06), so "b1's IP"
+  # seen from a1 is a node of A. What must never happen: an answer from a B
+  # node, or B's names resolving in A.
+  local pa; pa=$(TS $A1 "ping -c 1 --timeout 3s $(selfip $B1)" 2>&1); printf 'a1 ping %s: %s\n' "$(selfip $B1)" "$pa" >>"$ART_DIR/logs/S02.txt"
+  grep -qE 'pong from n1-b' <<<"$pa" && p="$p; a B node answered a1"
+  TS $A1 "ping -c 1 --timeout 3s n1-b1" >/dev/null 2>&1 && p="$p; a1 reaches n1-b1 by name"
   printf 'A ips %s; B ips %s\n' "$ia" "$ib" >>"$ART_DIR/logs/S02.txt"
-  [ -z "$p" ] && record S02 PASS "no node key, hostname or reachable IP of B in A's view and vice versa (IPs A [$ia] B [$ib])" || record S02 FAIL "${p#; }"
+  [ -z "$p" ] && record S02 PASS "no node key or hostname of B in A's view and vice versa; B unreachable from A by name or IP (per-tailnet IPs overlap: A [$ia] B [$ib])" || record S02 FAIL "${p#; }"
 }
 
 t_s03() {
@@ -434,7 +439,7 @@ NFT" || p="$p; nft on a2"
   grep -q 'via DERP(n1c1)' "$ART_DIR/logs/ping.log" || p="$p; a1->a2 not relayed via n1c1 [$pv]"
   vm $A2 "sudo nft delete table inet n1test" >/dev/null 2>&1
   # Unknown node keys are refused by the relay (n1probe derp-check), when the probe has it.
-  if ssh_ $CI_SSH "/tmp/n1probe derp-check -h" >/dev/null 2>&1; then
+  if ssh_ $CI_SSH "/tmp/n1probe derp-check 2>&1 | grep -qi -e usage -e host"; then
     local out; out=$(vm $A1 "/tmp/n1probe derp-check --host relay-c1.cp.gta5web.online --ip $RELAY --port 443 --count 3; echo rc=\$?" 2>&1)
     printf '%s\n' "$out" >"$ART_DIR/logs/S15-derp-check.jsonl"
     grep -q 'rc=0' <<<"$out" || p="$p; unknown key admitted by relay 901 [$(tail -2 <<<"$out" | tr '\n' ' ')]"
@@ -444,6 +449,10 @@ NFT" || p="$p; nft on a2"
   fi
   [ -z "$p" ] && record S15 PASS "clients home on own relay region n1c1; a1->a2 relayed via DERP(n1c1) with verify; unknown key refused by the relay" || record S15 FAIL "${p#; }"
 }
+
+# Batch 2 cases.
+# shellcheck source=cases2.sh
+. "$(dirname "$0")/cases2.sh"
 
 # --------------------------------------------------------------------- main ---
 T0=$(date +%s)
@@ -459,6 +468,16 @@ t_s02
 t_s03
 t_s11
 t_s15
+t_s07
+t_s08
+t_s10
+t_s12
+t_s14
+t_m06
+t_s17 c1 "${F02_ROUNDS:-3}"
+t_s17 c2 "${F02_ROUNDS:-3}"
+t_s16 S16 c1
+t_s18
 for n in cp c1b c2 c2b; do on $n "sudo journalctl -u $UNIT --since -$(( $(date +%s) - T0 + 5 ))s --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/$n-process.log"; done
 hits=$(grep -rlE 'hskey-(auth|api)-[A-Za-z0-9]{6,}|privkey:[0-9a-f]{64}|nodekey:[0-9a-f]{64}|mkey:[0-9a-f]{64}|BEGIN [A-Z ]*PRIVATE KEY|secret=[A-Za-z0-9]{20,}' "$ART_DIR" 2>/dev/null | grep -v results.tsv)
 [ -z "$hits" ] && record S99 PASS "no auth key, private key, full key or verify secret in the artifacts" || record S99 FAIL "unredacted in: $hits"
