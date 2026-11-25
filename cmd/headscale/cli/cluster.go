@@ -430,7 +430,7 @@ var clusterRegisterCmd = &cobra.Command{
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			c, err := reg.CreateCluster(ctx, placement.Op{Actor: "cli:" + clusterID}, placement.ClusterSpec{
+			c, err := reg.CreateCluster(ctx, cliOp(clusterID), placement.ClusterSpec{
 				ID: clusterID, EndpointURL: endpoint, Class: placement.Class(clusterRegClass),
 				State: placement.ClusterActive, MaxDevices: clusterRegMax,
 			})
@@ -443,31 +443,37 @@ var clusterRegisterCmd = &cobra.Command{
 	},
 }
 
+// cliOp is the audit identity of the CLI of cluster (as `register` and
+// `apikey` use).
+func cliOp(cluster string) placement.Op { return placement.Op{Actor: "cli:" + cluster} }
+
 // createTailnetCLI creates tailnet slug owned by cluster, PENDING with a
-// deny-all policy.
-func createTailnetCLI(_ context.Context, p *db.Platform, _ string, slug string) (types.Tailnet, error) {
-	return p.CreateTailnet(slug)
+// deny-all policy, through the placement registry (P12, owner decision
+// Q5): cluster must be registered and ACTIVE with room, a dedicated one
+// with no other tailnet. Its process need not run yet.
+func createTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug string) (types.Tailnet, error) {
+	reg, err := placement.New(p.RegistryDB(), placement.Config{})
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	return reg.CreateTailnetOn(ctx, cliOp(cluster), slug, cluster)
 }
 
 // reassignTailnetCLI moves tailnet slug from cluster (its owner) to to at
-// the next owner_epoch.
-func reassignTailnetCLI(_ context.Context, p *db.Platform, _ string, slug, to string) (types.Tailnet, error) {
+// the next owner_epoch through the registry's MoveOwner (Q5): to must be
+// registered and ACTIVE with room for the tailnet's devices; to == cluster
+// is a new epoch on the same cluster.
+func reassignTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug, to string) (types.Tailnet, error) {
 	tn, err := p.TailnetBySlug(slug)
 	if err != nil {
 		return types.Tailnet{}, err
 	}
 
-	id, err := tailnet.ParseID(tn.ID)
+	reg, err := placement.New(p.RegistryDB(), placement.Config{})
 	if err != nil {
 		return types.Tailnet{}, err
 	}
 
-	epoch, err := p.ReassignTailnet(id, tn.OwnerEpoch, to)
-	if err != nil {
-		return types.Tailnet{}, err
-	}
-
-	tn.OwnerClusterID, tn.OwnerEpoch = to, epoch
-
-	return tn, nil
+	return reg.MoveOwner(ctx, cliOp(cluster), tn.ID, cluster, tn.OwnerEpoch, to)
 }
