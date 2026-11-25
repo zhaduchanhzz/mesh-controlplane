@@ -429,6 +429,18 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 		mapWriteHook()
 	}
 
+	// P09, S17: marshalling and compressing take time, and the process can
+	// be paused there past its lease (SIGSTOP, then SIGCONT after the
+	// deadline). Check again right before the socket write, so a frame
+	// leaves only while the lease is held. The remaining window is the gap
+	// between this check and the write syscall; the lease fence in the
+	// database is what keeps data consistent, this bounds stale frames.
+	if !m.h.servable() {
+		mapResponseNotServable.WithLabelValues("before_write").Inc()
+
+		return errMapSessionStopped
+	}
+
 	gate := time.Now()
 
 	err = writeMapFrame(m.w, m.isStreaming(), data)
