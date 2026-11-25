@@ -14,6 +14,8 @@ import (
 
 func TestCreateTailnetRefusesInvalidSlug(t *testing.T) {
 	forEachPlatformBackend(t, func(t *testing.T, p *Platform) {
+		t.Helper()
+
 		for _, bad := range []string{"Upper", "under_score", "-dash", "dash-", "a.b"} {
 			_, err := p.CreateTailnet(bad)
 			require.Error(t, err, bad)
@@ -26,6 +28,8 @@ func TestCreateTailnetRefusesInvalidSlug(t *testing.T) {
 
 func TestTailnetDNSRoundTripAndRevision(t *testing.T) {
 	forEachPlatformBackend(t, func(t *testing.T, p *Platform) {
+		t.Helper()
+
 		tn, err := p.CreateTailnet("acme")
 		require.NoError(t, err)
 
@@ -77,6 +81,8 @@ func TestTailnetDNSRoundTripAndRevision(t *testing.T) {
 
 func TestTailnetDNSCorruptRowIsAnError(t *testing.T) {
 	forEachPlatformBackend(t, func(t *testing.T, p *Platform) {
+		t.Helper()
+
 		tn, err := p.CreateTailnet("acme")
 		require.NoError(t, err)
 

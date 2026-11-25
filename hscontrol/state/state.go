@@ -2902,8 +2902,6 @@ func (s *State) applyAuthNodeUpdate(params authNodeUpdateParams) (types.NodeView
 	return updatedNodeView, before, nil
 }
 
-// createAndSaveNewNode creates a new node, allocates IPs, saves to DB, and adds to [NodeStore].
-// It preserves netinfo from an existing node if one is provided (for faster DERP connectivity).
 // EnrollGate admits or refuses a new device inside the transaction that
 // inserts its node row; a non-nil error rolls the registration back and is
 // returned to the caller.
@@ -2921,6 +2919,8 @@ func (s *State) SetEnrollGate(gate EnrollGate) {
 	s.enrollGate.Store(&gate)
 }
 
+// createAndSaveNewNode creates a new node, allocates IPs, saves to DB, and adds to [NodeStore].
+// It preserves netinfo from an existing node if one is provided (for faster DERP connectivity).
 func (s *State) createAndSaveNewNode(params newNodeParams) (types.NodeView, error) {
 	// Preserve NetInfo from existing node if available
 	if params.Hostinfo != nil {

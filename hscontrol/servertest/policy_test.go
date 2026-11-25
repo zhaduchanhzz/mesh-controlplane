@@ -118,15 +118,30 @@ func TestPolicyChanges(t *testing.T) {
 		t.Parallel()
 		h := servertest.NewHarness(t, 2)
 
-		// Apply policy twice and verify updates arrive both times.
-		for round := range 2 {
+		// Two different policies in a row: each one is a change, so each
+		// one must reach the client. Re-applying the same bytes is not a
+		// change (PolicyManager.SetPolicy compares the compiled result) and
+		// sends nothing: the test used to apply the same policy twice and
+		// passed only when an unrelated update happened to arrive within
+		// the timeout, which a slow CI runner does not provide.
+		policies := []string{
+			`{"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]}`,
+			`{"acls": [
+				{"action": "accept", "src": ["*"], "dst": ["*:*"]},
+				{"action": "accept", "src": ["*"], "dst": ["*:443"]}
+			]}`,
+		}
+
+		for round, pol := range policies {
 			countBefore := h.Client(0).UpdateCount()
 
-			h.ChangePolicy(t, []byte(`{
-				"acls": [
-					{"action": "accept", "src": ["*"], "dst": ["*:*"]}
-				]
-			}`))
+			changed, err := h.Server.State().SetPolicy([]byte(pol))
+			require.NoError(t, err)
+			require.True(t, changed, "round %d: a different policy is a change", round)
+
+			changes, err := h.Server.State().ReloadPolicy()
+			require.NoError(t, err)
+			h.Server.App.Change(changes...)
 
 			h.Client(0).WaitForCondition(t, "update after policy change",
 				10*time.Second,
@@ -136,6 +151,10 @@ func TestPolicyChanges(t *testing.T) {
 
 			t.Logf("round %d: update received", round)
 		}
+
+		changed, err := h.Server.State().SetPolicy([]byte(policies[1]))
+		require.NoError(t, err)
+		assert.False(t, changed, "the same policy again is not a change: no update is sent")
 	})
 
 	// https://github.com/juanfont/headscale/issues/3508

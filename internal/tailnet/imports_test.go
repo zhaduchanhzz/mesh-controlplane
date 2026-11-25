@@ -41,32 +41,41 @@ func TestOAuthScopePackageDoesNotUseTailnet(t *testing.T) {
 
 func nonTestImports(t *testing.T, dir string) []string {
 	t.Helper()
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read %s: %v", dir, err)
 	}
+
 	fset := token.NewFileSet()
+
 	var out []string
+
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
+
 		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
+
 		for _, spec := range f.Imports {
 			p, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			out = append(out, p)
 		}
 	}
+
 	if len(out) == 0 && dir == "." {
 		t.Fatal("no non-test Go files found; the package is missing")
 	}
+
 	return out
 }
 
@@ -75,5 +84,6 @@ func keys(m map[string]bool) []string {
 	for k := range m {
 		out = append(out, k)
 	}
+
 	return out
 }

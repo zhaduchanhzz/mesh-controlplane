@@ -24,7 +24,7 @@ import (
 )
 
 // CredentialKindAuthKeyProof is the only credential kind of the MVP.
-const CredentialKindAuthKeyProof = "authkey_proof"
+const CredentialKindAuthKeyProof = "authkey_proof" //nolint:gosec // G101: a credential kind name, not a credential
 
 // hashPrefixSHA256 is the storage prefix of a SHA-256 credential hash
 // (hscontrol/db/secret.go).
@@ -99,7 +99,7 @@ const (
 
 // String names the outcome for logs and metrics.
 func (o Outcome) String() string {
-	switch o {
+	switch o { //nolint:exhaustive // default names OutcomeRefused and any outcome added later
 	case OutcomeOK:
 		return "ok"
 	case OutcomeInvalid:

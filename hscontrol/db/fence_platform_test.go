@@ -6,10 +6,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"tailscale.com/types/key"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"tailscale.com/types/key"
 )
 
 // P10 on the real v0.1 schema (SQLite and PostgreSQL): a runtime's handle is
@@ -70,6 +69,7 @@ func TestTenantDBWritesFencedAfterOwnershipChange(t *testing.T) {
 			// Back to this cluster at a newer epoch: a new handle writes again,
 			// the old one stays fenced.
 			move("local", 4)
+
 			a2 := tenantDB(t, p, idA)
 			_, err = a2.CreateUser(types.User{Name: "after-reload"})
 			require.NoError(t, err)

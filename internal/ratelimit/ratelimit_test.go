@@ -32,7 +32,15 @@ func TestBucket(t *testing.T) {
 		t.Fatal("clock going back allowed")
 	}
 
-	if !b.Allow(t0.Add(time.Hour)) || !b.Allow(t0.Add(time.Hour)) || !b.Allow(t0.Add(time.Hour)) || b.Allow(t0.Add(time.Hour)) {
+	// Allow takes a token, so each call is a separate draw: three refilled
+	// tokens, then none.
+	for range 3 {
+		if !b.Allow(t0.Add(time.Hour)) {
+			t.Fatal("refill is capped at the burst")
+		}
+	}
+
+	if b.Allow(t0.Add(time.Hour)) {
 		t.Fatal("refill is capped at the burst")
 	}
 }

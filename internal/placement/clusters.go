@@ -177,7 +177,7 @@ func (r *Registry) DeleteCluster(ctx context.Context, op Op, id string) error {
 		// Lock the row first: a concurrent CreateTailnet/MoveOwner holds it
 		// while it adds a tailnet, and the count below (a new statement,
 		// so a new snapshot under READ COMMITTED) sees that tailnet.
-		_, err := lockClusters(tx, "UPDATE", "id = ?", id)
+		_, err := lockClusters(tx, "id = ?", id)
 		if err != nil {
 			return struct{}{}, "", err
 		}
@@ -279,7 +279,7 @@ func place(db *gorm.DB, class Class, lock bool) (Cluster, error) {
 	)
 
 	if lock {
-		cs, err = lockClusters(db, "UPDATE", "class = ? AND state = ?", class, ClusterActive)
+		cs, err = lockClusters(db, "class = ? AND state = ?", class, ClusterActive)
 	} else {
 		err = db.Where("class = ? AND state = ?", class, ClusterActive).Order("id").Find(&cs).Error
 	}
@@ -349,11 +349,11 @@ func place(db *gorm.DB, class Class, lock bool) (Cluster, error) {
 }
 
 // lockClusters selects clusters matching where, ordered by id, with FOR
-// <strength> on PostgreSQL. No row is ErrNotFound only for an id lookup.
-func lockClusters(db *gorm.DB, strength string, where string, args ...any) ([]Cluster, error) {
+// UPDATE on PostgreSQL. No row is ErrNotFound only for an id lookup.
+func lockClusters(db *gorm.DB, where string, args ...any) ([]Cluster, error) {
 	q := db.Where(where, args...).Order("id")
 	if isPostgres(db) {
-		q = q.Clauses(clause.Locking{Strength: strength})
+		q = q.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})
 	}
 
 	var cs []Cluster

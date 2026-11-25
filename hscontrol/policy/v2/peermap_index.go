@@ -82,7 +82,7 @@ func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeV
 		if !nv.IsTagged() {
 			if uid, ok := nv.UserID().GetOk(); ok {
 				byUser[uid] = append(byUser[uid], int32(i)) //nolint:gosec // n fits int32
-				in.user = int64(uid)
+				in.user = int64(uid)                        //nolint:gosec // G115: a database row id, far below 2^63
 			}
 		}
 
@@ -111,6 +111,7 @@ func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeV
 		if !ok {
 			c = int32(len(classes)) //nolint:gosec // at most n classes
 			classByKey[string(key)] = c
+
 			classes = append(classes, peerClass{
 				src:  slices.Clone(bits[:words]),
 				dst:  slices.Clone(bits[words:]),

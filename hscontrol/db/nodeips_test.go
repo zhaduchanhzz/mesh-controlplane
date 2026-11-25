@@ -9,11 +9,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-	"tailscale.com/types/key"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
+	"gorm.io/gorm"
+	"tailscale.com/types/key"
 )
 
 // addNodeIPs inserts a node with the given overlay addresses (nil = NULL)
@@ -100,8 +99,10 @@ func TestNodeIPDDLInSchemaFiles(t *testing.T) {
 }
 
 func migrationIDs() []string {
-	var ids []string
-	for _, m := range v01Migrations() {
+	ms := v01Migrations()
+
+	ids := make([]string, 0, len(ms))
+	for _, m := range ms {
 		ids = append(ids, m.ID)
 	}
 
@@ -152,6 +153,7 @@ func TestMigrationNodeIPUnique(t *testing.T) {
 
 			p := openPlatform(t, cfg)
 			require.Len(t, nodeIPIndexes(t, p.db), 2, "a fresh database has both indexes")
+
 			for _, def := range nodeIPIndexes(t, p.db) {
 				assert.Contains(t, strings.ToUpper(def), "UNIQUE")
 				assert.Contains(t, strings.ToUpper(def), "IS NOT NULL")
@@ -191,7 +193,8 @@ func TestMigrationNodeIPUnique(t *testing.T) {
 			conn, err := openDB(cfg.Database, cfg.SQLitePath())
 			require.NoError(t, err)
 			t.Cleanup(func() {
-				if sqlDB, err := conn.DB(); err == nil {
+				sqlDB, err := conn.DB()
+				if err == nil {
 					_ = sqlDB.Close()
 				}
 			})
