@@ -271,8 +271,23 @@ backend c1
 EOF
   cp_ "sudo systemctl reset-failed mesh-c1-ha 2>/dev/null; sudo systemd-run --quiet --unit=mesh-c1-ha /usr/sbin/haproxy -Ws -f /etc/haproxy/mesh-c1.cfg" || return 1
 
-  log "registry and tailnets a, b (owner $CLUSTER_ID)"
+  # P12 (owner decision 2026-11-25): tailnets are created only on a
+  # registered ACTIVE cluster whose process holds its lease: register, start
+  # both processes, then create the tailnets live (the active one loads them).
+  log "registry: cluster $CLUSTER_ID"
   cp_ "$HSC register --class shared --max-devices 5000 >/dev/null" || return 1
+
+  log "start mc-cp process first (active), then mc-c1b (standby)"
+  local since; since=$(cp_ 'date +%s') || return 1
+  start_proc cp || return 1
+  wait_direct_ready cp 30 || { log "mc-cp process not ready"; return 1; }
+  start_proc b || return 1
+  local i; for i in $(seq 1 30); do [ "$(direct b /health)" = 200 ] && break; sleep 1; done
+  [ "$(direct b /health)" = 200 ] || { log "mc-c1b process not listening"; return 1; }
+  for i in $(seq 1 30); do [ "$(public_ready)" = 200 ] && break; sleep 1; done
+  [ "$(public_ready)" = 200 ] || { log "public /ready not 200 through HAProxy"; return 1; }
+
+  log "tailnets a, b (owner $CLUSTER_ID), created while the cluster runs"
   local s pf=/var/lib/headscale/cluster/p11b-policy.hujson
   for s in a b; do cp_ "$HSC tailnet create --slug $s >/dev/null && $HSC tailnet status --slug $s --set ACTIVE" || return 1; done
   printf '%s\n' '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}' \
@@ -283,14 +298,13 @@ EOF
     chmod 600 "$TMPD/key-$s"; [ -s "$TMPD/key-$s" ] || return 1
   done
 
-  log "start mc-cp process first (active), then mc-c1b (standby)"
-  start_proc cp || return 1
-  wait_direct_ready cp 30 || { log "mc-cp process not ready"; return 1; }
-  start_proc b || return 1
-  local i; for i in $(seq 1 30); do [ "$(direct b /health)" = 200 ] && break; sleep 1; done
-  [ "$(direct b /health)" = 200 ] || { log "mc-c1b process not listening"; return 1; }
-  for i in $(seq 1 30); do [ "$(public_ready)" = 200 ] && break; sleep 1; done
-  [ "$(public_ready)" = 200 ] || { log "public /ready not 200 through HAProxy"; return 1; }
+  local ok=0 jl
+  for i in $(seq 1 30); do
+    jl=$(cp_ "sudo journalctl -u $UNIT --since @$since --no-pager" 2>/dev/null | grep 'loaded tailnet runtime')
+    grep -q 'slug=a' <<<"$jl" && grep -q 'slug=b' <<<"$jl" && { ok=1; break; }
+    sleep 1
+  done
+  [ $ok = 1 ] || { log "tailnets a, b not loaded by the active process"; return 1; }
   ci_ "docker image inspect $IMAGE >/dev/null 2>&1 || docker pull -q $IMAGE >/dev/null" || return 1
 }
 

@@ -166,7 +166,10 @@ var tailnetCreateCmd = &cobra.Command{
 	Short: "Create tailnet --slug as PENDING with a deny-all policy",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return withPlatform(func(p *db.Platform) error {
-			tn, err := p.CreateTailnet(clusterSlug)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			tn, err := createTailnetCLI(ctx, p, clusterID, clusterSlug)
 			if err != nil {
 				return err
 			}
@@ -391,22 +394,20 @@ var tailnetReassignCmd = &cobra.Command{
 	Short: "Move tailnet --slug to cluster --to at the next owner_epoch (compare-and-swap)",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return withPlatform(func(p *db.Platform) error {
-			tn, err := p.TailnetBySlug(clusterSlug)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			tn, err := reassignTailnetCLI(ctx, p, clusterID, clusterSlug, clusterMoveTo)
 			if err != nil {
 				return err
 			}
 
-			id, err := tailnet.ParseID(tn.ID)
-			if err != nil {
-				return err
-			}
-
-			epoch, err := p.ReassignTailnet(id, tn.OwnerEpoch, clusterMoveTo)
-			if err != nil {
-				return err
-			}
-
-			return printJSON(map[string]any{"id": tn.ID, "slug": tn.Slug, "owner": clusterMoveTo, "epoch": epoch})
+			// To another cluster this is a move request (ADR 0010): owner and
+			// epoch change when the owner hands the tailnet over.
+			return printJSON(map[string]any{
+				"id": tn.ID, "slug": tn.Slug, "owner": tn.OwnerClusterID, "epoch": tn.OwnerEpoch,
+				"moving_to": tn.MovingToClusterID,
+			})
 		})
 	},
 }
@@ -434,7 +435,7 @@ var clusterRegisterCmd = &cobra.Command{
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			c, err := reg.CreateCluster(ctx, placement.Op{Actor: "cli:" + clusterID}, placement.ClusterSpec{
+			c, err := reg.CreateCluster(ctx, cliOp(clusterID), placement.ClusterSpec{
 				ID: clusterID, EndpointURL: endpoint, Class: placement.Class(clusterRegClass),
 				State: placement.ClusterActive, MaxDevices: clusterRegMax,
 			})
@@ -445,4 +446,41 @@ var clusterRegisterCmd = &cobra.Command{
 			return printJSON(map[string]any{"id": c.ID, "class": c.Class, "state": c.State, "max_devices": c.MaxDevices})
 		})
 	},
+}
+
+// cliOp is the audit identity of the CLI of cluster (as `register` and
+// `apikey` use).
+func cliOp(cluster string) placement.Op { return placement.Op{Actor: "cli:" + cluster} }
+
+// createTailnetCLI creates tailnet slug owned by cluster, PENDING with a
+// deny-all policy, through the placement registry (P12, owner decision
+// Q5): cluster must be registered and ACTIVE with room, a dedicated one
+// with no other tailnet, and its process must hold the cluster lease
+// (owner decision 2026-11-25): start the cluster before creating tailnets.
+func createTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug string) (types.Tailnet, error) {
+	reg, err := placement.New(p.RegistryDB(), placement.Config{})
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	return reg.CreateTailnetOn(ctx, cliOp(cluster), slug, cluster)
+}
+
+// reassignTailnetCLI moves tailnet slug from cluster (its owner) to to at
+// the next owner_epoch through the registry's MoveOwner (Q5): to must be
+// registered and ACTIVE, hold a live lease, with room for the tailnet's
+// devices; to == cluster is a new epoch on the same cluster (no lease
+// check).
+func reassignTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug, to string) (types.Tailnet, error) {
+	tn, err := p.TailnetBySlug(slug)
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	reg, err := placement.New(p.RegistryDB(), placement.Config{})
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	return reg.MoveOwner(ctx, cliOp(cluster), tn.ID, cluster, tn.OwnerEpoch, to)
 }

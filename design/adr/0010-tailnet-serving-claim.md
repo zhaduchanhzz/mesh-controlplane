@@ -110,7 +110,7 @@ Thêm **R10_MOVE_PENDING_TOO_LONG**: yêu cầu chuyển tồn tại quá `Confi
 **Chi phí:**
 - **Move ≈ 2–4 s.** Nguồn mất ≤ 2 s để thấy yêu cầu, cộng thời gian drain; đích mất ≤ 2 s tới lượt reconcile kế. Trong khoảng này không cluster nào phục vụ tailnet: client của nguồn bị cắt stream, client mới nhận `MOVING` và thử lại.
 - **Nguồn treo nhưng vẫn giữ lease:** move kẹt cho tới khi nguồn mất lease, hoặc operator hủy. R10 làm việc này lộ ra.
-- **Đường lật trực tiếp còn sót:** `ReassignTailnet` của platform admin (CLI `reassign`) vẫn lật thẳng owner. Nhánh `feat/P12-cli` (Q5) chuyển CLI sang `Registry.MoveOwner`, nên khi gộp sẽ theo cơ chế trao tay.
+- **Đường lật trực tiếp:** từ khi gộp `feat/P12-cli` (2026-11-25), CLI `reassign` đi qua `Registry.MoveOwner` và theo cơ chế trao tay. `Platform.ReassignTailnet` (lật thẳng) không còn được code sản phẩm gọi; chỉ test dùng.
 
 ## Phương án đã loại
 

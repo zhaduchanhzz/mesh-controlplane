@@ -62,7 +62,7 @@ var tailnetAPIKeyCreateCmd = &cobra.Command{
 	Short: "Mint an API key for tailnet --slug; the key is printed once",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return withRegistry(func(ctx context.Context, reg *placement.Registry, id string) error {
-			info, key, err := reg.CreateAPIKey(ctx, placement.Op{Actor: "cli:" + clusterID}, id, clusterAPIKeyExpiry, clusterAPIKeyUser)
+			info, key, err := reg.CreateAPIKey(ctx, cliOp(clusterID), id, clusterAPIKeyExpiry, clusterAPIKeyUser)
 			if err != nil {
 				return err
 			}
@@ -100,7 +100,7 @@ var tailnetAPIKeyRevokeCmd = &cobra.Command{
 		}
 
 		return withRegistry(func(ctx context.Context, reg *placement.Registry, id string) error {
-			info, err := reg.RevokeAPIKey(ctx, placement.Op{Actor: "cli:" + clusterID}, id, clusterAPIKeyID)
+			info, err := reg.RevokeAPIKey(ctx, cliOp(clusterID), id, clusterAPIKeyID)
 			if err != nil {
 				return err
 			}
