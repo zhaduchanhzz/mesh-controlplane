@@ -81,7 +81,26 @@ mesh-rebootstrap -bootstrap https://boot.<domain>:8444 -authkey-file <key reusab
 
 Chạy trên mc-ci trong `~/src/p12b` (cây từ `git archive` của nhánh, CRLF đã bỏ), Go của mc-ci, `GOFLAGS=-buildvcs=false`.
 
-(xem §Kết quả test)
+### Kết quả test
+
+Cây trên mc-ci: `git archive` của `4088df8` (merge master `44e523a`) chép sang `~/src/p12b` (LF, không có golden CRLF), rồi đồng bộ các file đổi tới `da93abc`. Go 1.27.4. `nix` = `nix shell --inputs-from . nixpkgs#…` như `ci.yml`.
+
+| Lệnh | Exit | Ghi chú |
+|---|---|---|
+| `nix shell --inputs-from . nixpkgs#golangci-lint -c golangci-lint run --timeout 20m` (2.15.0) | 0 | **0 issues** (tại `464aac3`) |
+| `go vet ./...` | 0 | |
+| `go vet -tags benchdb ./cmd/bench-db` | 0 | |
+| `go test -race -count=1 -timeout 60m $(go list ./... \| grep -v -e /integration -e /hscontrol/servertest)` | 1 | 40 package `ok`; chỉ `internal/placement` FAIL: `TestScheduleMoveValidates` panic ở `moves.go:162` (lỗi do merge, xem dưới) |
+| `go test -race -count=1 -timeout 30m ./internal/placement/...` (sau `da93abc`) | 0 | `internal/placement` ok 72,7 s; `placementapi` ok 4,6 s |
+| `nix shell … nixpkgs#tscli nixpkgs#opentofu -c go test -race -count=1 -timeout 60m ./hscontrol/servertest/...` | 0 | ok 1990 s, gồm `TestAPIv2` (GoClient, TSCLI, Terraform) |
+| `go test -race -count=1 -timeout 60m -tags p05cluster ./hscontrol/servertest/` | 1 | Chỉ `TestAPIv2`, `TestAPIv2OAuthScopes` FAIL: `exec: "tscli"/"tofu": executable file not found` (lần này quên bọc `nix shell`); mọi test cluster, gồm `TestScheduledMoveNotifiesOnlyItsClients`, `TestClusterP07IncrementalAcrossTenants`, pass |
+| `nix shell … nixpkgs#tscli nixpkgs#opentofu -c go test -race -count=1 -timeout 30m -tags p05cluster -run '^(TestAPIv2\|TestAPIv2OAuthScopes)$' ./hscontrol/servertest/` | 0 | ok 50,8 s |
+
+**Lỗi do merge, đã sửa (`da93abc`, coordinator):** trước merge, `lockClusters(tx, mode, where, args…)` nhận chế độ khóa; master `44e523a` đổi thành `lockClusters(db, where, args…)`. Lời gọi `lockClusters(tx, "SHARE", "id = ?", to)` trong `ScheduleMove` vẫn biên dịch (tham số variadic) nhưng `"SHARE"` thành mệnh đề WHERE, không trả cluster nào, và truy cập `target[0]` panic. Các lần chạy trước merge trên mc-ci đều pass; GitHub CI run 45691631954 bắt được lỗi. Bài học: sau merge phải chạy lại cả suite, không chỉ lint.
+
+**Ngoài P12b:** `TestACMETLSSettings/TLS-ALPN-01` "bind: address already in use" trên GitHub CI là flake cổng có từ trước (coordinator xác nhận), không xuất hiện trong các lần chạy trên mc-ci ở đây.
+
+**Chạy trước merge (tại `adeaf2f`, mc-ci, `-race`):** `TestMoveNoticeInMapResponse`, `TestMoveNoticesOnlyOwnOpenMoves` (SQLite + PostgreSQL), `TestAPIv2ScheduledMove`, `TestEndpointInventory`, `TestScheduledMoveNotifiesOnlyItsClients` (p05cluster), `./internal/rebootstrap`, `./cmd/mesh-rebootstrap`: exit 0. RED trước GREEN: `TestMoveNoticeInMapResponse` và `TestScheduledMoveNotifiesOnlyItsClients` fail tại `4840114`; `TestAPIv2ScheduledMove`, `TestEndpointInventory` và assertion API trong `TestScheduledMoveNotifiesOnlyItsClients` fail (404) tại `289ec8d`.
 
 ## E2E artifacts / protocol map redacted
 
