@@ -11,28 +11,18 @@
 #   - Only if stage2_sdn_dhcp = true: `apt install dnsmasq` and
 #     `systemctl disable --now dnsmasq` (PVE runs per-zone instances).
 #
-# Topology: one simple zone, four VNets. A simple zone is a set of host-local
-# bridges with no physical uplink; the host owns each subnet's gateway (.1) and
-# routes between all VNets of the zone. SNAT masquerades egress out of the
-# host's default-route interface (vmbr0). Nothing attaches to lan10.
+# Topology (Gate N1, P09, owner decision Q1 2026-11-25): one simple zone,
+# three VNets: client A (10.77.20.0/24), client B (10.77.30.0/24) and services
+# (10.77.40.0/24, the DERP/STUN relay). A simple zone is a set of host-local
+# bridges with no physical uplink; the host owns each subnet's gateway (.1),
+# routes between the VNets and SNATs egress out of vmbr0. Nothing attaches to
+# lan10. There is no management VNet: mc-ci (192.168.1.240, vmbr0) reaches the
+# lab VMs through the host (route 10.77.0.0/16 via the PVE host).
 #
-# !!! ISOLATION IS NOT ENFORCED BY THIS FILE !!!
-# Because the host routes between VNets, client-a (10.77.20.0/24) and client-b
-# (10.77.30.0/24) CAN reach each other through the host once this is applied.
-# The "VPN isolation" E2E tests are invalid until A<->B is blocked.
-#
-# TODO(human-approval, AGENTS.md rule 3): PVE firewall rules - NOT IMPLEMENTED.
-#   These are host firewall changes; an agent must not write or apply them
-#   without an approved ticket and a reviewed diff. Proposed policy:
-#     - DROP forward 10.77.20.0/24 <-> 10.77.30.0/24 (both directions).
-#     - client_a/client_b -> services: allow only edge 10.77.40.12 tcp/443 and
-#       relay 10.77.40.30 tcp/443 + udp/3478; drop the rest of 10.77.40.0/24
-#       (registry and shards are not client-facing).
-#     - mgmt 10.77.10.0/24 -> all lab VNets: allow tcp/22 (+ ICMP).
-#     - all lab VNets -> host gateway addresses (10.77.x.1): drop tcp/8006 and
-#       tcp/22, so lab VMs cannot reach the PVE API or host SSH.
-#     - lab VNets -> 192.168.1.0/24 (home LAN): drop, except as approved.
-#   Then run the LAB06 negative test: ping/TCP from client-a to client-b fails.
+# ISOLATION is enforced by the host nftables table in
+# infra/lab/stage2-host-firewall.nft, applied by a human (AGENTS.md rule 3;
+# runbook infra/lab/stage2-n1.md). Without it the host routes A <-> B and the
+# "VPN isolation" E2E results are invalid: the N1 harness checks it first.
 
 locals {
   stage2_vnets = var.stage2_enabled ? var.stage2_vnets : {}
@@ -86,7 +76,7 @@ resource "proxmox_sdn_subnet" "stage2" {
     start_address = each.value.dhcp_start
     end_address   = each.value.dhcp_end
   }
-  dhcp_dns_server = var.stage2_sdn_dhcp ? var.network.dns[0] : null
+  dhcp_dns_server = var.stage2_sdn_dhcp ? var.stage2_dns[0] : null
 
   lifecycle {
     precondition {
