@@ -223,7 +223,7 @@ cleanup() {
       sudo rm -f $CFG $HS; ! sudo test -e $CFG && ! test -e $HS" || { log "$n: run files not removed"; CLEAN_OK=0; }
   done
   cp_ "for u in $PLUNIT $BOOTUNIT mesh-c1-ha; do sudo systemctl stop \$u 2>/dev/null; sudo systemctl reset-failed \$u 2>/dev/null; done; \
-       sudo rm -rf $PLDIR /etc/haproxy/mesh-c1-p12.cfg /usr/local/bin/mesh-placement-p12 /usr/local/bin/mesh-bootstrap-p12; ! sudo test -e $PLDIR" \
+       rm -f /dev/shm/p12-boot.body /dev/shm/p12-sampler.sh /dev/shm/p12-boot-codes; sudo rm -rf $PLDIR /etc/haproxy/mesh-c1-p12.cfg /usr/local/bin/mesh-placement-p12 /usr/local/bin/mesh-bootstrap-p12; ! sudo test -e $PLDIR" \
     || { log "mc-cp placement/bootstrap/HAProxy not removed"; CLEAN_OK=0; }
   # mc-c1b keeps no secret of c1 after the run (as P11b).
   on c1b "sudo rm -f /etc/headscale/cluster/pg.pass /var/lib/headscale/cluster/noise_private.key; \
@@ -525,14 +525,43 @@ t_p10() {
   for x in x y; do [ "$(owner $x)" = c1 ] && s=$x; done
   [ -n "$s" ] || { record P10 FAIL "no two-client tailnet on c1 to move"; return; }
   e0=$(jget "$(pl GET "/v1/tailnets/$(tid $s)")" "d['owner_epoch']")
+  # Bootstrap is sampled on mc-cp every 100 ms from before the request (the
+  # hand-over can take < 1 s; a sample from here takes ~1 s). The request
+  # body (key id + SHA-256 proof) stays in a 0600 file in /dev/shm, removed
+  # by the sampler. 80 samples stay within the per-tenant burst (100).
+  local body; body=$(py 'import hashlib,json
+k=open(sys.argv[1]).read().strip()
+i,s=k.split("hskey-auth-",1)[1].split("-",1)
+sys.stdout.write(json.dumps({"credential":{"kind":"authkey_proof","key_id":i,"proof":hashlib.sha256(s.encode()).hexdigest()},"tenant":sys.argv[2]}))' "$TMPD/key-$s" "$s" | strip_cr)
+  printf %s "$body" | cp_ "umask 077; rm -f /dev/shm/p12-boot-codes; cat >/dev/shm/p12-boot.body" || p="$p; sampler body"
+  unset body
+  cat >"$TMPD/sampler.sh" <<EOF
+for i in \$(seq 1 80); do
+  printf '%s ' "\$(date +%s%3N)"
+  curl -s -o /dev/null -w '%{http_code}\n' -m 2 --resolve $BOOT_HOST:8444:10.99.77.2 \\
+    -H 'Content-Type: application/json' --data-binary @/dev/shm/p12-boot.body https://$BOOT_HOST:8444/v1/bootstrap
+  sleep 0.1
+done >/dev/shm/p12-boot-codes 2>&1
+rm -f /dev/shm/p12-boot.body /dev/shm/p12-sampler.sh
+EOF
+  cp_ "umask 077; cat >/dev/shm/p12-sampler.sh && nohup setsid bash /dev/shm/p12-sampler.sh >/dev/null 2>&1 </dev/null &" <"$TMPD/sampler.sh" \
+    || p="$p; sampler start"
+  sleep 1
   local since; since=$(date +%s); t0=$(now_ms)
   r=$(pl POST "/v1/tailnets/$(tid $s)/owner" "p12-move-$s" "{\"from_cluster\":\"$C1_ID\",\"from_epoch\":$e0,\"to_cluster\":\"$C2_ID\"}")
-  printf 'move %s %s\n' "$s" "$r" >>"$ART_DIR/logs/placement.log"
+  printf 'move %s %s
+' "$s" "$r" >>"$ART_DIR/logs/placement.log"
   [ "$(jget "$r" "d.get('moving_to_cluster_id')")" = $C2_ID ] && [ "$(jget "$r" "d['owner_epoch']")" = "$e0" ] || p="$p; move request [$r]"
-  for i in $(seq 1 40); do
-    r=$(boot_req "$TMPD/key-$s" "$s"); printf 'P10 %s %s\n' "$(now_ms)" "$r" >>"$ART_DIR/logs/bootstrap-responses.txt"
-    case "$r" in 503*) moving=1;; 200*) [ "$(boot_url "$r")" = "$URL2" ] && break;; esac
-    sleep 0.25
+  sleep 9
+  cp_ "cat /dev/shm/p12-boot-codes; rm -f /dev/shm/p12-boot-codes; ! ls /dev/shm/p12-boot.body /dev/shm/p12-sampler.sh >/dev/null 2>&1" >"$ART_DIR/logs/P10-boot-codes.txt" || p="$p; sampler file left on mc-cp"
+  local codes; codes=$(awk '{print $2}' "$ART_DIR/logs/P10-boot-codes.txt" | uniq | tr '
+' ' ')
+  grep -qw 503 <<<"$codes" && moving=1
+  [ "$(awk '{print $2}' "$ART_DIR/logs/P10-boot-codes.txt" | tail -1)" = 200 ] || p="$p; last bootstrap sample not 200 [$codes]"
+  for i in $(seq 1 20); do
+    r=$(boot_req "$TMPD/key-$s" "$s"); printf 'P10 %s %s
+' "$(now_ms)" "$r" >>"$ART_DIR/logs/bootstrap-responses.txt"
+    [ "$(boot_url "$r")" = "$URL2" ] && break; sleep 0.5
   done
   local t1; t1=$(now_ms)
   [ "$(boot_url "$r")" = "$URL2" ] || p="$p; bootstrap after the move [$r]"
@@ -556,7 +585,7 @@ t_p10() {
   ping_ok p12-${s}1 p12-${s}2 || p="$p; ${s}1 cannot ping ${s}2 at c2"
   local leak; leak=$(for c in x1 x2 y1 y2 z1; do [ "${c:0:1}" = "$s" ] || peers p12-$c; done)
   grep -q "p12-$s" <<<"$leak" && p="$p; a node of $s seen from another tailnet"
-  [ -z "$p" ] && record P10 PASS "move $s c1->c2: request (moving_to, epoch $e0), bootstrap MOVING then $URL2 after $((t1 - t0)) ms; c1 handed over ($th) before c2 loaded ($tl); epoch $((e0 + 1)); c1 refuses $s; clients re-logged at c2; others unaffected" \
+  [ -z "$p" ] && record P10 PASS "move $s c1->c2: request (moving_to, epoch $e0), bootstrap samples on mc-cp [$codes] then $URL2; c1 handed over ($th) before c2 loaded ($tl); epoch $((e0 + 1)); c1 refuses $s; clients re-logged at c2; others unaffected" \
     || record P10 FAIL "${p#; }"
 }
 
