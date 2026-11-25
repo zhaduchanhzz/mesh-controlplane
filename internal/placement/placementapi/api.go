@@ -78,6 +78,8 @@ type TailnetView struct {
 	PolicyRevision uint64    `json:"policy_revision"`
 	ConfigRevision uint64    `json:"config_revision"`
 	Devices        *int64    `json:"devices,omitempty"`
+	// MovingToClusterID is the target of a pending move (ADR 0010).
+	MovingToClusterID *string `json:"moving_to_cluster_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
@@ -86,7 +88,7 @@ func view(tn types.Tailnet) TailnetView {
 	return TailnetView{
 		ID: tn.ID, Slug: tn.Slug, Status: string(tn.Status), OwnerClusterID: tn.OwnerClusterID,
 		OwnerEpoch: tn.OwnerEpoch, PolicyRevision: tn.PolicyRevision, ConfigRevision: tn.ConfigRevision,
-		CreatedAt: tn.CreatedAt, UpdatedAt: tn.UpdatedAt,
+		CreatedAt: tn.CreatedAt, UpdatedAt: tn.UpdatedAt, MovingToClusterID: tn.MovingToClusterID,
 	}
 }
 
@@ -202,8 +204,9 @@ type (
 		KeyID          uint64 `path:"key_id" minimum:"1"`
 		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
 	}
-	apiKeyOut struct{ Body placement.APIKeyInfo }
-	auditOut  struct {
+	apiKeyOut    struct{ Body placement.APIKeyInfo }
+	reconcileOut struct{ Body placement.Report }
+	auditOut     struct {
 		Body struct {
 			Entries []placement.AuditEntry `json:"entries"`
 		}
@@ -236,7 +239,7 @@ func register(api huma.API, h *handlers) {
 	huma.Register(api, huma.Operation{OperationID: "suspendTailnet", Method: http.MethodPost, Path: "/v1/tailnets/{id}/suspend", Tags: tag,
 		Summary: "PENDING/ACTIVE → SUSPENDED at the expected owner epoch"}, h.suspendTailnet)
 	huma.Register(api, huma.Operation{OperationID: "moveTailnetOwner", Method: http.MethodPost, Path: "/v1/tailnets/{id}/owner", Tags: tag,
-		Summary: "Compare-and-swap the owner cluster; owner_epoch + 1"}, h.moveOwner)
+		Summary: "Request a move to another cluster (moving_to; the owner hands it over, owner_epoch + 1, ADR 0010), or bump the epoch on the same cluster"}, h.moveOwner)
 	huma.Register(api, huma.Operation{OperationID: "getTailnetQuota", Method: http.MethodGet, Path: "/v1/tailnets/{id}/quota", Tags: tag,
 		Summary: "Enrollment quota decision of a tailnet"}, h.quota)
 	huma.Register(api, huma.Operation{OperationID: "createTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys", Tags: tag,
@@ -245,6 +248,8 @@ func register(api huma.API, h *handlers) {
 		Summary: "List the API keys of a tailnet (no secrets)"}, h.listAPIKeys)
 	huma.Register(api, huma.Operation{OperationID: "revokeTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys/{key_id}/revoke", Tags: tag,
 		Summary: "Revoke an API key of the tailnet"}, h.revokeAPIKey)
+	huma.Register(api, huma.Operation{OperationID: "reconcileReport", Method: http.MethodGet, Path: "/v1/reconcile", Tags: tag,
+		Summary: "Cross-cluster anomalies R1-R9 by id and count (read only; nothing is moved)"}, h.reconcile)
 	huma.Register(api, huma.Operation{OperationID: "listAudit", Method: http.MethodGet, Path: "/v1/audit", Tags: tag,
 		Summary: "Newest operator audit entries"}, h.audit)
 }
@@ -298,6 +303,21 @@ func apiError(err error) error {
 	default:
 		return huma.Error500InternalServerError("internal error")
 	}
+}
+
+// reconcile serves the cross-cluster reconcile report (P12, Q4): a read;
+// it neither moves a tailnet nor writes the audit log.
+func (h *handlers) reconcile(ctx context.Context, _ *struct{}) (*reconcileOut, error) {
+	if err := readGuard(ctx); err != nil { //nolint:noinlineerr
+		return nil, err
+	}
+
+	rep, err := h.reg.Reconcile(ctx)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	return &reconcileOut{Body: rep}, nil
 }
 
 func (h *handlers) listClusters(ctx context.Context, _ *struct{}) (*clustersOut, error) {

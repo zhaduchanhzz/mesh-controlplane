@@ -297,8 +297,8 @@ func (p *Platform) TailnetForNode(mk key.MachinePublic, nk key.NodePublic) (tail
 	return parseStoredTailnet(tns[0])
 }
 
-// OwnedTailnets returns the ACTIVE, not deleted tailnets owned by clusterID,
-// oldest first.
+// OwnedTailnets returns the ACTIVE, not deleted tailnets owned by clusterID
+// with no move requested (ADR 0010), oldest first.
 func (p *Platform) OwnedTailnets(clusterID string) ([]types.Tailnet, error) {
 	if clusterID == "" {
 		return nil, errEmptyClusterID
@@ -310,7 +310,10 @@ func (p *Platform) OwnedTailnets(clusterID string) ([]types.Tailnet, error) {
 	var tns []types.Tailnet
 
 	err := p.db.WithContext(ctx).
-		Where("owner_cluster_id = ? AND status = ? AND deleted_at IS NULL", clusterID, types.TailnetActive).
+		// A tailnet with a move requested is not loaded: its owner hands it
+		// over once it stopped serving it (ADR 0010).
+		Where("owner_cluster_id = ? AND status = ? AND moving_to_cluster_id IS NULL AND deleted_at IS NULL",
+			clusterID, types.TailnetActive).
 		Order("created_at, id").
 		Find(&tns).Error
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
@@ -121,6 +123,10 @@ func TestBootstrapStoreFollowsOwner(t *testing.T) {
 					State: placement.ClusterActive, MaxDevices: 100,
 				})
 				require.NoError(t, err)
+
+				// Placement chooses only clusters with a live lease (P12 Q2).
+				_, err = lease.NewStore(p.RegistryDB()).Acquire(ctx, c.id, "test-"+c.id, time.Hour)
+				require.NoError(t, err)
 			}
 
 			tn, err := r.CreateTailnet(ctx, testOp, "acme", placement.ClassShared)
@@ -167,6 +173,13 @@ func TestBootstrapStoreFollowsOwner(t *testing.T) {
 
 			_, err = r.MoveOwner(ctx, testOp, tn.ID, "c1", tn.OwnerEpoch, "c2")
 			require.NoError(t, err)
+			assert.Equal(t, OutcomeMoving, resolve("").Outcome, "requested, not handed over yet (ADR 0010)")
+
+			// c1's serving process hands the tailnet over (p is c1's platform).
+			p.SetLease("test-c1", 1)
+			to, err := p.HandOver(tailnet.MustParseID(tn.ID), tn.OwnerEpoch)
+			require.NoError(t, err)
+			require.Equal(t, "c2", to)
 
 			got = resolve("")
 			require.Equal(t, OutcomeOK, got.Outcome)

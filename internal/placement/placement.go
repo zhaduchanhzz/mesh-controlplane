@@ -145,6 +145,13 @@ const DefaultWarnPercent = 80
 type Config struct {
 	SharedTenantLimit int64
 	WarnPercent       int64
+	// PendingMaxAge is how long a tailnet may stay PENDING before the
+	// reconcile report lists it (R9); zero takes DefaultPendingMaxAge.
+	PendingMaxAge time.Duration
+	// MoveMaxAge is how long a requested move may stay pending before the
+	// reconcile report lists it (R10, ADR 0010); zero takes
+	// DefaultMoveMaxAge.
+	MoveMaxAge time.Duration
 }
 
 var (
@@ -210,6 +217,18 @@ func New(db *gorm.DB, cfg Config) (*Registry, error) {
 
 	if cfg.WarnPercent == 0 {
 		cfg.WarnPercent = DefaultWarnPercent
+	}
+
+	if cfg.PendingMaxAge == 0 {
+		cfg.PendingMaxAge = DefaultPendingMaxAge
+	}
+
+	if cfg.MoveMaxAge == 0 {
+		cfg.MoveMaxAge = DefaultMoveMaxAge
+	}
+
+	if cfg.PendingMaxAge < 0 || cfg.MoveMaxAge < 0 {
+		return nil, fmt.Errorf("%w: pending max age %s, move max age %s", ErrInvalid, cfg.PendingMaxAge, cfg.MoveMaxAge)
 	}
 
 	if cfg.SharedTenantLimit < 0 || cfg.WarnPercent < 0 || cfg.WarnPercent > 100 {

@@ -227,7 +227,8 @@ func TestPlacementDedicatedConcurrent(t *testing.T) {
 }
 
 // TestMoveOwnerStaleEpochRejected (RED, I12/S17): a CAS with an old epoch or
-// a cluster that no longer owns the tailnet changes nothing.
+// a cluster that no longer owns the tailnet changes nothing. ADR 0010: the
+// move is a request (moving_to); owner and epoch change at the hand-over.
 func TestMoveOwnerStaleEpochRejected(t *testing.T) {
 	for _, b := range backends() {
 		t.Run(b.name, func(t *testing.T) {
@@ -240,26 +241,31 @@ func TestMoveOwnerStaleEpochRejected(t *testing.T) {
 
 			moved, err := r.MoveOwner(ctx, testOp, tn.ID, "c1", 1, "c2")
 			require.NoError(t, err)
-			assert.Equal(t, "c2", moved.OwnerClusterID)
-			assert.EqualValues(t, 2, moved.OwnerEpoch)
+			assert.Equal(t, "c1", moved.OwnerClusterID, "the owner changes at the hand-over")
+			assert.EqualValues(t, 1, moved.OwnerEpoch)
+			require.NotNil(t, moved.MovingToClusterID)
+			assert.Equal(t, "c2", *moved.MovingToClusterID)
 
 			for _, tc := range []struct {
 				from  string
 				epoch uint64
-			}{{"c1", 1}, {"c2", 1}, {"c1", 2}, {"c2", 3}} {
+			}{{"c2", 1}, {"c1", 2}, {"c2", 2}} {
 				_, err = r.MoveOwner(ctx, testOp, tn.ID, tc.from, tc.epoch, "c1")
 				require.ErrorIs(t, err, ErrStaleEpoch, "from %s@%d", tc.from, tc.epoch)
 			}
 
+			_, err = r.MoveOwner(ctx, testOp, tn.ID, "c1", 1, "c2")
+			require.ErrorIs(t, err, ErrConflict, "one move pending at a time")
+
 			got, err := r.GetTailnet(ctx, tn.ID)
 			require.NoError(t, err)
-			assert.Equal(t, "c2", got.OwnerClusterID)
-			assert.EqualValues(t, 2, got.OwnerEpoch)
+			assert.Equal(t, "c1", got.OwnerClusterID)
+			assert.EqualValues(t, 1, got.OwnerEpoch)
 
-			_, err = r.MoveOwner(ctx, testOp, tn.ID, "c2", 2, "nope")
+			_, err = r.MoveOwner(ctx, testOp, tn.ID, "c1", 1, "nope")
 			require.ErrorIs(t, err, ErrNotFound, "unregistered target")
 
-			_, err = r.MoveOwner(ctx, testOp, "00000000-0000-4000-8000-000000000000", "c2", 2, "c1")
+			_, err = r.MoveOwner(ctx, testOp, "00000000-0000-4000-8000-000000000000", "c1", 1, "c2")
 			require.ErrorIs(t, err, ErrNotFound)
 
 			assert.EqualValues(t, 1, count(t, gdb, `SELECT count(*) FROM platform_audit WHERE action = 'MoveOwner' AND outcome = 'ok'`))
@@ -269,7 +275,8 @@ func TestMoveOwnerStaleEpochRejected(t *testing.T) {
 }
 
 // TestMoveOwnerConcurrentExactlyOneWins (RED, I12): N operators CAS the same
-// (owner, epoch) at once; exactly one succeeds and the epoch grows by one.
+// (owner, epoch) at once; exactly one request is recorded (ADR 0010), the
+// others conflict; owner and epoch are unchanged until the hand-over.
 func TestMoveOwnerConcurrentExactlyOneWins(t *testing.T) {
 	for _, b := range backends() {
 		t.Run(b.name, func(t *testing.T) {
@@ -316,13 +323,15 @@ func TestMoveOwnerConcurrentExactlyOneWins(t *testing.T) {
 			require.Len(t, winners, 1, "exactly one CAS wins")
 
 			for _, err := range others {
-				require.ErrorIs(t, err, ErrStaleEpoch)
+				require.ErrorIs(t, err, ErrConflict)
 			}
 
 			got, err := r.GetTailnet(ctx, tn.ID)
 			require.NoError(t, err)
-			assert.EqualValues(t, 2, got.OwnerEpoch)
-			assert.Equal(t, winners[0].OwnerClusterID, got.OwnerClusterID)
+			assert.EqualValues(t, 1, got.OwnerEpoch)
+			assert.Equal(t, "c1", got.OwnerClusterID)
+			require.NotNil(t, got.MovingToClusterID)
+			assert.Equal(t, *winners[0].MovingToClusterID, *got.MovingToClusterID)
 		})
 	}
 }
@@ -341,6 +350,9 @@ func TestEpochNeverDecreases(t *testing.T) {
 			tn := activeTailnet(t, r, "acme", ClassShared)
 			_, err := r.MoveOwner(ctx, testOp, tn.ID, "c1", 1, "c2")
 			require.NoError(t, err)
+			// The hand-over the owner cluster makes (ADR 0010).
+			require.NoError(t, gdb.Exec(`UPDATE tailnets SET owner_cluster_id = 'c2', owner_epoch = 2,
+				moving_to_cluster_id = NULL WHERE id = ?`, tn.ID).Error)
 
 			// UpdateClusterState: revision grows, owner epochs are untouched.
 			rev := c1.Revision
@@ -534,7 +546,8 @@ func TestIdempotency(t *testing.T) {
 
 			got, err := r.GetTailnet(ctx, first.ID)
 			require.NoError(t, err)
-			assert.EqualValues(t, 2, got.OwnerEpoch)
+			assert.EqualValues(t, 1, got.OwnerEpoch, "a move request; the hand-over raises the epoch")
+			require.NotNil(t, got.MovingToClusterID)
 
 			assert.EqualValues(t, 2, count(t, gdb, `SELECT count(*) FROM platform_audit WHERE outcome = 'replay'`))
 			assert.EqualValues(t, 1, count(t, gdb, `SELECT count(*) FROM platform_audit WHERE outcome = 'error' AND action = 'CreateTailnet'`))

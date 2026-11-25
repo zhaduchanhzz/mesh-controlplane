@@ -2,6 +2,7 @@ package placementapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 )
 
@@ -94,6 +96,16 @@ type env struct {
 	rootCAs *x509.CertPool
 	opCA    *ca
 	reg     *placement.Registry
+	leases  *lease.Store
+}
+
+// live takes cluster id's lease as its running process would: placement
+// only chooses clusters with a live lease (P12, owner decision Q2).
+func (e *env) live(t *testing.T, id string) {
+	t.Helper()
+
+	_, err := e.leases.Acquire(context.Background(), id, "test-"+id, time.Hour)
+	require.NoError(t, err)
 }
 
 func newEnv(t *testing.T) *env {
@@ -132,7 +144,7 @@ func newEnv(t *testing.T) *env {
 	roots := x509.NewCertPool()
 	roots.AddCert(serverCA.cert)
 
-	return &env{srv: srv, rootCAs: roots, opCA: opCA, reg: reg}
+	return &env{srv: srv, rootCAs: roots, opCA: opCA, reg: reg, leases: lease.NewStore(p.RegistryDB())}
 }
 
 func (e *env) client(certs ...tls.Certificate) *http.Client {
@@ -258,6 +270,8 @@ func TestOperatorFlow(t *testing.T) {
 	cluster2 := map[string]any{"id": "c2", "endpoint_url": "https://c2.cp.example.test:8443", "class": "shared", "state": "ACTIVE", "max_devices": 100}
 	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/clusters", key: "c2", body: cluster2})
 	require.Equal(t, http.StatusCreated, code)
+	e.live(t, "c1")
+	e.live(t, "c2")
 
 	create := call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}}
 	code, tn := e.do(t, c, create)
@@ -281,7 +295,8 @@ func TestOperatorFlow(t *testing.T) {
 		body: map[string]any{"from_cluster": "c1", "from_epoch": 1, "to_cluster": "c2"}}
 	code, moved := e.do(t, c, move)
 	require.Equal(t, http.StatusOK, code, moved)
-	assert.EqualValues(t, 2, moved["owner_epoch"])
+	assert.EqualValues(t, 1, moved["owner_epoch"], "a move request (ADR 0010)")
+	assert.Equal(t, "c2", moved["moving_to_cluster_id"])
 
 	code, _ = e.do(t, c, move)
 	require.Equal(t, http.StatusOK, code, "replay")
@@ -289,11 +304,12 @@ func TestOperatorFlow(t *testing.T) {
 	stale := move
 	stale.key = "m2"
 	code, _ = e.do(t, c, stale)
-	assert.Equal(t, http.StatusConflict, code, "stale epoch")
+	assert.Equal(t, http.StatusConflict, code, "a move is already pending")
 
 	code, got := e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/" + id})
 	require.Equal(t, http.StatusOK, code)
-	assert.EqualValues(t, 2, got["owner_epoch"])
+	assert.EqualValues(t, 1, got["owner_epoch"])
+	assert.Equal(t, "c2", got["moving_to_cluster_id"])
 	assert.EqualValues(t, 0, got["devices"])
 
 	code, q := e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/" + id + "/quota"})
@@ -359,6 +375,7 @@ func TestOperatorAPIKeys(t *testing.T) {
 	cluster := map[string]any{"id": "c1", "endpoint_url": "https://c1.cp.example.test:8443", "class": "shared", "state": "ACTIVE", "max_devices": 100}
 	code, _ := e.do(t, c, call{method: http.MethodPost, path: "/v1/clusters", key: "c1", body: cluster})
 	require.Equal(t, http.StatusCreated, code)
+	e.live(t, "c1")
 
 	code, tn := e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}})
 	require.Equal(t, http.StatusCreated, code)
@@ -419,4 +436,57 @@ func TestOperatorAPIKeys(t *testing.T) {
 	assert.Equal(t, 1, outcomes["CreateAPIKey/replay"])
 	assert.Equal(t, 1, outcomes["RevokeAPIKey/ok"])
 	assert.Equal(t, 1, outcomes["RevokeAPIKey/error"])
+}
+
+// P12 step 2 (Q4): the reconcile report is an operator read: no certificate
+// or a tenant credential is refused; it lists anomalies by id and count
+// only, and reading it changes nothing (no audit entry).
+func TestOperatorReconcile(t *testing.T) {
+	e := newEnv(t)
+	c := e.client(e.opCA.issue(t, "alice", x509.ExtKeyUsageClientAuth, alice))
+	get := call{method: http.MethodGet, path: "/v1/reconcile"}
+
+	code, _ := e.do(t, e.client(), get)
+	assert.Equal(t, http.StatusUnauthorized, code, "no certificate")
+
+	code, _ = e.do(t, e.client(), call{method: http.MethodGet, path: "/v1/reconcile", bearer: "hskey-api-TENANTKEY-secret"})
+	assert.Equal(t, http.StatusForbidden, code, "tenant credential")
+
+	code, _ = e.do(t, e.client(e.opCA.issue(t, alice, x509.ExtKeyUsageClientAuth, mallory)), get)
+	assert.Equal(t, http.StatusForbidden, code, "identity not allowed")
+
+	cluster := map[string]any{"id": "c1", "endpoint_url": "https://c1.cp.example.test:8443", "class": "shared", "state": "ACTIVE", "max_devices": 100}
+	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/clusters", key: "c1", body: cluster})
+	require.Equal(t, http.StatusCreated, code)
+
+	findings := func() []any {
+		t.Helper()
+
+		code, rep := e.do(t, c, get)
+		require.Equal(t, http.StatusOK, code, rep)
+		require.Contains(t, rep, "generated_at")
+
+		f, ok := rep["findings"].([]any)
+		require.True(t, ok, "findings is a list: %v", rep["findings"])
+
+		return f
+	}
+
+	// Registered ACTIVE, no process yet: R5 only.
+	assert.Equal(t, []any{map[string]any{"code": "R5_CLUSTER_ACTIVE_NO_LIVE_LEASE", "cluster_id": "c1"}}, findings())
+
+	// Its process runs, without a registered Noise key: R6 only.
+	e.live(t, "c1")
+	assert.Equal(t, []any{map[string]any{"code": "R6_CLUSTER_NO_NOISE_KEY", "cluster_id": "c1"}}, findings())
+
+	code, _ = e.do(t, c, call{method: http.MethodPatch, path: "/v1/clusters/c1", key: "k1", body: map[string]any{"noise_public_key": "mkey:c1"}})
+	require.Equal(t, http.StatusOK, code)
+	assert.Empty(t, findings(), "clean")
+
+	entries, err := e.reg.AuditLog(t.Context(), 100)
+	require.NoError(t, err)
+
+	for _, a := range entries {
+		assert.NotContains(t, a.Action, "econcile", "a read is not audited as a mutation")
+	}
 }
