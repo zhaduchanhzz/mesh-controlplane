@@ -1,11 +1,11 @@
 # Stage 2: isolated SDN underlays + service/client VMs (04-proxmox-lab.md §3-4).
-# Everything here is disabled by default, so a plan with default variables is
-# identical to the stage-1 plan. Enable with: -var stage2_enabled=true
+# Applied on 2026-11-25 (LAB-stage2-n1, owner-approved): stage2_enabled now
+# defaults to true; false would plan a destroy (human approval required).
 
 variable "stage2_enabled" {
-  description = "Create the stage-2 SDN underlays and VMs. SDN is a host network change: human approval required (AGENTS.md rule 3)."
+  description = "Create the stage-2 SDN underlays and VMs. SDN is a host network change: human approval required (AGENTS.md rule 3). On since 2026-11-25 (LAB-stage2-n1, owner-approved): turning it off plans a destroy."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "stage2_sdn_zone" {
