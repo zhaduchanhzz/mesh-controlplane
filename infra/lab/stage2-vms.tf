@@ -104,6 +104,11 @@ resource "proxmox_virtual_environment_vm" "stage2" {
     # Lab VMs are never replaced implicitly; a replace needs human approval.
     prevent_destroy = true
 
+    # As for the stage-1/2a/2b VMs (vm.tf): after an import (2026-11-25, an
+    # interrupted apply left created VMs out of state) these read as a change
+    # of a running VM; import_from would ask the provider to re-import a disk.
+    ignore_changes = [disk[0].import_from, initialization[0].user_data_file_id]
+
     precondition {
       condition     = contains(keys(var.stage2_vnets), each.value.net)
       error_message = "stage2_vms[${each.key}].net must be a key of stage2_vnets."
