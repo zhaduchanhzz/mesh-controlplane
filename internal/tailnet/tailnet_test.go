@@ -63,7 +63,8 @@ func TestZeroIDIsInvalid(t *testing.T) {
 		t.Fatalf("zero ID = %q, IsZero=%v", id, id.IsZero())
 	}
 
-	if _, err := id.MarshalText(); !errors.Is(err, ErrInvalidID) {
+	_, err := id.MarshalText()
+	if !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("MarshalText of zero ID err = %v, want ErrInvalidID", err)
 	}
 }
@@ -79,11 +80,14 @@ func TestIDTextRoundTripValidates(t *testing.T) {
 	}
 
 	var got wrap
-	if err := json.Unmarshal(b, &got); err != nil || got.ID.String() != idA {
+
+	err = json.Unmarshal(b, &got)
+	if err != nil || got.ID.String() != idA {
 		t.Fatalf("round trip = %q, %v", got.ID, err)
 	}
 
-	if err := json.Unmarshal([]byte(`{"id":"not-a-tailnet"}`), &got); !errors.Is(err, ErrInvalidID) {
+	err = json.Unmarshal([]byte(`{"id":"not-a-tailnet"}`), &got)
+	if !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("Unmarshal invalid err = %v, want ErrInvalidID", err)
 	}
 }
@@ -98,7 +102,8 @@ func TestFromContextFailsClosed(t *testing.T) {
 		t.Fatalf("FromContext(empty) returned a usable scope: %+v", s)
 	}
 	//nolint:staticcheck // deliberately testing a nil context
-	if _, err := FromContext(nil); !errors.Is(err, ErrNoScope) {
+	_, err = FromContext(nil)
+	if !errors.Is(err, ErrNoScope) {
 		t.Fatalf("FromContext(nil) err = %v, want ErrNoScope", err)
 	}
 }
@@ -116,7 +121,8 @@ func TestNewScopeValidates(t *testing.T) {
 		{"empty principal", MustParseID(idA), SourceInternalService, ""},
 	}
 	for _, c := range cases {
-		if _, err := NewScope(c.id, c.src, c.principal, 1); !errors.Is(err, ErrInvalidScope) {
+		_, err := NewScope(c.id, c.src, c.principal, 1)
+		if !errors.Is(err, ErrInvalidScope) {
 			t.Errorf("%s: err = %v, want ErrInvalidScope", c.name, err)
 		}
 	}
@@ -128,7 +134,8 @@ func TestNewScopeValidates(t *testing.T) {
 }
 
 func TestWithScopeRejectsInvalid(t *testing.T) {
-	if _, err := WithScope(context.Background(), Scope{}); !errors.Is(err, ErrInvalidScope) {
+	_, err := WithScope(context.Background(), Scope{})
+	if !errors.Is(err, ErrInvalidScope) {
 		t.Fatalf("WithScope(zero) err = %v, want ErrInvalidScope", err)
 	}
 }
@@ -142,11 +149,13 @@ func TestWithScopeCannotSwitchTailnet(t *testing.T) {
 		t.Fatal(err)
 	}
 	// I01: one session/request carries exactly one tailnet.
-	if _, err := WithScope(ctx, b); !errors.Is(err, ErrScopeConflict) {
+	_, err = WithScope(ctx, b)
+	if !errors.Is(err, ErrScopeConflict) {
 		t.Fatalf("re-binding A->B err = %v, want ErrScopeConflict", err)
 	}
 	// Re-asserting the same scope is harmless.
-	if _, err := WithScope(ctx, a); err != nil {
+	_, err = WithScope(ctx, a)
+	if err != nil {
 		t.Fatalf("re-binding A->A: %v", err)
 	}
 
@@ -162,19 +171,23 @@ func TestRequireChecksTailnet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Require(ctx, MustParseID(idA)); err != nil {
+	_, err = Require(ctx, MustParseID(idA))
+	if err != nil {
 		t.Fatalf("Require(A) in A: %v", err)
 	}
 
-	if _, err := Require(ctx, MustParseID(idB)); !errors.Is(err, ErrScopeMismatch) {
+	_, err = Require(ctx, MustParseID(idB))
+	if !errors.Is(err, ErrScopeMismatch) {
 		t.Fatalf("Require(B) in A err = %v, want ErrScopeMismatch", err)
 	}
 
-	if _, err := Require(context.Background(), MustParseID(idA)); !errors.Is(err, ErrNoScope) {
+	_, err = Require(context.Background(), MustParseID(idA))
+	if !errors.Is(err, ErrNoScope) {
 		t.Fatalf("Require without scope err = %v, want ErrNoScope", err)
 	}
 
-	if _, err := Require(ctx, ID{}); !errors.Is(err, ErrScopeMismatch) {
+	_, err = Require(ctx, ID{})
+	if !errors.Is(err, ErrScopeMismatch) {
 		t.Fatalf("Require(zero) err = %v, want ErrScopeMismatch", err)
 	}
 }

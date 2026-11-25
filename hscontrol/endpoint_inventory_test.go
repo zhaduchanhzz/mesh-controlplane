@@ -277,17 +277,21 @@ func debugRoutes(t *testing.T) []endpointRoute {
 	// Not linked from the index: the explicit debugMux registrations, and the
 	// pprof handlers tsweb registers with HandleSilent (probing them would
 	// start a CPU profile or trace, so they are listed, not probed).
-	paths := []string{
+	listed := []string{
 		"/debug/", "/debug/statsviz/", "/debug/statsviz/ws", "/metrics",
 		"/debug/pprof/cmdline", "/debug/pprof/profile", "/debug/pprof/symbol", "/debug/pprof/trace",
 	}
+	linked := debugIndexHref.FindAllStringSubmatch(rec.Body.String(), -1)
 
-	for _, m := range debugIndexHref.FindAllStringSubmatch(rec.Body.String(), -1) {
+	paths := make([]string, 0, len(listed)+len(linked))
+	paths = append(paths, listed...)
+
+	for _, m := range linked {
 		p, _, _ := strings.Cut(m[1], "?")
 		paths = append(paths, p)
 	}
 
-	var out []endpointRoute
+	out := make([]endpointRoute, 0, len(paths))
 
 	for _, p := range paths {
 		// P08: the whole listener, /metrics and statsviz included, is behind
@@ -374,7 +378,7 @@ func collapseAnyMethod(routes []endpointRoute) []endpointRoute {
 		methods[k][r.Method] = true
 	}
 
-	var out []endpointRoute
+	out := make([]endpointRoute, 0, len(routes))
 
 	for _, r := range routes {
 		m := methods[r.Server+" "+r.Path]
@@ -391,9 +395,9 @@ func collapseAnyMethod(routes []endpointRoute) []endpointRoute {
 func allEndpointRoutes(t *testing.T) []string {
 	t.Helper()
 
-	var lines []string
-
 	routes := collapseAnyMethod(slices.Concat(publicRoutes(t), clusterRoutes(t), noiseRoutes(t), debugRoutes(t), unixRoutes(t)))
+
+	lines := make([]string, 0, len(routes))
 	for _, r := range routes {
 		lines = append(lines, r.String())
 	}

@@ -22,6 +22,8 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/bootstrap"
 )
 
+var errFlagsRequired = errors.New("-config, -tls-cert, -tls-key and -hostname are required")
+
 func main() {
 	err := run()
 	if err != nil {
@@ -49,7 +51,7 @@ func run() error {
 	flag.Parse()
 
 	if *cfgPath == "" || *certFile == "" || *keyFile == "" || *hostname == "" {
-		return errors.New("-config, -tls-cert, -tls-key and -hostname are required")
+		return errFlagsRequired
 	}
 
 	cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
@@ -67,7 +69,8 @@ func run() error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 
-	if sqlDB, err := ro.DB(); err == nil {
+	sqlDB, err := ro.DB()
+	if err == nil {
 		defer sqlDB.Close()
 	}
 

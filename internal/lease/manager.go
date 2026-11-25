@@ -10,6 +10,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+var (
+	errInvalidConfig = errors.New("invalid lease config")
+	errNoIdentity    = errors.New("lease manager needs a cluster and a holder")
+)
+
 // Config times the lease. Defaults: [DefaultConfig].
 type Config struct {
 	// TTL is how long a lease lives in the database after each acquire or
@@ -38,14 +43,15 @@ var DefaultConfig = Config{
 func (c Config) Validate() error {
 	switch {
 	case c.TTL < time.Second:
-		return fmt.Errorf("lease ttl %s is below 1s", c.TTL)
+		return fmt.Errorf("%w: ttl %s is below 1s", errInvalidConfig, c.TTL)
 	case c.SafetyMargin <= 0 || c.SafetyMargin*2 > c.TTL:
-		return fmt.Errorf("lease safety margin %s must be positive and at most half the ttl %s", c.SafetyMargin, c.TTL)
+		return fmt.Errorf("%w: safety margin %s must be positive and at most half the ttl %s",
+			errInvalidConfig, c.SafetyMargin, c.TTL)
 	case c.RenewInterval <= 0 || c.RenewInterval >= c.TTL-c.SafetyMargin:
-		return fmt.Errorf("lease renew interval %s must be positive and below ttl - safety margin (%s)",
-			c.RenewInterval, c.TTL-c.SafetyMargin)
+		return fmt.Errorf("%w: renew interval %s must be positive and below ttl - safety margin (%s)",
+			errInvalidConfig, c.RenewInterval, c.TTL-c.SafetyMargin)
 	case c.AcquireInterval <= 0:
-		return fmt.Errorf("lease acquire interval %s must be positive", c.AcquireInterval)
+		return fmt.Errorf("%w: acquire interval %s must be positive", errInvalidConfig, c.AcquireInterval)
 	}
 
 	return nil
@@ -79,7 +85,7 @@ func NewManager(s *Store, cluster, holder string, cfg Config) (*Manager, error) 
 
 func newManager(s store, cluster, holder string, cfg Config) (*Manager, error) {
 	if cluster == "" || holder == "" {
-		return nil, errors.New("lease manager needs a cluster and a holder")
+		return nil, errNoIdentity
 	}
 
 	err := cfg.Validate()
@@ -147,7 +153,7 @@ func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease
 				Msg("cluster lease taken but serving failed to start; releasing")
 			m.clear()
 			onLose(l, "start failed")
-			m.release(l)
+			m.release(l) //nolint:contextcheck // the lease is given back after ctx ended; release bounds itself by the safety margin
 
 			if !sleepCtx(ctx, m.cfg.AcquireInterval) {
 				return
@@ -163,7 +169,7 @@ func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease
 		onLose(l, reason)
 
 		if ctx.Err() != nil {
-			m.release(l)
+			m.release(l) //nolint:contextcheck // the lease is given back after ctx ended; release bounds itself by the safety margin
 
 			return
 		}

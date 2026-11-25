@@ -17,7 +17,7 @@ func clusterLeasesMigration() *gormigrate.Migration {
 		Migrate: func(db *gorm.DB) error {
 			return db.Transaction(func(tx *gorm.DB) error {
 				ddl := lease.SQLiteDDL
-				if tx.Name() == "postgres" {
+				if tx.Name() == dialectPostgres {
 					ddl = lease.PostgresDDL
 				}
 
@@ -27,7 +27,7 @@ func clusterLeasesMigration() *gormigrate.Migration {
 		Rollback: func(db *gorm.DB) error {
 			return db.Transaction(func(tx *gorm.DB) error {
 				err := tx.Exec(`DROP TABLE IF EXISTS cluster_leases`).Error
-				if err == nil && tx.Name() == "postgres" {
+				if err == nil && tx.Name() == dialectPostgres {
 					err = tx.Exec(`DROP FUNCTION IF EXISTS cluster_leases_epoch_monotonic()`).Error
 				}
 

@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+var (
+	errNoOperators = errors.New("no operator identity allowed")
+	errNoClientCA  = errors.New("client CA pool is required")
+)
+
 // Authorizer admits platform operators only (PLAN §4 item 6, I08/S10):
 //
 //   - the client must present a certificate that verifies against the pinned
@@ -41,7 +46,7 @@ func NewAuthorizer(identities []string) (*Authorizer, error) {
 	}
 
 	if len(a.allowed) == 0 {
-		return nil, errors.New("no operator identity allowed")
+		return nil, errNoOperators
 	}
 
 	return a, nil
@@ -110,7 +115,7 @@ func (a *Authorizer) identity(leaf *x509.Certificate) (string, bool) {
 // handshake failure; a certificate that does not verify fails the handshake.
 func TLSConfig(cert tls.Certificate, clientCAs *x509.CertPool) (*tls.Config, error) {
 	if clientCAs == nil {
-		return nil, errors.New("client CA pool is required")
+		return nil, errNoClientCA
 	}
 
 	return &tls.Config{

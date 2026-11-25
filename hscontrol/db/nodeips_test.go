@@ -99,8 +99,10 @@ func TestNodeIPDDLInSchemaFiles(t *testing.T) {
 }
 
 func migrationIDs() []string {
-	var ids []string
-	for _, m := range v01Migrations() {
+	ms := v01Migrations()
+
+	ids := make([]string, 0, len(ms))
+	for _, m := range ms {
 		ids = append(ids, m.ID)
 	}
 
@@ -191,7 +193,8 @@ func TestMigrationNodeIPUnique(t *testing.T) {
 			conn, err := openDB(cfg.Database, cfg.SQLitePath())
 			require.NoError(t, err)
 			t.Cleanup(func() {
-				if sqlDB, err := conn.DB(); err == nil {
+				sqlDB, err := conn.DB()
+				if err == nil {
 					_ = sqlDB.Close()
 				}
 			})

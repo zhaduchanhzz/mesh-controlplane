@@ -66,14 +66,14 @@ func p12Platform(t *testing.T, backend, cluster string) *db.Platform {
 	return p
 }
 
-func p12Register(t *testing.T, p *db.Platform, id string, class placement.Class, state placement.ClusterState, maxDevices int64) {
+func p12Register(t *testing.T, p *db.Platform, id string, class placement.Class, state placement.ClusterState) {
 	t.Helper()
 
 	reg, err := placement.New(p.RegistryDB(), placement.Config{})
 	require.NoError(t, err)
 
 	_, err = reg.CreateCluster(context.Background(), placement.Op{Actor: "test"}, placement.ClusterSpec{
-		ID: id, EndpointURL: "https://" + id + ".cp.example.test:8443", Class: class, State: state, MaxDevices: maxDevices,
+		ID: id, EndpointURL: "https://" + id + ".cp.example.test:8443", Class: class, State: state, MaxDevices: 100,
 	})
 	require.NoError(t, err)
 }
@@ -109,7 +109,7 @@ func TestCLITailnetCreateFollowsRegistry(t *testing.T) {
 			require.ErrorIs(t, err, placement.ErrNotFound, "c1 not registered: refused (no R1 by the CLI)")
 			assert.Zero(t, p12Count(t, p, `SELECT count(*) FROM tailnets WHERE slug = 'a'`))
 
-			p12Register(t, p, "c1", placement.ClassDedicated, placement.ClusterActive, 100)
+			p12Register(t, p, "c1", placement.ClassDedicated, placement.ClusterActive)
 
 			_, err = createTailnetCLI(ctx, p, "c1", "a")
 			require.ErrorIs(t, err, placement.ErrNoLiveLease, "registered, but no process of c1 runs")
@@ -139,9 +139,9 @@ func TestCLITailnetReassignFollowsRegistry(t *testing.T) {
 			ctx := context.Background()
 			p := p12Platform(t, backend, "c1")
 
-			p12Register(t, p, "c1", placement.ClassShared, placement.ClusterActive, 100)
-			p12Register(t, p, "c3", placement.ClassShared, placement.ClusterDisabled, 100)
-			p12Register(t, p, "c2", placement.ClassShared, placement.ClusterActive, 100)
+			p12Register(t, p, "c1", placement.ClassShared, placement.ClusterActive)
+			p12Register(t, p, "c3", placement.ClassShared, placement.ClusterDisabled)
+			p12Register(t, p, "c2", placement.ClassShared, placement.ClusterActive)
 			p12Live(t, p, "c1")
 
 			tn, err := createTailnetCLI(ctx, p, "c1", "a")

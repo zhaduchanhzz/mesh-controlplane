@@ -62,7 +62,8 @@ func benchDB(b *testing.B, mode string) (*gorm.DB, context.Context, uint64) {
 		withoutFence(b, db)
 	}
 
-	if sqlDB, err := db.DB(); err == nil && db.Name() == "postgres" {
+	sqlDB, err := db.DB()
+	if err == nil && db.Name() == "postgres" {
 		sqlDB.SetMaxOpenConns(64)
 		sqlDB.SetMaxIdleConns(64)
 	}
@@ -75,7 +76,8 @@ func benchDB(b *testing.B, mode string) (*gorm.DB, context.Context, uint64) {
 			ddl = lease.PostgresDDL
 		}
 
-		if err := db.Exec(ddl).Error; err != nil {
+		err := db.Exec(ddl).Error
+		if err != nil {
 			b.Fatal(err)
 		}
 
@@ -84,11 +86,13 @@ func benchDB(b *testing.B, mode string) (*gorm.DB, context.Context, uint64) {
 			b.Fatal(err)
 		}
 
-		ctx = leaseCtx(b, idA, l.Holder, l.Epoch)
+		ctx = leaseCtx(b, l.Holder, l.Epoch)
 	}
 
 	var it item
-	if err := db.WithContext(ctx).Order("id").First(&it).Error; err != nil {
+
+	err = db.WithContext(ctx).Order("id").First(&it).Error
+	if err != nil {
 		b.Fatal(err)
 	}
 
@@ -104,15 +108,18 @@ func BenchmarkFenceWrite(b *testing.B) {
 			db, ctx, ownerID := benchDB(b, mode)
 
 			it := item{Name: "bench", OwnerID: ownerID}
-			if err := db.WithContext(ctx).Create(&it).Error; err != nil {
+
+			err := db.WithContext(ctx).Create(&it).Error
+			if err != nil {
 				b.Fatal(err)
 			}
 
 			b.ResetTimer()
 
 			for i := 0; b.Loop(); i++ {
-				if err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
-					Update("name", strconv.Itoa(i)).Error; err != nil {
+				err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
+					Update("name", strconv.Itoa(i)).Error
+				if err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -123,7 +130,8 @@ func BenchmarkFenceWrite(b *testing.B) {
 			b.ResetTimer()
 
 			for b.Loop() {
-				if err := db.WithContext(ctx).Create(&item{Name: "c", OwnerID: ownerID}).Error; err != nil {
+				err := db.WithContext(ctx).Create(&item{Name: "c", OwnerID: ownerID}).Error
+				if err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -135,7 +143,9 @@ func BenchmarkFenceWrite(b *testing.B) {
 			ids := make([]uint64, 10)
 			for k := range ids {
 				it := item{Name: "t", OwnerID: ownerID}
-				if err := db.WithContext(ctx).Create(&it).Error; err != nil {
+
+				err := db.WithContext(ctx).Create(&it).Error
+				if err != nil {
 					b.Fatal(err)
 				}
 
@@ -147,7 +157,8 @@ func BenchmarkFenceWrite(b *testing.B) {
 			for i := 0; b.Loop(); i++ {
 				err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 					for _, id := range ids {
-						if err := tx.Model(&item{}).Where("id = ?", id).Update("name", strconv.Itoa(i)).Error; err != nil {
+						err := tx.Model(&item{}).Where("id = ?", id).Update("name", strconv.Itoa(i)).Error
+						if err != nil {
 							return err
 						}
 					}
@@ -183,8 +194,9 @@ func BenchmarkFenceWrite(b *testing.B) {
 				}
 
 				for i := 0; pb.Next(); i++ {
-					if err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
-						Update("name", strconv.Itoa(i)).Error; err != nil {
+					err := db.WithContext(ctx).Model(&item{}).Where("id = ?", it.ID).
+						Update("name", strconv.Itoa(i)).Error
+					if err != nil {
 						b.Error(err)
 
 						return
@@ -198,7 +210,7 @@ func BenchmarkFenceWrite(b *testing.B) {
 // writeLoad runs n writers updating their own row of tailnet A as fast as
 // they can, each with the fence of the current epoch. stop ends them and
 // returns the number of writes that committed.
-func writeLoad(tb testing.TB, db *gorm.DB, ownerID uint64, n int, epoch *atomic.Int64) (stop func() int64) {
+func writeLoad(tb testing.TB, db *gorm.DB, ownerID uint64, n int, epoch *atomic.Uint64) func() int64 {
 	tb.Helper()
 
 	var (
@@ -209,7 +221,9 @@ func writeLoad(tb testing.TB, db *gorm.DB, ownerID uint64, n int, epoch *atomic.
 
 	for w := range n {
 		it := item{Name: "w", OwnerID: ownerID}
-		if err := db.WithContext(ctxFor(tb, idA)).Create(&it).Error; err != nil {
+
+		err := db.WithContext(ctxFor(tb, idA)).Create(&it).Error
+		if err != nil {
 			tb.Fatal(err)
 		}
 
@@ -237,9 +251,10 @@ func writeLoad(tb testing.TB, db *gorm.DB, ownerID uint64, n int, epoch *atomic.
 
 // moveEpoch is an ownership change as production does it: LockOwnership,
 // then the UPDATE of the tailnets row, in one transaction.
-func moveEpoch(db *gorm.DB, next int64) error {
+func moveEpoch(db *gorm.DB, next uint64) error {
 	return db.Transaction(func(tx *gorm.DB) error {
-		if err := LockOwnership(tx, idA); err != nil {
+		err := LockOwnership(tx, idA)
+		if err != nil {
 			return err
 		}
 
@@ -258,17 +273,19 @@ func BenchmarkFenceOwnerMoveUnderLoad(b *testing.B) {
 				b.Skip("FOR SHARE is PostgreSQL only")
 			}
 
-			var epoch atomic.Int64
+			var epoch atomic.Uint64
 			epoch.Store(testEpoch)
 			stop := writeLoad(b, db, ownerID, writers, &epoch)
 
-			time.Sleep(200 * time.Millisecond) // writers running
+			time.Sleep(200 * time.Millisecond) //nolint:forbidigo // lets the writers reach steady load before timing
 
 			start := time.Now()
 
 			for b.Loop() {
 				next := epoch.Load() + 1
-				if err := moveEpoch(db, next); err != nil {
+
+				err := moveEpoch(db, next)
+				if err != nil {
 					b.Fatal(err)
 				}
 

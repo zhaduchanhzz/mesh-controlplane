@@ -28,27 +28,28 @@ func backends(t *testing.T) []backend {
 	t.Helper()
 
 	sqlitePath := filepath.Join(t.TempDir(), "shared.db")
-	out := []backend{{
+
+	return []backend{{
 		name: "sqlite",
 		cfg: func(t *testing.T, tn, cl string) *types.Config {
+			t.Helper()
+
 			c := sqliteTestConfig(sqlitePath)
 			c.TailnetID, c.ClusterID = tn, cl
 
 			return c
 		},
-	}}
-
-	out = append(out, backend{
+	}, {
 		name: "postgres",
 		cfg: func(t *testing.T, tn, cl string) *types.Config {
+			t.Helper()
+
 			c := postgresConfig(t)
 			c.TailnetID, c.ClusterID = tn, cl
 
 			return c
 		},
-	})
-
-	return out
+	}}
 }
 
 // postgresConfig lazily starts one PostgreSQL database per test (skips the

@@ -41,8 +41,10 @@ func (f *fakeStore) LookupAuthKey(_ context.Context, keyID string) (Record, bool
 	return r, ok, nil
 }
 
-//go:fix inline
-func ptr[T any](v T) *T { return new(v) }
+var (
+	errDBDown          = errors.New("db down")
+	errMustNotBeCalled = errors.New("must not be called")
+)
 
 func storedHash(secret string) []byte { return []byte(hashPrefixSHA256 + ProofOf(secret)) }
 
@@ -96,10 +98,13 @@ func newTestHandler(store Store, cfg HandlerConfig) *Handler {
 }
 
 func body(keyID, secret, tenant string) string {
-	b, _ := json.Marshal(Request{
+	b, err := json.Marshal(Request{
 		Credential: Credential{Kind: CredentialKindAuthKeyProof, KeyID: keyID, Proof: ProofOf(secret)},
 		Tenant:     tenant,
 	})
+	if err != nil {
+		panic(err)
+	}
 
 	return string(b)
 }
@@ -111,7 +116,7 @@ type response struct {
 }
 
 func do(h http.Handler, method, path, payload string) response {
-	req := httptest.NewRequest(method, "https://"+testHost+path, strings.NewReader(payload))
+	req := httptest.NewRequestWithContext(context.Background(), method, "https://"+testHost+path, strings.NewReader(payload))
 	req.Host = testHost
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -214,7 +219,7 @@ func TestBootstrapMovingAndUnavailableOnlyForCredentialed(t *testing.T) {
 // TestBootstrapStoreFailureIsUnavailable: a store error is a 503, never an
 // answer, and never the refusal (the client retries).
 func TestBootstrapStoreFailureIsUnavailable(t *testing.T) {
-	h := newTestHandler(&fakeStore{err: errors.New("db down")}, DefaultHandlerConfig(""))
+	h := newTestHandler(&fakeStore{err: errDBDown}, DefaultHandlerConfig(""))
 	r := do(h, http.MethodPost, PathBootstrap, body(keyActive, secretA, ""))
 	assert.Equal(t, http.StatusServiceUnavailable, r.status)
 	assert.Equal(t, string(bodyUnavailable), r.body)
@@ -223,7 +228,7 @@ func TestBootstrapStoreFailureIsUnavailable(t *testing.T) {
 // TestBootstrapMalformedNeverReachesStore: malformed requests are a uniform
 // 400 decided without the store.
 func TestBootstrapMalformedNeverReachesStore(t *testing.T) {
-	h := newTestHandler(&fakeStore{err: errors.New("must not be called")}, DefaultHandlerConfig(""))
+	h := newTestHandler(&fakeStore{err: errMustNotBeCalled}, DefaultHandlerConfig(""))
 
 	for name, payload := range map[string]string{
 		"not json":        "{",
@@ -260,12 +265,14 @@ func TestBootstrapNoDebugOrMetrics(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, do(h, http.MethodPost, PathHealth, "").status, "POST health")
 	assert.Equal(t, http.StatusOK, do(h, http.MethodGet, PathHealth, "").status)
 
-	req := httptest.NewRequest(http.MethodPost, "https://c1.cp.example.test"+PathBootstrap, strings.NewReader(body(keyActive, secretA, "")))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://c1.cp.example.test"+PathBootstrap,
+		strings.NewReader(body(keyActive, secretA, "")))
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusMisdirectedRequest, rr.Code, "another host")
 
-	req = httptest.NewRequest(http.MethodPost, "https://"+testHost+PathBootstrap, strings.NewReader(body(keyActive, secretA, "")))
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+testHost+PathBootstrap,
+		strings.NewReader(body(keyActive, secretA, "")))
 	req.Host = testHost
 	req.TLS.ServerName = "c1.cp.example.test"
 	rr = httptest.NewRecorder()

@@ -93,7 +93,8 @@ func splitKey(t *testing.T, key string) (string, string) {
 func closeGorm(t *testing.T, g *gorm.DB) {
 	t.Helper()
 	t.Cleanup(func() {
-		if s, err := g.DB(); err == nil {
+		s, err := g.DB()
+		if err == nil {
 			_ = s.Close()
 		}
 	})

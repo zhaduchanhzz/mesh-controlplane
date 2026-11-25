@@ -35,6 +35,11 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement/placementapi"
 )
 
+var (
+	errFlagsRequired = errors.New("-config, -tls-cert, -tls-key, -client-ca and -operators are required")
+	errNoClientCA    = errors.New("client CA file holds no certificate")
+)
+
 func main() {
 	err := run()
 	if err != nil {
@@ -68,7 +73,7 @@ func run() error {
 	}
 
 	if *cfgPath == "" || *certFile == "" || *keyFile == "" || *clientCA == "" || *operators == "" {
-		return errors.New("-config, -tls-cert, -tls-key, -client-ca and -operators are required")
+		return errFlagsRequired
 	}
 
 	auth, err := placementapi.NewAuthorizer(strings.Split(*operators, ","))
@@ -88,7 +93,7 @@ func run() error {
 
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
-		return errors.New("client CA file holds no certificate")
+		return errNoClientCA
 	}
 
 	tlsCfg, err := placementapi.TLSConfig(cert, pool)

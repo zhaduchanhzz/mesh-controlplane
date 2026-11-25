@@ -115,7 +115,8 @@ func TestMigrationFromV01Init(t *testing.T) {
 			conn, err := openDB(cfg.Database, cfg.SQLitePath())
 			require.NoError(t, err)
 			t.Cleanup(func() {
-				if sqlDB, err := conn.DB(); err == nil {
+				sqlDB, err := conn.DB()
+				if err == nil {
 					_ = sqlDB.Close()
 				}
 			})

@@ -75,6 +75,7 @@ func p08bValue(t *testing.T, m prometheus.Metric) float64 {
 	t.Helper()
 
 	var d dto.Metric
+
 	err := m.Write(&d)
 	if err != nil {
 		t.Fatal(err)

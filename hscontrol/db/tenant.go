@@ -27,6 +27,8 @@ var (
 	// ErrAmbiguousTailnet reports a database with several tailnets and no
 	// tailnet chosen for the runtime.
 	ErrAmbiguousTailnet = errors.New("database holds several tailnets; the runtime must name one")
+
+	errTailnetMissing = errors.New("does not exist")
 )
 
 const (
@@ -55,7 +57,7 @@ func createSchema(tx *gorm.DB) error {
 	}
 
 	script := dbSchema
-	if tx.Name() == "postgres" {
+	if tx.Name() == dialectPostgres {
 		script = dbSchemaPostgres
 	}
 
@@ -90,7 +92,7 @@ func tableExists(db *gorm.DB, table string) (bool, error) {
 	var q string
 
 	switch db.Name() {
-	case "postgres":
+	case dialectPostgres:
 		q = `SELECT count(*) FROM information_schema.tables
 			WHERE table_schema = current_schema() AND table_name = ? AND table_type = 'BASE TABLE'`
 	case "sqlite":
@@ -251,7 +253,7 @@ func resolveRuntimeTailnet(raw *gorm.DB, want, cluster string) (types.Tailnet, e
 		}
 
 		if !found {
-			return types.Tailnet{}, fmt.Errorf("tailnet %s does not exist", want)
+			return types.Tailnet{}, fmt.Errorf("tailnet %s %w", want, errTailnetMissing)
 		}
 	case len(tns) == 0:
 		return createDefaultTailnet(raw, cluster)
@@ -313,7 +315,8 @@ func (hsdb *HSDatabase) ScopedContext(parent context.Context) context.Context {
 
 	// Carry the ownership fence too, or writes on ctx fail with ErrNoFence.
 	if f, ok := tailnet.FenceFromContext(hsdb.DB.Statement.Context); ok {
-		if fctx, err := tailnet.WithFence(ctx, f); err == nil {
+		fctx, err := tailnet.WithFence(ctx, f)
+		if err == nil {
 			ctx = fctx
 		}
 	}

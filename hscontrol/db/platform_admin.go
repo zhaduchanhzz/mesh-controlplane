@@ -20,7 +20,11 @@ import (
 // (AGENTS rule 8).
 const denyAllPolicy = `{"grants":[]}`
 
-var errEmptySlug = errors.New("tailnet slug must not be empty")
+var (
+	errEmptySlug          = errors.New("tailnet slug must not be empty")
+	errInvalidStatus      = errors.New("invalid tailnet status")
+	errEmptyTargetCluster = errors.New("target cluster must not be empty")
+)
 
 // CreateTailnet creates tailnet slug owned by this platform's cluster as
 // PENDING, with the deny-all policy in the same transaction (AGENTS rule 8).
@@ -112,7 +116,7 @@ func (p *Platform) SetTailnetStatus(id tailnet.ID, status types.TailnetStatus) e
 	switch status {
 	case types.TailnetPending, types.TailnetActive, types.TailnetSuspended, types.TailnetDeleting:
 	default:
-		return fmt.Errorf("invalid tailnet status %q", status)
+		return fmt.Errorf("%w %q", errInvalidStatus, status)
 	}
 
 	ctx, cancel := p.lookupContext()
@@ -132,7 +136,7 @@ func (p *Platform) SetTailnetStatus(id tailnet.ID, status types.TailnetStatus) e
 			q = q.Where("status <> ?", types.TailnetDeleting)
 		}
 
-		res := q.Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()})
+		res := q.Updates(map[string]any{"status": status, colUpdatedAt: time.Now().UTC()})
 		affected = res.RowsAffected
 
 		return res.Error
@@ -164,7 +168,7 @@ func (p *Platform) SetTailnetStatus(id tailnet.ID, status types.TailnetStatus) e
 // Operator tool for the lab; the placement API (P10) does the same move.
 func (p *Platform) ReassignTailnet(id tailnet.ID, fromEpoch uint64, to string) (uint64, error) {
 	if to == "" {
-		return 0, errors.New("target cluster must not be empty")
+		return 0, errEmptyTargetCluster
 	}
 
 	ctx, cancel := p.lookupContext()
@@ -183,7 +187,7 @@ func (p *Platform) ReassignTailnet(id tailnet.ID, fromEpoch uint64, to string) (
 			Updates(map[string]any{
 				"owner_cluster_id": to,
 				"owner_epoch":      gorm.Expr("owner_epoch + 1"),
-				"updated_at":       time.Now().UTC(),
+				colUpdatedAt:       time.Now().UTC(),
 			})
 		affected = res.RowsAffected
 
@@ -217,7 +221,7 @@ func (p *Platform) BumpPolicyRevision(id tailnet.ID) error {
 
 		res := tx.Model(&types.Tailnet{}).
 			Where("id = ? AND owner_cluster_id = ? AND deleted_at IS NULL", id.String(), p.cluster).
-			Updates(map[string]any{"policy_revision": gorm.Expr("policy_revision + 1"), "updated_at": time.Now().UTC()})
+			Updates(map[string]any{"policy_revision": gorm.Expr("policy_revision + 1"), colUpdatedAt: time.Now().UTC()})
 		affected = res.RowsAffected
 
 		return res.Error

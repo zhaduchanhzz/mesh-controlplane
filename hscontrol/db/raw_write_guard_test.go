@@ -21,7 +21,7 @@ var tenantWriteRE = regexp.MustCompile(
 	`(?is)\b(insert\s+into|update|delete\s+from)\s+"?(users|nodes|credentials|policies|tailnet_settings)\b`)
 
 // rawTenantWriteAllowlist holds file:reason for reviewed raw tenant writes.
-var rawTenantWriteAllowlist = map[string]string{
+var rawTenantWriteAllowlist = map[string]string{ //nolint:gosec // G101: file names and reasons; "credentials" is a table name
 	// Platform operator path: inserts the deny-all policy of a tailnet that
 	// is being created, in the same transaction as the tailnets row
 	// (AGENTS rule 8). The tailnet has no runtime and no fence yet.

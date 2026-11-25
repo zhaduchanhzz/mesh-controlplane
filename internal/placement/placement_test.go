@@ -15,6 +15,8 @@ import (
 
 var ctx = context.Background()
 
+var errInjected = errors.New("injected failure")
+
 // TestCreateTailnetPendingDenyOwner: a new tailnet is PENDING, owned by the
 // chosen cluster at epoch 1, with the deny-all policy, in one transaction
 // with its audit row (PLAN §5, AGENTS rule 8, I04).
@@ -66,7 +68,7 @@ func TestCreateTailnetFailureLeavesNothing(t *testing.T) {
 			r := newRegistry(t, gdb, Config{})
 			addCluster(t, r, "c1", ClassShared, ClusterActive, 100)
 
-			injected := errors.New("injected failure")
+			injected := errInjected
 
 			for i, s := range steps {
 				r.failAt = func(step string) error {

@@ -49,11 +49,11 @@ var serveTailnetsCmd = &cobra.Command{
 	Short: "POC: serve several tailnets from one process, chosen by Host",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if len(serveTailnetsSpecs) < 1 {
-			return errors.New("at least one --tailnet is required")
+			return errNoTailnetSpec
 		}
 
 		if serveTailnetsTLSCert == "" || serveTailnetsTLSKey == "" {
-			return errors.New("--tls-cert and --tls-key are required: the front door always terminates TLS")
+			return errFrontDoorTLS
 		}
 
 		cert, err := tls.LoadX509KeyPair(serveTailnetsTLSCert, serveTailnetsTLSKey)
@@ -89,7 +89,7 @@ var serveTailnetsCmd = &cobra.Command{
 			}
 
 			if cfg.TLS.CertPath != "" || cfg.TLS.ACME.Hostname != "" {
-				return fmt.Errorf("tailnet %s: runtime must not terminate TLS; the front door does", ts.id)
+				return fmt.Errorf("tailnet %s: %w", ts.id, errRuntimeTLS)
 			}
 
 			app, err := hscontrol.NewHeadscale(cfg)
@@ -165,13 +165,23 @@ type tailnetSpec struct {
 	config string
 }
 
+var (
+	errNoTailnetSpec  = errors.New("at least one --tailnet is required")
+	errFrontDoorTLS   = errors.New("--tls-cert and --tls-key are required: the front door always terminates TLS")
+	errRuntimeTLS     = errors.New("runtime must not terminate TLS; the front door does")
+	errSpecKeyValue   = errors.New("expected key=value")
+	errSpecUnknownKey = errors.New("unknown key")
+	errSpecIncomplete = errors.New("id, hosts and config are required")
+	errNotLoopback    = errors.New("must be a loopback address behind the front door")
+)
+
 func parseTailnetSpec(s string) (tailnetSpec, error) {
 	var ts tailnetSpec
 
 	for part := range strings.SplitSeq(s, ";") {
 		k, v, ok := strings.Cut(part, "=")
 		if !ok {
-			return ts, fmt.Errorf("--tailnet %q: expected key=value", part)
+			return ts, fmt.Errorf("--tailnet %q: %w", part, errSpecKeyValue)
 		}
 
 		switch strings.TrimSpace(k) {
@@ -191,12 +201,12 @@ func parseTailnetSpec(s string) (tailnetSpec, error) {
 		case "config":
 			ts.config = strings.TrimSpace(v)
 		default:
-			return ts, fmt.Errorf("--tailnet: unknown key %q", k)
+			return ts, fmt.Errorf("--tailnet: %w %q", errSpecUnknownKey, k)
 		}
 	}
 
 	if ts.id.IsZero() || len(ts.hosts) == 0 || ts.config == "" {
-		return ts, fmt.Errorf("--tailnet %q: id, hosts and config are required", s)
+		return ts, fmt.Errorf("--tailnet %q: %w", s, errSpecIncomplete)
 	}
 
 	return ts, nil
@@ -212,7 +222,7 @@ func loopbackTarget(addr string) (*url.URL, error) {
 
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
-		return nil, fmt.Errorf("listen_addr %q must be a loopback address behind the front door", addr)
+		return nil, fmt.Errorf("listen_addr %q %w", addr, errNotLoopback)
 	}
 
 	return &url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}, nil

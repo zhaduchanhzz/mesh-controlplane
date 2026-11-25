@@ -54,6 +54,8 @@ var (
 	ErrFenced = errors.New("tailnet ownership fence failed: owned by another cluster or epoch")
 	// ErrNoFence reports a write to tenant data without an ownership fence.
 	ErrNoFence = errors.New("tenant write without an ownership fence")
+
+	errUnsupportedCreate = errors.New("unsupported create value")
 )
 
 // Register installs the plugin's callbacks on db.
@@ -156,7 +158,7 @@ func hasPrimaryKey(db *gorm.DB) bool {
 	}
 
 	rv := reflect.Indirect(db.Statement.ReflectValue)
-	switch rv.Kind() {
+	switch rv.Kind() { //nolint:exhaustive // the kinds gorm statements carry; default has no primary key
 	case reflect.Struct:
 		for _, pf := range sch.PrimaryFields {
 			if _, zero := pf.ValueOf(db.Statement.Context, rv); zero {
@@ -190,7 +192,7 @@ func stampCreate(db *gorm.DB) {
 	id := s.ID().String()
 	rv := reflect.Indirect(db.Statement.ReflectValue)
 
-	switch rv.Kind() {
+	switch rv.Kind() { //nolint:exhaustive // the kinds gorm creates from; default fails the create
 	case reflect.Struct:
 		stampOne(db, f, rv, id)
 	case reflect.Slice, reflect.Array:
@@ -200,7 +202,7 @@ func stampCreate(db *gorm.DB) {
 	case reflect.Map:
 		stampMap(db, f, rv, id)
 	default:
-		_ = db.AddError(fmt.Errorf("%s: unsupported create value %s", name, rv.Kind()))
+		_ = db.AddError(fmt.Errorf("%s: %w %s", name, errUnsupportedCreate, rv.Kind()))
 	}
 
 	if db.Error != nil {

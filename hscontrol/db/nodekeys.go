@@ -95,7 +95,7 @@ func nodeKeyPairMigration() *gormigrate.Migration {
 				}
 
 				ddl := nodeKeyPairSQLiteDDL
-				if tx.Name() == "postgres" {
+				if tx.Name() == dialectPostgres {
 					ddl = nodeKeyPairPostgresDDL
 				}
 
@@ -109,7 +109,7 @@ func nodeKeyPairMigration() *gormigrate.Migration {
 					`DROP TRIGGER IF EXISTS trg_nodes_key_pair_tailnet_update`,
 					`DROP INDEX IF EXISTS ` + idxNodesMachineNodeKey,
 				}
-				if tx.Name() == "postgres" {
+				if tx.Name() == dialectPostgres {
 					stmts = []string{
 						`DROP TRIGGER IF EXISTS trg_nodes_key_pair_tailnet ON nodes`,
 						`DROP FUNCTION IF EXISTS nodes_key_pair_tailnet_check()`,

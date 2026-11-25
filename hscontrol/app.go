@@ -145,6 +145,8 @@ type Headscale struct {
 // existence oracle.
 const minVerifySecretLen = 32
 
+var errVerifySecretPath = errors.New("derp.verify_secret_path")
+
 func readVerifySecret(path string) ([]byte, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -153,7 +155,7 @@ func readVerifySecret(path string) ([]byte, error) {
 
 	secret := bytes.TrimSpace(b)
 	if len(secret) < minVerifySecretLen {
-		return nil, fmt.Errorf("derp.verify_secret_path: secret must be at least %d characters", minVerifySecretLen)
+		return nil, fmt.Errorf("%w: secret must be at least %d characters", errVerifySecretPath, minVerifySecretLen)
 	}
 
 	return secret, nil
@@ -1561,10 +1563,13 @@ func (e *zerologLogEntry) Panic(
 // ephemeral GC, extra DNS records and scheduled tasks. It opens no listener,
 // so a Cluster (ADR 0007) can run several runtimes behind one listener.
 // The returned stop releases what was started, also on error.
-func (h *Headscale) startRuntime(ctx context.Context, errorGroup *errgroup.Group) (stop func(), err error) {
-	var cleanups []func()
+func (h *Headscale) startRuntime(ctx context.Context, errorGroup *errgroup.Group) (func(), error) {
+	var (
+		cleanups []func()
+		err      error
+	)
 
-	stop = func() {
+	stop := func() {
 		for _, cleanup := range slices.Backward(cleanups) {
 			cleanup()
 		}

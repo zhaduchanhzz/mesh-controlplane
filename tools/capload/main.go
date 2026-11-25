@@ -52,6 +52,13 @@ import (
 	"tailscale.com/util/zstdframe"
 )
 
+var (
+	errKeyCount       = errors.New("node key count")
+	errKeyLine        = errors.New("unparsable")
+	errUnexpectedAuth = errors.New("register: unexpected auth URL")
+	errMapStatus      = errors.New("map: HTTP")
+)
+
 type result struct {
 	Index      int
 	Phase      string
@@ -153,7 +160,8 @@ func firstPhase(nodeKeysPath string, keys []string, nodes, perUser int) (phaseSp
 
 	if nodeKeysPath == "" {
 		if need := (nodes + perUser - 1) / perUser; len(keys) < need {
-			return phaseSpec{}, fmt.Errorf("%d nodes at %d per user need %d keys, file has %d", nodes, perUser, need, len(keys))
+			return phaseSpec{}, fmt.Errorf("%w: %d nodes at %d per user need %d keys, file has %d",
+				errKeyCount, nodes, perUser, need, len(keys))
 		}
 
 		for i := range rs {
@@ -172,7 +180,7 @@ func firstPhase(nodeKeysPath string, keys []string, nodes, perUser int) (phaseSp
 	}
 
 	if len(lines) < nodes {
-		return phaseSpec{}, fmt.Errorf("-nodes %d but node-keys has %d", nodes, len(lines))
+		return phaseSpec{}, fmt.Errorf("%w: -nodes %d but node-keys has %d", errKeyCount, nodes, len(lines))
 	}
 
 	for i := range rs {
@@ -180,7 +188,7 @@ func firstPhase(nodeKeysPath string, keys []string, nodes, perUser int) (phaseSp
 		r := &result{Index: i, Phase: "connect", Peers: -1, hostname: fmt.Sprintf("cap-node-%05d", i)}
 
 		if len(f) != 2 || r.machine.UnmarshalText([]byte(f[0])) != nil || r.node.UnmarshalText([]byte(f[1])) != nil {
-			return phaseSpec{}, fmt.Errorf("node-keys line %d unparsable", i)
+			return phaseSpec{}, fmt.Errorf("node-keys line %d %w", i, errKeyLine)
 		}
 
 		rs[i] = r
@@ -261,7 +269,12 @@ func run(cfg config, phases []phaseSpec) error {
 	framesBefore, bytesBefore := totalFrames(all), totalBytes(all)
 
 	phase("hold_start")
-	time.Sleep(cfg.hold)
+
+	select {
+	case <-time.After(cfg.hold):
+	case <-ctx.Done():
+	}
+
 	phase("hold_end")
 	close(stopProgress)
 
@@ -275,7 +288,11 @@ func run(cfg config, phases []phaseSpec) error {
 		return err
 	}
 
-	b, _ := json.MarshalIndent(out, "", "  ")
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+
 	fmt.Println(string(b))
 
 	return nil
@@ -374,7 +391,7 @@ func enrollOne(ctx, phaseCtx context.Context, cfg config, r *result, streams *sy
 
 		if url != "" {
 			direct.Close()
-			return errors.New("register: unexpected auth URL")
+			return errUnexpectedAuth
 		}
 
 		r.Register = time.Since(start)
@@ -424,7 +441,7 @@ func enrollOne(ctx, phaseCtx context.Context, cfg config, r *result, streams *sy
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 
-			first <- firstFrame{err: fmt.Errorf("map: HTTP %d", resp.StatusCode)}
+			first <- firstFrame{err: fmt.Errorf("%w %d", errMapStatus, resp.StatusCode)}
 
 			return
 		}
@@ -683,7 +700,8 @@ func writeResults(dir string, rs []*result, s summary) error {
 
 	w.Flush()
 
-	if err := w.Error(); err != nil {
+	err = w.Error()
+	if err != nil {
 		return err
 	}
 

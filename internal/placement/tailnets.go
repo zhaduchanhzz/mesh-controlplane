@@ -130,7 +130,7 @@ func (r *Registry) CreateTailnetOn(ctx context.Context, op Op, slug, clusterID s
 	detail := map[string]any{"slug": slug, "cluster": clusterID}
 
 	return mutate(ctx, r, op, "CreateTailnet", slug, detail, func(tx *gorm.DB) (types.Tailnet, string, error) {
-		cs, err := lockClusters(tx, "UPDATE", "id = ?", clusterID)
+		cs, err := lockClusters(tx, "id = ?", clusterID)
 		if err != nil {
 			return types.Tailnet{}, "", err
 		}
@@ -314,7 +314,7 @@ func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string,
 			return types.Tailnet{}, "", err
 		}
 
-		target, err := lockClusters(tx, "UPDATE", "id = ?", toCluster)
+		target, err := lockClusters(tx, "id = ?", toCluster)
 		if err != nil {
 			return types.Tailnet{}, "", err
 		}

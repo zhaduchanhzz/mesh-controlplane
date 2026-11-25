@@ -138,12 +138,11 @@ func TestFullMapRefreshCoversEveryNode(t *testing.T) {
 	g := newNetmapGolden(t, true)
 	connectAll(g)
 
-	var (
-		r    fullMapRefresher
-		seen []types.NodeID
-	)
-
 	const ticks = 4
+
+	var r fullMapRefresher
+
+	seen := make([]types.NodeID, 0, 2*ticks)
 
 	for range ticks {
 		share := r.next(g.b, ticks)
@@ -160,8 +159,10 @@ func TestFullMapRefreshCoversEveryNode(t *testing.T) {
 		seen = append(seen, share...)
 	}
 
-	all := []types.NodeID{}
-	for _, h := range []string{"a1", "a2", "b1", "b2", "c1"} {
+	hosts := []string{"a1", "a2", "b1", "b2", "c1"}
+
+	all := make([]types.NodeID, 0, len(hosts))
+	for _, h := range hosts {
 		all = append(all, g.node(h).ID())
 	}
 
@@ -171,7 +172,7 @@ func TestFullMapRefreshCoversEveryNode(t *testing.T) {
 	done := make(chan struct{})
 	go g.b.RunFullMapRefresh(2*time.Second, done)
 
-	time.Sleep(2500 * time.Millisecond)
+	time.Sleep(2500 * time.Millisecond) //nolint:forbidigo // runs the 2 s refresh loop for one full interval
 	close(done)
 	g.step("refresh loop", nil)
 

@@ -38,6 +38,13 @@ var errForeignKeyConstraintsViolated = errors.New("foreign key constraints viola
 
 const contextTimeout = 10 * time.Second
 
+const (
+	// dialectPostgres is the gorm dialector name of PostgreSQL (gorm.DB.Name).
+	dialectPostgres = "postgres"
+	// colUpdatedAt is the modification time column of the v0.1 tables.
+	colUpdatedAt = "updated_at"
+)
+
 type HSDatabase struct {
 	// DB is confined to the runtime's tailnet by the tenantscope plugin:
 	// every statement on a tenant table is filtered and stamped with it.

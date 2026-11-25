@@ -1,6 +1,7 @@
 package hscontrol
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
@@ -137,12 +139,12 @@ func (c *Cluster) admin(op string, fn adminHandlerFunc) http.HandlerFunc {
 
 		target, err := fn(w, r, id, h)
 
-		ev := log.Info()
+		level := zerolog.InfoLevel
 		if err != nil {
-			ev = log.Warn().Err(err)
+			level = zerolog.WarnLevel
 		}
 
-		ev.Str("op", op).Str("tailnet", id.String()).Str("target", target).
+		log.WithLevel(level).Err(err).Str("op", op).Str("tailnet", id.String()).Str("target", target).
 			Msg("cluster admin (unix socket)")
 
 		if err != nil {
@@ -164,7 +166,11 @@ func writeAdminError(w http.ResponseWriter, status int, msg string) {
 func writeAdminJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+
+	err := json.NewEncoder(w).Encode(v)
+	if err != nil {
+		log.Debug().Err(err).Msg("cluster admin: writing response")
+	}
 }
 
 // adminNodeOf returns the node {node} of the runtime's tailnet; a node of
@@ -374,7 +380,7 @@ func adminDeleteUser(w http.ResponseWriter, r *http.Request, _ tailnet.ID, h *He
 
 // listenAdminSocket opens the unix socket of the admin API (unix_socket),
 // replacing a stale socket file, with mode unix_socket_permission.
-func listenAdminSocket(cfg *types.Config) (net.Listener, error) {
+func listenAdminSocket(ctx context.Context, cfg *types.Config) (net.Listener, error) {
 	path := cfg.UnixSocket
 
 	// Only a stale socket is removed: anything else at the path is an
@@ -393,7 +399,9 @@ func listenAdminSocket(cfg *types.Config) (net.Listener, error) {
 		return nil, fmt.Errorf("creating admin socket directory: %w", err)
 	}
 
-	ln, err := net.Listen("unix", path)
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(ctx, "unix", path)
 	if err != nil {
 		return nil, &types.ListenerBindError{Listener: "cluster admin socket", YAMLKey: "unix_socket", Addr: path, Err: err}
 	}

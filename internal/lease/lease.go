@@ -33,6 +33,8 @@ var ErrHeld = errors.New("cluster lease is held by another process")
 // ErrLost reports that a lease is no longer ours: expired, or taken over.
 var ErrLost = errors.New("cluster lease lost")
 
+var errInvalidEpoch = errors.New("invalid epoch")
+
 // MigrationID is the v0.1 migration that creates cluster_leases.
 const MigrationID = "202611251000-cluster-leases"
 
@@ -153,10 +155,10 @@ RETURNING epoch`
 	}
 
 	if epochs[0] < 1 {
-		return Lease{}, fmt.Errorf("acquiring cluster lease %s: invalid epoch %d", cluster, epochs[0])
+		return Lease{}, fmt.Errorf("acquiring cluster lease %s: %w %d", cluster, errInvalidEpoch, epochs[0])
 	}
 
-	return Lease{Cluster: cluster, Holder: holder, Epoch: uint64(epochs[0])}, nil
+	return Lease{Cluster: cluster, Holder: holder, Epoch: uint64(epochs[0])}, nil //nolint:gosec // G115: epochs[0] >= 1 checked above
 }
 
 // Renew extends l by ttl from the database's now(). It fails with [ErrLost]

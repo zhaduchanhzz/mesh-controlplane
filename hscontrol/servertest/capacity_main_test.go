@@ -14,7 +14,6 @@ package servertest
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime/metrics"
 	"runtime/pprof"
 	"strings"
@@ -31,7 +30,15 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
-	err := os.MkdirAll(dir, 0o755)
+	// The lab harness names the output directory; every file is written
+	// through an os.Root on it, so no path can leave it.
+	err := os.MkdirAll(dir, 0o755) //nolint:gosec // G703: the operator names the output directory
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "capacity:", err)
+		os.Exit(2)
+	}
+
+	out, err := os.OpenRoot(dir) //nolint:gosec // G703: the operator names the output directory
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "capacity:", err)
 		os.Exit(2)
@@ -40,21 +47,22 @@ func TestMain(m *testing.M) {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 
-	go capacitySample(dir, stop, done)
+	go capacitySample(out, stop, done)
 
 	code := m.Run()
 
 	close(stop)
 	<-done
 
-	capacityWriteMetrics(filepath.Join(dir, "metrics.txt"))
+	capacityWriteMetrics(out, "metrics.txt")
+	out.Close()
 	os.Exit(code)
 }
 
-func capacitySample(dir string, stop <-chan struct{}, done chan<- struct{}) {
+func capacitySample(out *os.Root, stop <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
 
-	f, err := os.Create(filepath.Join(dir, "samples.csv"))
+	f, err := out.Create("samples.csv")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "capacity:", err)
 
@@ -93,17 +101,17 @@ func capacitySample(dir string, stop <-chan struct{}, done chan<- struct{}) {
 
 		if heap > 256<<20 && heap > profiled+profiled*15/100 &&
 			time.Since(lastProfile) > 10*time.Second {
-			if capacityWriteHeap(filepath.Join(dir, "heap-peak.prof")) == nil {
+			if capacityWriteHeap(out, "heap-peak.prof") == nil {
 				profiled, lastProfile = heap, time.Now()
 			}
 		}
 	}
 }
 
-func capacityWriteHeap(path string) error {
-	tmp := path + ".tmp"
+func capacityWriteHeap(out *os.Root, name string) error {
+	tmp := name + ".tmp"
 
-	f, err := os.Create(tmp)
+	f, err := out.Create(tmp)
 	if err != nil {
 		return err
 	}
@@ -117,16 +125,16 @@ func capacityWriteHeap(path string) error {
 		return err
 	}
 
-	return os.Rename(tmp, path)
+	return out.Rename(tmp, name)
 }
 
-func capacityWriteMetrics(path string) {
+func capacityWriteMetrics(out *os.Root, name string) {
 	families, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "capacity:", err)
 	}
 
-	f, err := os.Create(path)
+	f, err := out.Create(name)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "capacity:", err)
 

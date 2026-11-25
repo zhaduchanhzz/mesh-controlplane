@@ -26,7 +26,7 @@ var ErrHandoverStale = errors.New("tailnet hand-over: move no longer pending at 
 
 // dbNow is the database clock of p's dialect (as cluster_leases uses).
 func (p *Platform) dbNow() string {
-	if p.db.Name() == "postgres" {
+	if p.db.Name() == dialectPostgres {
 		return lease.PostgresNow
 	}
 

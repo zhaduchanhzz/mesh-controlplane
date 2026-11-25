@@ -159,6 +159,31 @@ type call struct {
 	body                      any
 }
 
+// as is a checked type assertion on a decoded JSON value.
+func as[T any](t *testing.T, v any) T {
+	t.Helper()
+
+	x, ok := v.(T)
+	require.True(t, ok, "want %T, got %T", x, v)
+
+	return x
+}
+
+// handshakeErr makes a GET that must fail before an HTTP response exists.
+func handshakeErr(t *testing.T, c *http.Client, url string) error {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	require.NoError(t, err)
+
+	resp, err := c.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+
+	return err
+}
+
 func (e *env) do(t *testing.T, c *http.Client, cl call) (int, map[string]any) {
 	t.Helper()
 
@@ -209,10 +234,10 @@ func TestOperatorAuth(t *testing.T) {
 	list := call{method: http.MethodGet, path: "/v1/clusters"}
 
 	// Tenant API key / bearer, no certificate.
-	code, _ := e.do(t, e.client(), call{method: http.MethodGet, path: "/v1/clusters", bearer: "hskey-api-TENANTKEY-secret"})
+	code, _ := e.do(t, e.client(), call{method: http.MethodGet, path: "/v1/clusters", bearer: "hskey-api-TENANTKEY-secret"}) //nolint:gosec // G101: fake tenant credential; the test proves it is refused
 	assert.Equal(t, http.StatusForbidden, code, "tenant credential without certificate")
 
-	code, _ = e.do(t, e.client(), call{
+	code, _ = e.do(t, e.client(), call{ //nolint:gosec // G101: fake tenant credential; the test proves it is refused
 		method: http.MethodPost, path: "/v1/tailnets", key: "k", bearer: "tskey-api-x",
 		body: map[string]any{"slug": "x", "class": "shared"},
 	})
@@ -232,12 +257,12 @@ func TestOperatorAuth(t *testing.T) {
 
 	// Allowed identity in a certificate of another CA: handshake fails.
 	rogue := newCA(t, "operator-ca").issue(t, "alice", x509.ExtKeyUsageClientAuth, alice)
-	_, err := e.client(rogue).Get(e.srv.URL + "/v1/clusters")
+	err := handshakeErr(t, e.client(rogue), e.srv.URL+"/v1/clusters")
 	require.Error(t, err, "certificate from an unpinned CA")
 
 	// A server-auth certificate is not a client certificate.
 	srvUsage := e.opCA.issue(t, "alice", x509.ExtKeyUsageServerAuth, alice)
-	_, err = e.client(srvUsage).Get(e.srv.URL + "/v1/clusters")
+	err = handshakeErr(t, e.client(srvUsage), e.srv.URL+"/v1/clusters")
 	require.Error(t, err, "certificate without clientAuth usage")
 
 	// Allowed operator.
@@ -250,7 +275,7 @@ func TestOperatorAuth(t *testing.T) {
 	assert.Equal(t, http.StatusOK, code, "DNS SAN identity")
 
 	// Allowed operator that also sends a tenant key: refused.
-	code, _ = e.do(t, e.client(al), call{method: http.MethodGet, path: "/v1/clusters", bearer: "hskey-api-x"})
+	code, _ = e.do(t, e.client(al), call{method: http.MethodGet, path: "/v1/clusters", bearer: "hskey-api-x"}) //nolint:gosec // G101: fake tenant credential; the test proves it is refused
 	assert.Equal(t, http.StatusForbidden, code)
 
 	// Nothing was written by the refused calls.
@@ -292,7 +317,7 @@ func TestOperatorFlow(t *testing.T) {
 	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "other", "class": "shared"}})
 	assert.Equal(t, http.StatusUnprocessableEntity, code, "same key, another request")
 
-	id := tn["id"].(string)
+	id := as[string](t, tn["id"])
 
 	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/activate", key: "a1", body: map[string]any{"expected_epoch": 1}})
 	require.Equal(t, http.StatusOK, code)
@@ -341,13 +366,13 @@ func TestOperatorFlow(t *testing.T) {
 	code, a := e.do(t, c, call{method: http.MethodGet, path: "/v1/audit?limit=100"})
 	require.Equal(t, http.StatusOK, code)
 
-	entries := a["entries"].([]any)
+	entries := as[[]any](t, a["entries"])
 	outcomes := map[string]int{}
 
 	for _, en := range entries {
-		m := en.(map[string]any)
+		m := as[map[string]any](t, en)
 		assert.Equal(t, alice, m["actor"], "the certificate identity is the actor")
-		outcomes[m["action"].(string)+"/"+m["outcome"].(string)]++
+		outcomes[as[string](t, m["action"])+"/"+as[string](t, m["outcome"])]++
 	}
 
 	assert.Equal(t, 1, outcomes["CreateTailnet/ok"])
@@ -388,7 +413,7 @@ func TestOperatorAPIKeys(t *testing.T) {
 	code, tn := e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}})
 	require.Equal(t, http.StatusCreated, code)
 
-	id := tn["id"].(string)
+	id := as[string](t, tn["id"])
 
 	mint := call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/apikeys", key: "k1", body: map[string]any{"expires_in_seconds": 3600}}
 
@@ -414,10 +439,11 @@ func TestOperatorAPIKeys(t *testing.T) {
 	code, list := e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/" + id + "/apikeys"})
 	require.Equal(t, http.StatusOK, code)
 	require.Len(t, list["keys"], 1)
-	b, _ := json.Marshal(list)
+	b, err := json.Marshal(list)
+	require.NoError(t, err)
 	assert.NotContains(t, string(b), key[len(key)-10:], "listing shows no secret")
 
-	keyID := int(k["id"].(float64))
+	keyID := int(as[float64](t, k["id"]))
 	revoke := call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/apikeys/" + strconv.Itoa(keyID) + "/revoke", key: "r1"}
 	code, rev := e.do(t, c, revoke)
 	require.Equal(t, http.StatusOK, code, rev)
@@ -434,10 +460,11 @@ func TestOperatorAPIKeys(t *testing.T) {
 
 	outcomes := map[string]int{}
 
-	for _, en := range a["entries"].([]any) {
-		m := en.(map[string]any)
-		outcomes[m["action"].(string)+"/"+m["outcome"].(string)]++
-		ab, _ := json.Marshal(m)
+	for _, en := range as[[]any](t, a["entries"]) {
+		m := as[map[string]any](t, en)
+		outcomes[as[string](t, m["action"])+"/"+as[string](t, m["outcome"])]++
+		ab, err := json.Marshal(m)
+		require.NoError(t, err)
 		assert.NotContains(t, string(ab), key[len(key)-10:], "audit shows no secret")
 	}
 
@@ -458,7 +485,7 @@ func TestOperatorReconcile(t *testing.T) {
 	code, _ := e.do(t, e.client(), get)
 	assert.Equal(t, http.StatusUnauthorized, code, "no certificate")
 
-	code, _ = e.do(t, e.client(), call{method: http.MethodGet, path: "/v1/reconcile", bearer: "hskey-api-TENANTKEY-secret"})
+	code, _ = e.do(t, e.client(), call{method: http.MethodGet, path: "/v1/reconcile", bearer: "hskey-api-TENANTKEY-secret"}) //nolint:gosec // G101: fake tenant credential; the test proves it is refused
 	assert.Equal(t, http.StatusForbidden, code, "tenant credential")
 
 	code, _ = e.do(t, e.client(e.opCA.issue(t, alice, x509.ExtKeyUsageClientAuth, mallory)), get)

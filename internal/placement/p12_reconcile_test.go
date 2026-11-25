@@ -75,12 +75,16 @@ func TestReconcileFindsEachAnomaly(t *testing.T) {
 		setup func(t *testing.T, r *Registry) []Finding
 	}{
 		{"R1 owner unregistered", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			id := rawTailnet(t, r.db, "ghost", types.TailnetActive)
 			setLease(t, r.db, "ghost", true) // its process runs: only R1
 
 			return []Finding{{Code: FindingOwnerUnregistered, ClusterID: "ghost", TailnetID: id}}
 		}},
 		{"R2 owner disabled", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			addCluster(t, r, "off", ClassShared, ClusterDisabled, 100)
 			setNoiseKey(t, r.db, "off")
 			id := rawTailnet(t, r.db, "off", types.TailnetActive)
@@ -88,6 +92,8 @@ func TestReconcileFindsEachAnomaly(t *testing.T) {
 			return []Finding{{Code: FindingOwnerDisabled, ClusterID: "off", TailnetID: id}}
 		}},
 		{"R3 owner draining", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			addCluster(t, r, "drain", ClassShared, ClusterDraining, 100)
 			setNoiseKey(t, r.db, "drain")
 			id := rawTailnet(t, r.db, "drain", types.TailnetSuspended)
@@ -95,6 +101,8 @@ func TestReconcileFindsEachAnomaly(t *testing.T) {
 			return []Finding{{Code: FindingOwnerDraining, ClusterID: "drain", TailnetID: id}}
 		}},
 		{"R4 owner without live lease (with R5)", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			healthyCluster(t, r, "dead", ClassShared, 100)
 			id := rawTailnet(t, r.db, "dead", types.TailnetActive)
 			setLease(t, r.db, "dead", false)
@@ -105,23 +113,31 @@ func TestReconcileFindsEachAnomaly(t *testing.T) {
 			}
 		}},
 		{"R5 active cluster never started", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			healthyCluster(t, r, "new", ClassShared, 100)
 			require.NoError(t, r.db.Exec(`DELETE FROM cluster_leases WHERE cluster_id = 'new'`).Error)
 
 			return []Finding{{Code: FindingClusterNoLease, ClusterID: "new"}}
 		}},
 		{"R6 running cluster without Noise key", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			addCluster(t, r, "nokey", ClassShared, ClusterActive, 100)
 
 			return []Finding{{Code: FindingClusterNoNoiseKey, ClusterID: "nokey"}}
 		}},
 		{"R7 cluster over capacity", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			healthyCluster(t, r, "full", ClassShared, 3)
 			addNodes(t, r.db, rawTailnet(t, r.db, "full", types.TailnetActive), 4)
 
 			return []Finding{{Code: FindingClusterOverCapacity, ClusterID: "full", Count: 4, Limit: 3}}
 		}},
 		{"R8 dedicated with two tailnets", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			healthyCluster(t, r, "ded", ClassDedicated, 100)
 			rawTailnet(t, r.db, "ded", types.TailnetActive)
 			rawTailnet(t, r.db, "ded", types.TailnetPending)
@@ -129,6 +145,8 @@ func TestReconcileFindsEachAnomaly(t *testing.T) {
 			return []Finding{{Code: FindingDedicatedShared, ClusterID: "ded", Count: 2, Limit: 1}}
 		}},
 		{"R9 pending too long", func(t *testing.T, r *Registry) []Finding {
+			t.Helper()
+
 			id := rawTailnet(t, r.db, "ok", types.TailnetPending)
 			old := time.Now().UTC().Add(-25 * time.Hour)
 			require.NoError(t, r.db.Exec(`UPDATE tailnets SET created_at = ? WHERE id = ?`, old, id).Error)

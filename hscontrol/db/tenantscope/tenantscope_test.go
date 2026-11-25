@@ -47,6 +47,8 @@ type tailnetRow struct {
 
 func (tailnetRow) TableName() string { return "tailnets" }
 
+var errTxView = errors.New("transaction view")
+
 const (
 	testCluster = "c1"
 	testEpoch   = 1
@@ -58,40 +60,40 @@ type global struct {
 	Name string
 }
 
-func ctxFor(t testing.TB, id string) context.Context {
-	t.Helper()
+func ctxFor(tb testing.TB, id string) context.Context {
+	tb.Helper()
 
-	return fencedCtx(t, id, testCluster, testEpoch)
+	return fencedCtx(tb, id, testCluster, testEpoch)
 }
 
 // scopeOnlyCtx carries a scope but no ownership fence.
-func scopeOnlyCtx(t testing.TB, id string) context.Context {
-	t.Helper()
+func scopeOnlyCtx(tb testing.TB, id string) context.Context {
+	tb.Helper()
 
 	s, err := tailnet.NewScope(tailnet.MustParseID(id), tailnet.SourceInternalService, "test", 1)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	ctx, err := tailnet.WithScope(context.Background(), s)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	return ctx
 }
 
-func fencedCtx(t testing.TB, id, cluster string, epoch tailnet.Epoch) context.Context {
-	t.Helper()
+func fencedCtx(tb testing.TB, id, cluster string, epoch tailnet.Epoch) context.Context {
+	tb.Helper()
 
 	f, err := tailnet.NewFence(cluster, epoch)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 
-	ctx, err := tailnet.WithFence(scopeOnlyCtx(t, id), f)
+	ctx, err := tailnet.WithFence(scopeOnlyCtx(tb, id), f)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	return ctx
@@ -100,27 +102,31 @@ func fencedCtx(t testing.TB, id, cluster string, epoch tailnet.Epoch) context.Co
 // dialector picks SQLite by default, or PostgreSQL when
 // MESH_TEST_POSTGRES_DSN is set (ADR 0005: production is shared PostgreSQL).
 // Each PostgreSQL test gets its own schema so runs do not interfere.
-func dialector(t testing.TB) gorm.Dialector {
-	t.Helper()
+func dialector(tb testing.TB) gorm.Dialector {
+	tb.Helper()
 
 	dsn := os.Getenv("MESH_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		return sqlite.Open(filepath.Join(t.TempDir(), "t.db"))
+		return sqlite.Open(filepath.Join(tb.TempDir(), "t.db"))
 	}
 
 	admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	sch := fmt.Sprintf("ts_%d", time.Now().UnixNano())
-	if err := admin.Exec("CREATE SCHEMA " + sch).Error; err != nil {
-		t.Fatal(err)
+
+	err = admin.Exec("CREATE SCHEMA " + sch).Error
+	if err != nil {
+		tb.Fatal(err)
 	}
 
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		_ = admin.Exec("DROP SCHEMA " + sch + " CASCADE").Error
-		if sqlDB, err := admin.DB(); err == nil {
+
+		sqlDB, err := admin.DB()
+		if err == nil {
 			_ = sqlDB.Close()
 		}
 	})
@@ -128,52 +134,57 @@ func dialector(t testing.TB) gorm.Dialector {
 	return postgres.Open(dsn + " search_path=" + sch)
 }
 
-func openDB(t testing.TB) *gorm.DB {
-	t.Helper()
+func openDB(tb testing.TB) *gorm.DB {
+	tb.Helper()
 
-	db, err := gorm.Open(dialector(t), &gorm.Config{Logger: logger.Discard})
+	db, err := gorm.Open(dialector(tb), &gorm.Config{Logger: logger.Discard})
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	// Close before TempDir removal (cleanups run LIFO); Windows locks open files.
-	t.Cleanup(func() {
-		if sqlDB, err := db.DB(); err == nil {
+	tb.Cleanup(func() {
+		sqlDB, err := db.DB()
+		if err == nil {
 			_ = sqlDB.Close()
 		}
 	})
 
-	if err := db.AutoMigrate(&owner{}, &item{}, &global{}, &tailnetRow{}); err != nil {
-		t.Fatal(err)
+	err = db.AutoMigrate(&owner{}, &item{}, &global{}, &tailnetRow{})
+	if err != nil {
+		tb.Fatal(err)
 	}
 
 	for _, tn := range []string{idA, idB} {
 		err := db.Create(&tailnetRow{ID: tn, OwnerClusterID: testCluster, OwnerEpoch: testEpoch, Status: "ACTIVE"}).Error
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 	}
 	// Seed both tenants directly, bypassing the plugin (registered after).
 	for _, tn := range []string{idA, idB} {
 		o := owner{TailnetID: tn, Name: "o-" + tn[:4]}
+
 		err := db.Create(&o).Error
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 
 		for i := range 2 {
 			err := db.Create(&item{TailnetID: tn, OwnerID: o.ID, Name: fmt.Sprintf("i%d-%s", i, tn[:4])}).Error
 			if err != nil {
-				t.Fatal(err)
+				tb.Fatal(err)
 			}
 		}
 	}
 
-	if err := db.Create(&global{Name: "g"}).Error; err != nil {
-		t.Fatal(err)
+	err = db.Create(&global{Name: "g"}).Error
+	if err != nil {
+		tb.Fatal(err)
 	}
 
-	if err := Register(db); err != nil {
-		t.Fatal(err)
+	err = Register(db)
+	if err != nil {
+		tb.Fatal(err)
 	}
 
 	return db
@@ -184,12 +195,14 @@ func TestNoScopeFailsClosed(t *testing.T) {
 	bg := db.WithContext(context.Background())
 
 	var items []item
+
 	err := bg.Find(&items).Error
 	if !errors.Is(err, tailnet.ErrNoScope) || len(items) != 0 {
 		t.Fatalf("Find without scope: err=%v rows=%d, want ErrNoScope and 0 rows", err, len(items))
 	}
 
 	var n int64
+
 	err = bg.Model(&item{}).Count(&n).Error
 	if !errors.Is(err, tailnet.ErrNoScope) {
 		t.Fatalf("Count without scope: err=%v", err)
@@ -212,6 +225,7 @@ func TestNoScopeFailsClosed(t *testing.T) {
 
 	// Nothing changed.
 	var all []item
+
 	err = db.WithContext(ctxFor(t, idA)).Find(&all).Error
 	if err != nil || len(all) != 2 {
 		t.Fatalf("tenant A after unscoped attempts: %d rows, %v", len(all), err)
@@ -229,6 +243,7 @@ func TestScopeLimitsReads(t *testing.T) {
 
 	for _, tn := range []string{idA, idB} {
 		var items []item
+
 		err := db.WithContext(ctxFor(t, tn)).Find(&items).Error
 		if err != nil {
 			t.Fatal(err)
@@ -246,13 +261,15 @@ func TestScopeLimitsReads(t *testing.T) {
 	}
 	// A primary-key lookup of B's row from A finds nothing.
 	var b item
-	if err := db.WithContext(ctxFor(t, idB)).First(&b).Error; err != nil {
+
+	err := db.WithContext(ctxFor(t, idB)).First(&b).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	var got item
 
-	err := db.WithContext(ctxFor(t, idA)).First(&got, b.ID).Error
+	err = db.WithContext(ctxFor(t, idA)).First(&got, b.ID).Error
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("A reading B's row by id: err=%v got=%+v", err, got)
 	}
@@ -268,6 +285,7 @@ func TestScopeLimitsWrites(t *testing.T) {
 	}
 
 	var bItems []item
+
 	err := db.WithContext(ctxFor(t, idB)).Find(&bItems).Error
 	if err != nil {
 		t.Fatal(err)
@@ -295,12 +313,14 @@ func TestCreateStampsAndRejectsForeignTenant(t *testing.T) {
 	ctxA := ctxFor(t, idA)
 
 	var ownerA owner
+
 	err := db.WithContext(ctxA).First(&ownerA).Error
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	it := item{Name: "new", OwnerID: ownerA.ID}
+
 	err = db.WithContext(ctxA).Create(&it).Error
 	if err != nil {
 		t.Fatal(err)
@@ -311,6 +331,7 @@ func TestCreateStampsAndRejectsForeignTenant(t *testing.T) {
 	}
 
 	batch := []item{{Name: "b1", OwnerID: ownerA.ID}, {Name: "b2", OwnerID: ownerA.ID}}
+
 	err = db.WithContext(ctxA).Create(&batch).Error
 	if err != nil {
 		t.Fatal(err)
@@ -323,6 +344,7 @@ func TestCreateStampsAndRejectsForeignTenant(t *testing.T) {
 	}
 
 	evil := item{TailnetID: idB, Name: "smuggled", OwnerID: ownerA.ID}
+
 	err = db.WithContext(ctxA).Create(&evil).Error
 	if !errors.Is(err, ErrForeignTenant) {
 		t.Fatalf("create with B's tailnet under A: err=%v, want ErrForeignTenant", err)
@@ -333,6 +355,7 @@ func TestSaveCannotOverwriteOtherTenant(t *testing.T) {
 	db := openDB(t)
 
 	var b item
+
 	err := db.WithContext(ctxFor(t, idB)).First(&b).Error
 	if err != nil {
 		t.Fatal(err)
@@ -342,6 +365,7 @@ func TestSaveCannotOverwriteOtherTenant(t *testing.T) {
 	_ = db.WithContext(ctxFor(t, idA)).Save(&hijack).Error
 
 	var after item
+
 	err = db.WithContext(ctxFor(t, idB)).First(&after, b.ID).Error
 	if err != nil {
 		t.Fatal(err)
@@ -356,6 +380,7 @@ func TestPreloadIsScoped(t *testing.T) {
 	db := openDB(t)
 
 	var items []item
+
 	err := db.WithContext(ctxFor(t, idA)).Preload("Owner").Find(&items).Error
 	if err != nil {
 		t.Fatal(err)
@@ -372,6 +397,7 @@ func TestTablesWithoutTailnetColumnUnaffected(t *testing.T) {
 	db := openDB(t)
 
 	var gs []global
+
 	err := db.WithContext(context.Background()).Find(&gs).Error
 	if err != nil || len(gs) != 1 {
 		t.Fatalf("global table without scope: %d rows, %v", len(gs), err)
@@ -383,18 +409,19 @@ func TestTransactionKeepsScope(t *testing.T) {
 
 	err := db.WithContext(ctxFor(t, idA)).Transaction(func(tx *gorm.DB) error {
 		var items []item
+
 		err := tx.Find(&items).Error
 		if err != nil {
 			return err
 		}
 
 		if len(items) != 2 {
-			return fmt.Errorf("tx sees %d items", len(items))
+			return fmt.Errorf("%w: tx sees %d items", errTxView, len(items))
 		}
 
 		for _, it := range items {
 			if it.TailnetID != idA {
-				return errors.New("tx read another tenant's row")
+				return fmt.Errorf("%w: tx read another tenant's row", errTxView)
 			}
 		}
 

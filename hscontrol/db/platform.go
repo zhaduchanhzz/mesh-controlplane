@@ -132,7 +132,8 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 	// database); otherwise it leaks and, on Windows, keeps the file locked.
 	defer func() {
 		if retErr != nil {
-			if sqlDB, err := dbConn.DB(); err == nil {
+			sqlDB, err := dbConn.DB()
+			if err == nil {
 				_ = sqlDB.Close()
 			}
 		}

@@ -33,6 +33,9 @@ import (
 // ErrBadHost reports a Host or SNI value that cannot name a tailnet.
 var ErrBadHost = errors.New("host cannot name a tailnet")
 
+// errConfig prefixes every backend configuration error New returns.
+var errConfig = errors.New("frontdoor")
+
 // clientTailnetHeaders are hints a client might send to pick a tailnet. They
 // are never trusted and are removed before proxying.
 var clientTailnetHeaders = []string{"X-Tailnet-ID", "X-Tailnet", "X-Mesh-Tailnet", "X-Tenant-ID"}
@@ -60,22 +63,22 @@ type Door struct {
 // tailnet only.
 func New(backends []Backend) (*Door, error) {
 	if len(backends) == 0 {
-		return nil, errors.New("frontdoor: no backends")
+		return nil, fmt.Errorf("%w: no backends", errConfig)
 	}
 
 	d := &Door{byHost: make(map[string]route)}
 
 	for i, b := range backends {
 		if b.Tailnet.IsZero() {
-			return nil, fmt.Errorf("frontdoor: backend %d has no tailnet", i)
+			return nil, fmt.Errorf("%w: backend %d has no tailnet", errConfig, i)
 		}
 
 		if b.Target == nil || b.Target.Host == "" {
-			return nil, fmt.Errorf("frontdoor: backend %s has no target", b.Tailnet)
+			return nil, fmt.Errorf("%w: backend %s has no target", errConfig, b.Tailnet)
 		}
 
 		if len(b.Hosts) == 0 {
-			return nil, fmt.Errorf("frontdoor: backend %s has no hosts", b.Tailnet)
+			return nil, fmt.Errorf("%w: backend %s has no hosts", errConfig, b.Tailnet)
 		}
 
 		r := route{tailnet: b.Tailnet, proxy: newProxy(b.Target)}
@@ -87,7 +90,7 @@ func New(backends []Backend) (*Door, error) {
 			}
 
 			if prev, dup := d.byHost[host]; dup {
-				return nil, fmt.Errorf("frontdoor: host %q mapped to both %s and %s", host, prev.tailnet, b.Tailnet)
+				return nil, fmt.Errorf("%w: host %q mapped to both %s and %s", errConfig, host, prev.tailnet, b.Tailnet)
 			}
 
 			d.byHost[host] = r

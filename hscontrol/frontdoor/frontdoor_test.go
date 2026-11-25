@@ -42,7 +42,8 @@ func TestNormalizeHost(t *testing.T) {
 		"a_b.example.com", "a.example.com/evil", "a.example.com\r\nx: y",
 		strings.Repeat("a", 64) + ".example.com",
 	} {
-		if got, err := NormalizeHost(in); !errors.Is(err, ErrBadHost) {
+		got, err := NormalizeHost(in)
+		if !errors.Is(err, ErrBadHost) {
 			t.Errorf("NormalizeHost(%q) = %q, %v; want ErrBadHost", in, got, err)
 		}
 	}
@@ -50,32 +51,38 @@ func TestNormalizeHost(t *testing.T) {
 
 func TestNewRejectsDuplicateAndInvalidBackends(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:1")
-	if _, err := New([]Backend{
+
+	_, err := New([]Backend{
 		{Tailnet: tnA, Hosts: []string{"a.example.com"}, Target: u},
 		{Tailnet: tnB, Hosts: []string{"A.example.com:8443"}, Target: u},
-	}); err == nil {
+	})
+	if err == nil {
 		t.Fatal("duplicate host across tailnets accepted")
 	}
 
-	if _, err := New([]Backend{{Hosts: []string{"a.example.com"}, Target: u}}); err == nil {
+	_, err = New([]Backend{{Hosts: []string{"a.example.com"}, Target: u}})
+	if err == nil {
 		t.Fatal("backend without tailnet accepted")
 	}
 
-	if _, err := New([]Backend{{Tailnet: tnA, Hosts: nil, Target: u}}); err == nil {
+	_, err = New([]Backend{{Tailnet: tnA, Hosts: nil, Target: u}})
+	if err == nil {
 		t.Fatal("backend without hosts accepted")
 	}
 
-	if _, err := New([]Backend{{Tailnet: tnA, Hosts: []string{"10.0.0.1"}, Target: u}}); err == nil {
+	_, err = New([]Backend{{Tailnet: tnA, Hosts: []string{"10.0.0.1"}, Target: u}})
+	if err == nil {
 		t.Fatal("IP host accepted")
 	}
 
-	if _, err := New(nil); err == nil {
+	_, err = New(nil)
+	if err == nil {
 		t.Fatal("empty door accepted")
 	}
 }
 
 // echoBackend answers with its own name and the tailnet header it saw.
-func echoBackend(t *testing.T, name string) (*httptest.Server, *url.URL) {
+func echoBackend(t *testing.T, name string) *url.URL {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -86,13 +93,13 @@ func echoBackend(t *testing.T, name string) (*httptest.Server, *url.URL) {
 	t.Cleanup(srv.Close)
 	u, _ := url.Parse(srv.URL)
 
-	return srv, u
+	return u
 }
 
 func newDoor(t *testing.T) *Door {
 	t.Helper()
-	_, ua := echoBackend(t, "A")
-	_, ub := echoBackend(t, "B")
+	ua := echoBackend(t, "A")
+	ub := echoBackend(t, "B")
 
 	d, err := New([]Backend{
 		{Tailnet: tnA, Hosts: []string{"a.cp.example.com"}, Target: ua},
@@ -108,7 +115,7 @@ func newDoor(t *testing.T) *Door {
 func do(t *testing.T, d http.Handler, host, sni string, hdr map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodGet, "http://"+host+"/key?v=116", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+host+"/key?v=116", nil)
 
 	req.Host = host
 	if sni != "-" {
@@ -189,7 +196,13 @@ func TestUpgradePassesThrough(t *testing.T) {
 			return
 		}
 
-		conn, brw, err := w.(http.Hijacker).Hijack()
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijack", http.StatusInternalServerError)
+			return
+		}
+
+		conn, brw, err := hj.Hijack()
 		if err != nil {
 			return
 		}
@@ -212,7 +225,9 @@ func TestUpgradePassesThrough(t *testing.T) {
 	defer front.Close()
 
 	upgrade := func(host string) (string, string) {
-		c, err := net.Dial("tcp", strings.TrimPrefix(front.URL, "http://"))
+		var dialer net.Dialer
+
+		c, err := dialer.DialContext(t.Context(), "tcp", strings.TrimPrefix(front.URL, "http://"))
 		if err != nil {
 			t.Fatal(err)
 		}

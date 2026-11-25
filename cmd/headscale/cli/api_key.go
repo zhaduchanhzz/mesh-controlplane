@@ -83,7 +83,7 @@ var listAPIKeys = &cobra.Command{
 }
 
 var createAPIKeyCmd = &cobra.Command{
-	Use:   "create",
+	Use:   useCreate,
 	Short: "Creates a new Api key",
 	Long: `
 Creates a new Api key, the Api key is only visible on creation

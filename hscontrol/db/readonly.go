@@ -42,7 +42,8 @@ func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 	}
 
 	closeConn := func() {
-		if sqlDB, err := conn.DB(); err == nil {
+		sqlDB, err := conn.DB()
+		if err == nil {
 			_ = sqlDB.Close()
 		}
 	}

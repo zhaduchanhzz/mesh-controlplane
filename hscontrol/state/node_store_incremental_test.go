@@ -253,14 +253,18 @@ func TestNodeStoreIncrementalAdjacencyMatchesFullBuild(t *testing.T) {
 							}
 						case 8: // policy swap as State.SetPolicy does
 							h.pol = rapid.SampledFrom(incPolicies).Draw(rt, "policy")
-							if _, err := h.pm.SetPolicy([]byte(h.pol)); err != nil {
+
+							_, err := h.pm.SetPolicy([]byte(h.pol))
+							if err != nil {
 								rt.Fatalf("SetPolicy: %v", err)
 							}
 
 							h.store.RebuildPeerMaps()
 						case 9: // R4: a join lands between SetPolicy and the rebuild
 							h.pol = rapid.SampledFrom(incPolicies).Draw(rt, "policyR4")
-							if _, err := h.pm.SetPolicy([]byte(h.pol)); err != nil {
+
+							_, err := h.pm.SetPolicy([]byte(h.pol))
+							if err != nil {
 								rt.Fatalf("SetPolicy: %v", err)
 							}
 
@@ -310,7 +314,7 @@ func TestNodeStoreIncrementalOffKeepsFullBuild(t *testing.T) {
 		syncPolicy(t, store, pm)
 	}
 
-	require.Equal(t, before, testutilCounter(t, "incremental"), "off: no incremental build")
+	require.InDelta(t, before, testutilCounter(t, "incremental"), 0, "off: no incremental build")
 	require.Zero(t, store.data.Load().rulesGen, "off: snapshots carry no rules generation")
 }
 

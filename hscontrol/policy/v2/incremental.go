@@ -147,6 +147,8 @@ func (pm *PolicyManager) BuildPeerMapGen(nodes views.Slice[types.NodeView]) (map
 // length prev's holders read and is safe because only the newest snapshot
 // is ever extended (the NodeStore writer is the only caller). A list that
 // loses a peer is copied.
+//
+//nolint:gocyclo // hot path: the patch cases stay inline in one pass (P00d)
 func (pm *PolicyManager) IncrementalPeerMap(
 	nodes views.Slice[types.NodeView],
 	prev map[types.NodeID][]types.NodeID,
