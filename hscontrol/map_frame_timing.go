@@ -33,7 +33,9 @@ func recordFrameWritten(gate, done time.Time) {
 	}
 }
 
-func lastFrameTimes() (gate, done int64) {
+// lastFrameTimes returns the gate and done times (Unix ns) of the latest
+// frame written.
+func lastFrameTimes() (int64, int64) {
 	lastFrame.Lock()
 	defer lastFrame.Unlock()
 

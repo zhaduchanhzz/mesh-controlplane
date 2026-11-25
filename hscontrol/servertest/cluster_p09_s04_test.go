@@ -12,9 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"tailscale.com/types/netmap"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
+	"tailscale.com/types/netmap"
 )
 
 // P09, S04 (06-tests-benchmarks.md:12): a tailnet created with grants=[]

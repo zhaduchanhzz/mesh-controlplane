@@ -13,11 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/bootstrap"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
-
-	"github.com/zhaduchanhzz/mesh-controlplane/internal/bootstrap"
 )
 
 // Flood kinds (S13, owner decision Q4: tenant A's load must not stop B).
@@ -70,6 +69,13 @@ type op func(ctx context.Context) (status int, latency time.Duration, err error)
 // errUnknownKind reports a flood kind Flood does not know.
 var errUnknownKind = errors.New("n1probe: unknown flood kind")
 
+var (
+	errRateDuration   = errors.New("n1probe: rate and duration must be positive")
+	errNeedsAuthKey   = errors.New("n1probe: bootstrap flood needs a pre-auth key (hskey-auth-…)")
+	errNeedsBootstrap = errors.New("n1probe: bootstrap flood needs a pre-auth key and --bootstrap-url")
+	errNeedsURLKey    = errors.New("needs --url and a key")
+)
+
 // Flood runs cfg.Kind at cfg.Rate for cfg.Duration with at most
 // cfg.MaxInflight operations in flight, then waits for the operations in
 // flight (map streams end at the deadline) and returns the counts.
@@ -79,7 +85,7 @@ func Flood(ctx context.Context, cfg FloodConfig) (FloodResult, error) {
 	}
 
 	if cfg.Rate <= 0 || cfg.Duration <= 0 {
-		return FloodResult{}, fmt.Errorf("n1probe: rate and duration must be positive")
+		return FloodResult{}, errRateDuration
 	}
 
 	var (
@@ -213,12 +219,12 @@ loop:
 func bootstrapOp(cfg FloodConfig) (op, error) {
 	rest, ok := strings.CutPrefix(strings.TrimSpace(cfg.Key), "hskey-auth-")
 	if !ok {
-		return nil, fmt.Errorf("n1probe: bootstrap flood needs a pre-auth key (hskey-auth-…)")
+		return nil, errNeedsAuthKey
 	}
 
 	id, secret, ok := strings.Cut(rest, "-")
 	if !ok || cfg.BootstrapURL == "" {
-		return nil, fmt.Errorf("n1probe: bootstrap flood needs a pre-auth key and --bootstrap-url")
+		return nil, errNeedsBootstrap
 	}
 
 	req := map[string]any{"credential": map[string]string{
@@ -260,7 +266,7 @@ func bootstrapOp(cfg FloodConfig) (op, error) {
 
 func clusterKey(ctx context.Context, cfg FloodConfig) (key.MachinePublic, error) {
 	if cfg.URL == "" || cfg.Key == "" {
-		return key.MachinePublic{}, fmt.Errorf("n1probe: %s flood needs --url and a key", cfg.Kind)
+		return key.MachinePublic{}, fmt.Errorf("n1probe: %s flood %w", cfg.Kind, errNeedsURLKey)
 	}
 
 	return FetchNoiseKey(ctx, cfg.URL)

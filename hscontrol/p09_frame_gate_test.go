@@ -13,7 +13,7 @@ import (
 	"tailscale.com/types/key"
 )
 
-func counterValue(t *testing.T, c interface{ Write(*dto.Metric) error }) float64 {
+func counterValue(t *testing.T, c interface{ Write(m *dto.Metric) error }) float64 {
 	t.Helper()
 
 	var m dto.Metric
@@ -77,6 +77,7 @@ func TestP09NoFrameWrittenWhenLeaseEndsBeforeWrite(t *testing.T) {
 	// The lease ends after the first check, while the frame is encoded (in
 	// the E2E: SIGSTOP there, SIGCONT past the deadline).
 	mapWriteHook = func() { held.Store(false) }
+
 	t.Cleanup(func() { mapWriteHook = nil })
 
 	err = session.writeMap(&keepAlive)

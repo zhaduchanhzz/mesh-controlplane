@@ -3,7 +3,6 @@ package n1probe
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"tailscale.com/derp/derphttp"
@@ -41,13 +40,16 @@ type DERPAttempt struct {
 	ElapsedMs float64 `json:"elapsed_ms"`
 }
 
-var errNoFrame = errors.New("no frame from the server before the timeout")
+var (
+	errNoFrame       = errors.New("no frame from the server before the timeout")
+	errDERPCheckArgs = errors.New("n1probe: derp-check needs --host, --ip and --port")
+)
 
 // DERPCheck runs cfg.Count attempts, each with a newly generated node key
 // that no control server knows.
 func DERPCheck(ctx context.Context, cfg DERPCheckConfig) ([]DERPAttempt, error) {
 	if cfg.Host == "" || cfg.IP == "" || cfg.Port <= 0 || cfg.Port > 65535 {
-		return nil, fmt.Errorf("n1probe: derp-check needs --host, --ip and --port")
+		return nil, errDERPCheckArgs
 	}
 
 	if cfg.Count <= 0 {

@@ -9,10 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"tailscale.com/types/key"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"tailscale.com/types/key"
 )
 
 // P09, ADR 0009: an external DERP server of cluster N asks the cluster's

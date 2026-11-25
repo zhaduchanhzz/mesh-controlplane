@@ -20,15 +20,17 @@ import (
 
 // derpWithVerify runs an in-process DERP server over TLS whose client
 // verification asks verify (as derper --verify-client-url, fail-open off).
-func derpWithVerify(t *testing.T, allow bool) (host, ip string, port int, calls *atomic.Int64) {
+// It returns the DERP host, IP and port and the count of verify calls.
+func derpWithVerify(t *testing.T, allow bool) (string, string, int, *atomic.Int64) {
 	t.Helper()
 
-	calls = new(atomic.Int64)
+	calls := new(atomic.Int64)
 
 	verify := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 
 		var req tailcfg.DERPAdmitClientRequest
+
 		_ = json.NewDecoder(r.Body).Decode(&req)
 
 		_ = json.NewEncoder(w).Encode(tailcfg.DERPAdmitClientResponse{Allow: allow})

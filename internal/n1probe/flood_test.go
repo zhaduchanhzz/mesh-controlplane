@@ -33,7 +33,7 @@ func TestRunStopsAndCapsInflight(t *testing.T) {
 			}
 		}
 
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond) //nolint:forbidigo // simulated request latency, so requests overlap
 
 		s := statuses[n.Add(1)%int64(len(statuses))]
 		if s == 0 {
@@ -68,6 +68,7 @@ func TestFloodBootstrapCountsAndSendsProofOnly(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
+
 		_ = json.NewDecoder(r.Body).Decode(&body)
 
 		raw, _ := json.Marshal(body)

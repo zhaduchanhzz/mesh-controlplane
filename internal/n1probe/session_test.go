@@ -16,7 +16,9 @@ import (
 // session's one connection, so the real dial to 8443 was refused. Only the
 // URL's port may be dialled, and a refused port must not use the budget.
 func TestSessionDialsOnlyTheURLPort(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() })
 
