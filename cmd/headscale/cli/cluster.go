@@ -40,7 +40,12 @@ var (
 	clusterKeyID        uint64
 )
 
-var errClusterIDRequired = errors.New("--cluster-id is required")
+var (
+	errClusterIDRequired = errors.New("--cluster-id is required")
+	errPolicyFlagChoice  = errors.New("give exactly one of --file, --clear, --show")
+	errUserRequired      = errors.New("--user is required")
+	errKeyIDRequired     = errors.New("--id is required")
+)
 
 func init() {
 	clusterCmd.PersistentFlags().StringVar(&clusterID, "cluster-id", "", "ID of the cluster this process serves (required)")
@@ -162,7 +167,7 @@ func printJSON(v any) error {
 }
 
 var tailnetCreateCmd = &cobra.Command{
-	Use:   "create",
+	Use:   useCreate,
 	Short: "Create tailnet --slug as PENDING with a deny-all policy",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return withPlatform(func(p *db.Platform) error {
@@ -249,6 +254,7 @@ var tailnetDNSCmd = &cobra.Command{
 	Short: "Store (--file), clear (--clear) or show (--show) the DNS settings of tailnet --slug",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		chosen := 0
+
 		for _, on := range []bool{clusterDNSFile != "", clusterDNSClear, clusterDNSShow} {
 			if on {
 				chosen++
@@ -256,7 +262,7 @@ var tailnetDNSCmd = &cobra.Command{
 		}
 
 		if chosen != 1 {
-			return errors.New("give exactly one of --file, --clear, --show")
+			return errPolicyFlagChoice
 		}
 
 		cfg, err := clusterConfig()
@@ -315,7 +321,7 @@ var tailnetAuthKeyCmd = &cobra.Command{
 	Short: "Mint a pre-auth key in ACTIVE tailnet --slug (secret on stdout only)",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		if clusterUser == "" {
-			return errors.New("--user is required")
+			return errUserRequired
 		}
 
 		return withTenant(func(_ tailnet.ID, hs *db.HSDatabase) error {
@@ -345,7 +351,7 @@ var tailnetAuthKeyRevokeCmd = &cobra.Command{
 	Short: "Revoke pre-auth key --id of ACTIVE tailnet --slug (nodes already registered with it stay)",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		if clusterKeyID == 0 {
-			return errors.New("--id is required")
+			return errKeyIDRequired
 		}
 
 		// The tenant handle is scoped to --slug: a key ID of another tailnet
@@ -466,13 +472,13 @@ func createTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug string)
 	return reg.CreateTailnetOn(ctx, cliOp(cluster), slug, cluster)
 }
 
-// reassignTailnetCLI moves tailnet slug from cluster (its owner) to to at
+// reassignTailnetCLI moves tailnet slug from cluster (its owner) to at
 // the next owner_epoch through the registry's MoveOwner (Q5): to must be
 // registered and ACTIVE, hold a live lease, with room for the tailnet's
 // devices; to == cluster is a new epoch on the same cluster (no lease
 // check).
 func reassignTailnetCLI(ctx context.Context, p *db.Platform, cluster, slug, to string) (types.Tailnet, error) {
-	tn, err := p.TailnetBySlug(slug)
+	tn, err := p.TailnetBySlug(slug) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
 	if err != nil {
 		return types.Tailnet{}, err
 	}

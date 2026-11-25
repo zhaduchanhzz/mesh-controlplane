@@ -139,8 +139,6 @@ func BenchmarkCapacity_BuildPeerMap(b *testing.B) {
 
 				runtime.KeepAlive(held)
 
-				held = nil
-
 				b.ReportAllocs()
 
 				for b.Loop() {

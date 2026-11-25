@@ -9,7 +9,6 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
-
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )

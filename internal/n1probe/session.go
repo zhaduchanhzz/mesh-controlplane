@@ -51,6 +51,8 @@ var ErrSessionUsed = errors.New("n1probe: noise session already used its one con
 // the session's one connection.
 var ErrNotURLPort = errors.New("n1probe: dial to a port other than the control URL's")
 
+var errKeyFetch = errors.New("n1probe: GET /key")
+
 // urlPort is u's port, or the scheme's default.
 func urlPort(u *url.URL) string {
 	if p := u.Port(); p != "" {
@@ -188,16 +190,26 @@ func (s *Session) PeerClosed() bool {
 
 // WaitPeerClosed waits up to d for the server to close the connection.
 func (s *Session) WaitPeerClosed(d time.Duration) bool {
-	end := time.Now().Add(d)
-	for time.Now().Before(end) {
-		if s.PeerClosed() {
-			return true
-		}
-
-		time.Sleep(50 * time.Millisecond)
+	if s.PeerClosed() {
+		return true
 	}
 
-	return s.PeerClosed()
+	deadline := time.NewTimer(d)
+	defer deadline.Stop()
+
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-deadline.C:
+			return s.PeerClosed()
+		case <-tick.C:
+			if s.PeerClosed() {
+				return true
+			}
+		}
+	}
 }
 
 // Post sends body as JSON to path on the session with extra headers.
@@ -272,10 +284,7 @@ func (s *Session) FullMap(ctx context.Context, nodeKey key.NodePublic, disco key
 		return &Response{Status: resp.StatusCode}, fmt.Errorf("n1probe: first map frame: %w", err)
 	}
 
-	n := int64(binary.LittleEndian.Uint32(lenb[:]))
-	if n > 1<<20 {
-		n = 1 << 20
-	}
+	n := min(int64(binary.LittleEndian.Uint32(lenb[:])), 1<<20)
 
 	b, err := io.ReadAll(io.LimitReader(resp.Body, n))
 
@@ -304,7 +313,8 @@ func (s *Session) Register(ctx context.Context, req *tailcfg.RegisterRequest, hd
 func addrPorts(ss []string) []netip.AddrPort {
 	out := make([]netip.AddrPort, 0, len(ss))
 	for _, s := range ss {
-		if ap, err := netip.ParseAddrPort(s); err == nil {
+		ap, err := netip.ParseAddrPort(s)
+		if err == nil {
 			out = append(out, ap)
 		}
 	}
@@ -329,8 +339,12 @@ func FetchNoiseKey(ctx context.Context, serverURL string) (key.MachinePublic, er
 	var k tailcfg.OverTLSPublicKeyResponse
 
 	err = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&k)
-	if err != nil || k.PublicKey.IsZero() {
-		return key.MachinePublic{}, fmt.Errorf("n1probe: GET /key: status %d, decode %v", resp.StatusCode, err)
+	if err != nil {
+		return key.MachinePublic{}, fmt.Errorf("%w: status %d, decode %w", errKeyFetch, resp.StatusCode, err)
+	}
+
+	if k.PublicKey.IsZero() {
+		return key.MachinePublic{}, fmt.Errorf("%w: status %d, no key", errKeyFetch, resp.StatusCode)
 	}
 
 	return k.PublicKey, nil

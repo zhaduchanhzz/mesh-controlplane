@@ -180,6 +180,7 @@ func TestP08aVerifyRefusesUnknownExpiredRevoked(t *testing.T) {
 	revoked := putTestNodeInStore(t, app, user, "revoked")
 	rv, ok := app.state.GetNodeByID(revoked.ID)
 	require.True(t, ok)
+
 	_, err := app.state.DeleteNode(rv)
 	require.NoError(t, err)
 

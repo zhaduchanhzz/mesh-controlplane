@@ -18,6 +18,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -33,6 +34,8 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
+
+var errRegistrations = errors.New("registrations failed")
 
 func main() {
 	var (
@@ -159,7 +162,7 @@ func run(cfgPath, out string, nodes, perUser, concurrency int) error {
 	wg.Wait()
 
 	if f := failed.Load(); f > 0 {
-		return fmt.Errorf("%d registrations failed, first: %v", f, first.Load())
+		return fmt.Errorf("%d %w, first: %v", f, errRegistrations, first.Load())
 	}
 
 	tNodes := time.Since(t1)

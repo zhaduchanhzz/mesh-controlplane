@@ -77,7 +77,11 @@ func tenantDenyInputs() []tenantDenyInput {
 		return func(*testing.T) []byte { return []byte(s) }
 	}
 	rt := func(s string) func(*testing.T) []byte {
-		return func(t *testing.T) []byte { return roundTrip(t, []byte(s)) }
+		return func(t *testing.T) []byte {
+			t.Helper()
+
+			return roundTrip(t, []byte(s))
+		}
 	}
 
 	return []tenantDenyInput{
@@ -97,6 +101,8 @@ func tenantDenyInputs() []tenantDenyInput {
 		{"roundtrip-empty-acls", rt(`{"acls":[]}`), true},
 		{"roundtrip-json-null", rt("null"), true},
 		{"roundtrip-twice-empty-grants", func(t *testing.T) []byte {
+			t.Helper()
+
 			return roundTrip(t, roundTrip(t, []byte(`{"grants":[]}`)))
 		}, true},
 	}

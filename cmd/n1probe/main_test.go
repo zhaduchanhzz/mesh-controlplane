@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestUsageAndKeyErrors(t *testing.T) {
@@ -19,7 +20,7 @@ func TestUsageAndKeyErrors(t *testing.T) {
 	assert.Equal(t, 2, run([]string{"nope"}, strings.NewReader(""), &out, &errb))
 
 	empty := filepath.Join(t.TempDir(), "k")
-	assert.NoError(t, os.WriteFile(empty, nil, 0o600))
+	require.NoError(t, os.WriteFile(empty, nil, 0o600))
 	assert.Equal(t, 2, run([]string{"flood", "--kind", "bootstrap", "--key", empty}, strings.NewReader(""), &out, &errb))
 	assert.Equal(t, 2, run([]string{"switch-tenant", "--url", "http://x", "--key-a", "-", "--key-b", "-"}, strings.NewReader(""), &out, &errb))
 }
@@ -28,13 +29,15 @@ func TestUsageAndKeyErrors(t *testing.T) {
 func TestFloodNeverPrintsKey(t *testing.T) {
 	const key = "hskey-auth-id01-verysecretvalue42"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }))
 	t.Cleanup(srv.Close)
 
 	var out, errb bytes.Buffer
 
-	code := run([]string{"flood", "--kind", "bootstrap", "--bootstrap-url", srv.URL, "--key", "-",
-		"--rate", "20", "--duration", "200ms"}, strings.NewReader(key+"\n"), &out, &errb)
+	code := run([]string{
+		"flood", "--kind", "bootstrap", "--bootstrap-url", srv.URL, "--key", "-",
+		"--rate", "20", "--duration", "200ms",
+	}, strings.NewReader(key+"\n"), &out, &errb)
 	assert.Equal(t, 0, code, errb.String())
 	assert.Contains(t, out.String(), `"status_4xx"`)
 	assert.NotContains(t, out.String()+errb.String(), "verysecretvalue42")
@@ -45,7 +48,9 @@ func TestDERPCheckUsage(t *testing.T) {
 
 	assert.Equal(t, 2, run([]string{"derp-check", "--ip", "127.0.0.1"}, strings.NewReader(""), &out, &errb))
 	// Nothing listens there: no attempt admitted, exit 0, one JSON line per attempt.
-	assert.Equal(t, 0, run([]string{"derp-check", "--host", "relay.invalid", "--ip", "127.0.0.1", "--port", "1",
-		"--count", "2", "--timeout", "2s"}, strings.NewReader(""), &out, &errb), errb.String())
+	assert.Equal(t, 0, run([]string{
+		"derp-check", "--host", "relay.invalid", "--ip", "127.0.0.1", "--port", "1",
+		"--count", "2", "--timeout", "2s",
+	}, strings.NewReader(""), &out, &errb), errb.String())
 	assert.Equal(t, 2, strings.Count(out.String(), `"admitted":false`))
 }

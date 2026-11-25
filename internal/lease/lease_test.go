@@ -37,13 +37,17 @@ func openStore(t *testing.T) *Store {
 		}
 
 		sch := fmt.Sprintf("lease_%d", time.Now().UnixNano())
-		if err := admin.Exec("CREATE SCHEMA " + sch).Error; err != nil {
+
+		err = admin.Exec("CREATE SCHEMA " + sch).Error
+		if err != nil {
 			t.Fatal(err)
 		}
 
 		t.Cleanup(func() {
 			_ = admin.Exec("DROP SCHEMA " + sch + " CASCADE").Error
-			if d, err := admin.DB(); err == nil {
+
+			d, err := admin.DB()
+			if err == nil {
 				_ = d.Close()
 			}
 		})
@@ -58,12 +62,14 @@ func openStore(t *testing.T) *Store {
 	}
 
 	t.Cleanup(func() {
-		if d, err := db.DB(); err == nil {
+		d, err := db.DB()
+		if err == nil {
 			_ = d.Close()
 		}
 	})
 
-	if err := db.Exec(ddl).Error; err != nil {
+	err = db.Exec(ddl).Error
+	if err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 
@@ -95,7 +101,8 @@ func TestLiveLeaseIsNotTaken(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
 
-	if _, err := s.Acquire(ctx, "c1", "a", 5*time.Second); err != nil {
+	_, err := s.Acquire(ctx, "c1", "a", 5*time.Second)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,7 +130,7 @@ func TestTakeoverAfterExpiryAndOldHolderIsLost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond) //nolint:forbidigo // lets the 1 s lease expire: elapsed time is the subject
 
 	nl, err := s.Acquire(ctx, "c1", "b", 5*time.Second)
 	if err != nil {
@@ -134,11 +141,13 @@ func TestTakeoverAfterExpiryAndOldHolderIsLost(t *testing.T) {
 		t.Fatalf("takeover: %+v", nl)
 	}
 
-	if err := s.Renew(ctx, old, 5*time.Second); !errors.Is(err, ErrLost) {
+	err = s.Renew(ctx, old, 5*time.Second)
+	if !errors.Is(err, ErrLost) {
 		t.Fatalf("old renew: want ErrLost, got %v", err)
 	}
 
-	if err := s.Release(ctx, old); err != nil {
+	err = s.Release(ctx, old)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -147,7 +156,8 @@ func TestTakeoverAfterExpiryAndOldHolderIsLost(t *testing.T) {
 		t.Fatalf("old release touched the new lease: %+v", row)
 	}
 
-	if err := s.Renew(ctx, nl, 5*time.Second); err != nil {
+	err = s.Renew(ctx, nl, 5*time.Second)
+	if err != nil {
 		t.Fatalf("new renew: %v", err)
 	}
 }
@@ -161,9 +171,10 @@ func TestRenewAfterOwnExpiryIsLost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond) //nolint:forbidigo // lets the 1 s lease expire: elapsed time is the subject
 
-	if err := s.Renew(ctx, l, 5*time.Second); !errors.Is(err, ErrLost) {
+	err = s.Renew(ctx, l, 5*time.Second)
+	if !errors.Is(err, ErrLost) {
 		t.Fatalf("want ErrLost, got %v", err)
 	}
 }
@@ -177,7 +188,8 @@ func TestReleaseLetsStandbyTakeOverAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Release(ctx, l); err != nil {
+	err = s.Release(ctx, l)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,7 +204,8 @@ func TestEpochTriggerRefusesDecreaseAndSilentHolderChange(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
 
-	if _, err := s.Acquire(ctx, "c1", "a", time.Minute); err != nil {
+	_, err := s.Acquire(ctx, "c1", "a", time.Minute)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,7 +213,8 @@ func TestEpochTriggerRefusesDecreaseAndSilentHolderChange(t *testing.T) {
 		"decrease":          `UPDATE cluster_leases SET epoch = 0 WHERE cluster_id = 'c1'`,
 		"holder same epoch": `UPDATE cluster_leases SET holder = 'z' WHERE cluster_id = 'c1'`,
 	} {
-		if err := s.db.WithContext(ctx).Exec(q).Error; err == nil {
+		err := s.db.WithContext(ctx).Exec(q).Error
+		if err == nil {
 			t.Errorf("%s: update accepted", name)
 		}
 	}
@@ -211,11 +225,12 @@ func TestConcurrentAcquireExactlyOneWins(t *testing.T) {
 	s := openStore(t)
 	ctx := context.Background()
 
-	if _, err := s.Acquire(ctx, "c1", "seed", 500*time.Millisecond); err != nil {
+	_, err := s.Acquire(ctx, "c1", "seed", 500*time.Millisecond)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	time.Sleep(700 * time.Millisecond)
+	time.Sleep(700 * time.Millisecond) //nolint:forbidigo // lets the 500 ms lease expire: elapsed time is the subject
 
 	var (
 		wg   sync.WaitGroup
@@ -257,7 +272,8 @@ func TestConcurrentAcquireExactlyOneWins(t *testing.T) {
 }
 
 func TestConfigValidate(t *testing.T) {
-	if err := DefaultConfig.Validate(); err != nil {
+	err := DefaultConfig.Validate()
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,6 +293,8 @@ func TestConfigValidate(t *testing.T) {
 // ---------------------------------------------------------------- manager --
 
 var fast = Config{TTL: 1200 * time.Millisecond, RenewInterval: 300 * time.Millisecond, AcquireInterval: 100 * time.Millisecond, SafetyMargin: 300 * time.Millisecond}
+
+var errBoom = errors.New("boom")
 
 // stuckStore acquires, then hangs on every renew: the database is
 // unreachable (F03).
@@ -298,8 +316,7 @@ func TestManagerSelfFencesWhenRenewHangs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	acquired := make(chan time.Time, 1)
 	lost := make(chan string, 1)
@@ -354,22 +371,25 @@ func TestManagerStandbyTakesOverAfterCrash(t *testing.T) {
 		a.Run(actx, func(context.Context, Lease) error { aUp <- struct{}{}; return nil }, func(Lease, string) {})
 		close(aDone)
 	}()
+
 	<-aUp
 
 	crash := time.Now()
+
 	acancel()
 	<-aDone
 
 	// Undo a's graceful release, as a crash would not have done it: put the
 	// expiry back to the future.
-	if err := s.db.Exec(`UPDATE cluster_leases SET expires_at = ` + s.nowPlus(fast.TTL) + ` WHERE cluster_id = 'c1'`).Error; err != nil {
+	err := s.db.Exec(`UPDATE cluster_leases SET expires_at = ` + s.nowPlus(fast.TTL) + ` WHERE cluster_id = 'c1'`).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	bctx, bcancel := context.WithCancel(context.Background())
-	defer bcancel()
+	bctx := t.Context()
 
 	bUp := make(chan Lease, 1)
+
 	go b.Run(bctx, func(_ context.Context, l Lease) error { bUp <- l; return nil }, func(Lease, string) {})
 
 	select {
@@ -406,16 +426,18 @@ func TestManagerReleaseOnShutdown(t *testing.T) {
 		a.Run(actx, func(context.Context, Lease) error { aUp <- struct{}{}; return nil }, func(Lease, string) {})
 		close(aDone)
 	}()
+
 	<-aUp
 
-	bctx, bcancel := context.WithCancel(context.Background())
-	defer bcancel()
+	bctx := t.Context()
 
 	bUp := make(chan struct{}, 1)
+
 	go b.Run(bctx, func(context.Context, Lease) error { bUp <- struct{}{}; return nil }, func(Lease, string) {})
 
 	acancel()
 	<-aDone
+
 	t0 := time.Now()
 
 	select {
@@ -433,16 +455,16 @@ func TestManagerStartFailureReleases(t *testing.T) {
 	s := openStore(t)
 	a, _ := newManager(s, "c1", "a", fast)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	var tries atomic.Int32
+
 	lost := make(chan string, 4)
 
 	go a.Run(ctx, func(context.Context, Lease) error {
 		tries.Add(1)
 
-		return errors.New("boom")
+		return errBoom
 	}, func(_ Lease, r string) { lost <- r })
 
 	select {

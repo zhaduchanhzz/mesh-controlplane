@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"gorm.io/gorm"
 )
 
 // ErrSchemaNotCurrent reports a database that a read-only consumer cannot
@@ -43,7 +42,8 @@ func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 	}
 
 	closeConn := func() {
-		if sqlDB, err := conn.DB(); err == nil {
+		sqlDB, err := conn.DB()
+		if err == nil {
 			_ = sqlDB.Close()
 		}
 	}
@@ -54,7 +54,7 @@ func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 	if err != nil || n != 1 {
 		closeConn()
 
-		return nil, fmt.Errorf("%w: want migration %s (err=%v)", ErrSchemaNotCurrent, LatestMigrationID(), err)
+		return nil, fmt.Errorf("%w: want migration %s (err=%w)", ErrSchemaNotCurrent, LatestMigrationID(), err)
 	}
 
 	if cfg.Database.IsSQLite() {

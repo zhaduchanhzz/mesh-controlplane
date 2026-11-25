@@ -67,13 +67,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 }
 
+var (
+	errKeyFileRequired = errors.New("key file required")
+	errEmptyKey        = errors.New("empty key")
+)
+
 // readKey reads one key from path ("-": stdin), trimmed. Never printed.
 func readKey(path string, stdin io.Reader) (string, error) {
 	if path == "" {
-		return "", errors.New("key file required")
+		return "", errKeyFileRequired
 	}
 
-	var r io.Reader = stdin
+	r := stdin
 
 	if path != "-" {
 		f, err := os.Open(path)
@@ -92,7 +97,7 @@ func readKey(path string, stdin io.Reader) (string, error) {
 
 	k := strings.TrimSpace(line)
 	if k == "" {
-		return "", errors.New("empty key")
+		return "", errEmptyKey
 	}
 
 	return k, nil
@@ -142,7 +147,12 @@ func switchTenant(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	code := 0
 
 	for _, r := range results {
-		_ = enc.Encode(r)
+		err := enc.Encode(r)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+
+			return 2
+		}
 
 		switch {
 		case r.Leak:
@@ -190,7 +200,12 @@ func flood(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 		return 2
 	}
 
-	_ = json.NewEncoder(stdout).Encode(res)
+	err = json.NewEncoder(stdout).Encode(res)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+
+		return 2
+	}
 
 	return 0
 }
@@ -226,7 +241,12 @@ func derpCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	code := 0
 
 	for _, a := range attempts {
-		_ = enc.Encode(a)
+		err := enc.Encode(a)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+
+			return 2
+		}
 
 		if a.Admitted {
 			code = 1

@@ -118,7 +118,7 @@ func (p *Platform) SetTailnetDNS(id tailnet.ID, d *types.TenantDNS, clusterBase 
 		}
 
 		return tx.Model(&types.Tailnet{}).Where("id = ?", id.String()).
-			Updates(map[string]any{"config_revision": gorm.Expr("config_revision + 1"), "updated_at": time.Now().UTC()}).Error
+			Updates(map[string]any{"config_revision": gorm.Expr("config_revision + 1"), colUpdatedAt: time.Now().UTC()}).Error
 	})
 	if err != nil {
 		return fmt.Errorf("setting DNS of tailnet %s: %w", id, err)

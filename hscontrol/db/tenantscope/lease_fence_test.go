@@ -6,10 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
 )
 
 // leaseDB is openDB plus the cluster_leases table of P11b.
@@ -18,33 +17,35 @@ func leaseDB(t *testing.T) (*gorm.DB, *lease.Store) {
 	db := openDB(t)
 
 	ddl := lease.SQLiteDDL
-	if db.Dialector.Name() == "postgres" {
+	if db.Name() == "postgres" {
 		ddl = lease.PostgresDDL
 	}
 
-	if err := db.Exec(ddl).Error; err != nil {
+	err := db.Exec(ddl).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	return db, lease.NewStore(db)
 }
 
-// leaseCtx is ctxFor(id) whose fence also claims the lease (holder, epoch).
-func leaseCtx(t testing.TB, id, holder string, epoch uint64) context.Context {
-	t.Helper()
+// leaseCtx is ctxFor(idA) whose fence also claims the lease (holder, epoch).
+func leaseCtx(tb testing.TB, holder string, epoch uint64) context.Context {
+	tb.Helper()
+
 	f, err := tailnet.NewFence(testCluster, testEpoch)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	f, err = f.WithLease(holder, epoch)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 
-	ctx, err := tailnet.WithFence(scopeOnlyCtx(t, id), f)
+	ctx, err := tailnet.WithFence(scopeOnlyCtx(tb, idA), f)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	return ctx
@@ -58,7 +59,7 @@ func TestLeaseFenceLiveLeaseWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = db.WithContext(leaseCtx(t, idA, l.Holder, l.Epoch)).Model(&item{}).
+	err = db.WithContext(leaseCtx(t, l.Holder, l.Epoch)).Model(&item{}).
 		Where("name LIKE ?", "i0-%").Update("name", "ok").Error
 	if err != nil {
 		t.Fatalf("write under the live lease: %v", err)
@@ -76,18 +77,19 @@ func TestLeaseFenceTakenOverRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond) //nolint:forbidigo // lets the 1 s lease expire: elapsed time is the subject
 
 	nl, err := s.Acquire(ctx, testCluster, "b", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	assertAllWritesFenced(t, db, leaseCtx(t, idA, old.Holder, old.Epoch), leaseCtx(t, idA, nl.Holder, nl.Epoch))
+	assertAllWritesFenced(t, db, leaseCtx(t, old.Holder, old.Epoch), leaseCtx(t, nl.Holder, nl.Epoch))
 
 	// The new holder writes.
-	if err := db.WithContext(leaseCtx(t, idA, nl.Holder, nl.Epoch)).Model(&item{}).
-		Where("name LIKE ?", "i0-%").Update("name", "new-holder").Error; err != nil {
+	err = db.WithContext(leaseCtx(t, nl.Holder, nl.Epoch)).Model(&item{}).
+		Where("name LIKE ?", "i0-%").Update("name", "new-holder").Error
+	if err != nil {
 		t.Fatalf("new holder: %v", err)
 	}
 }
@@ -103,9 +105,9 @@ func TestLeaseFenceExpiredByDatabaseClockRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond) //nolint:forbidigo // lets the 1 s lease expire: elapsed time is the subject
 
-	assertAllWritesFenced(t, db, leaseCtx(t, idA, l.Holder, l.Epoch), ctxFor(t, idA))
+	assertAllWritesFenced(t, db, leaseCtx(t, l.Holder, l.Epoch), ctxFor(t, idA))
 }
 
 // A wrong epoch for the right holder name (an old incarnation) and a lease
@@ -119,12 +121,12 @@ func TestLeaseFenceWrongEpochOrNoRowRollsBack(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		assertAllWritesFenced(t, db, leaseCtx(t, idA, l.Holder, l.Epoch+1), ctxFor(t, idA))
+		assertAllWritesFenced(t, db, leaseCtx(t, l.Holder, l.Epoch+1), ctxFor(t, idA))
 	})
 
 	t.Run("no lease row", func(t *testing.T) {
 		db, _ := leaseDB(t)
-		assertAllWritesFenced(t, db, leaseCtx(t, idA, "a", 1), ctxFor(t, idA))
+		assertAllWritesFenced(t, db, leaseCtx(t, "a", 1), ctxFor(t, idA))
 	})
 }
 
@@ -133,12 +135,14 @@ func TestLeaseFenceWrongEpochOrNoRowRollsBack(t *testing.T) {
 func TestLeaseFenceOperatorWriteNeedsNoLease(t *testing.T) {
 	db, s := leaseDB(t)
 
-	if _, err := s.Acquire(context.Background(), testCluster, "a", time.Minute); err != nil {
+	_, err := s.Acquire(context.Background(), testCluster, "a", time.Minute)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := db.WithContext(ctxFor(t, idA)).Model(&item{}).Where("name LIKE ?", "i0-%").
-		Update("name", "operator").Error; err != nil {
+	err = db.WithContext(ctxFor(t, idA)).Model(&item{}).Where("name LIKE ?", "i0-%").
+		Update("name", "operator").Error
+	if err != nil {
 		t.Fatalf("operator write: %v", err)
 	}
 }
@@ -153,7 +157,8 @@ func TestFenceWithLeaseValidation(t *testing.T) {
 		holder string
 		epoch  uint64
 	}{{"", 1}, {"a", 0}} {
-		if _, err := f.WithLease(c.holder, c.epoch); !errors.Is(err, tailnet.ErrInvalidFence) {
+		_, err := f.WithLease(c.holder, c.epoch)
+		if !errors.Is(err, tailnet.ErrInvalidFence) {
 			t.Errorf("WithLease(%q, %d): %v", c.holder, c.epoch, err)
 		}
 	}

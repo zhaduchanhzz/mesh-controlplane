@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/rs/zerolog/log"
 	"tailscale.com/tailcfg"
 )
 
@@ -46,7 +47,10 @@ func (c *Cluster) VerifyHandler(w http.ResponseWriter, req *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	_ = json.NewEncoder(w).Encode(&tailcfg.DERPAdmitClientResponse{Allow: c.admitsNodeKey(admit)})
+	err = json.NewEncoder(w).Encode(&tailcfg.DERPAdmitClientResponse{Allow: c.admitsNodeKey(admit)})
+	if err != nil {
+		log.Debug().Err(err).Msg("DERP verify: writing response")
+	}
 }
 
 // admitsNodeKey reports whether a runtime this process serves under the

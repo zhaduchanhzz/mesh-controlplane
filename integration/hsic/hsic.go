@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 	clientv1 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v1"
 	clientv2 "github.com/zhaduchanhzz/mesh-controlplane/gen/client/v2"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol"
@@ -33,8 +35,6 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"github.com/zhaduchanhzz/mesh-controlplane/integration/dockertestutil"
 	"github.com/zhaduchanhzz/mesh-controlplane/integration/integrationutil"
-	"github.com/ory/dockertest/v3"
-	"github.com/ory/dockertest/v3/docker"
 	"gopkg.in/yaml.v3"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/mak"

@@ -32,7 +32,9 @@ func TestTailnetBaseDomain(t *testing.T) {
 }
 
 func TestTenantDNSValidate(t *testing.T) {
-	rec := func(name, typ, val string) tailcfg.DNSRecord { return tailcfg.DNSRecord{Name: name, Type: typ, Value: val} }
+	rec := func(name, typ, val string) tailcfg.DNSRecord {
+		return tailcfg.DNSRecord{Name: name, Type: typ, Value: val}
+	}
 
 	for _, tc := range []struct {
 		name string

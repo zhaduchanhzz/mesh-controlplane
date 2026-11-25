@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,8 @@ type CaseResult struct {
 // refused, the cluster unreachable): no case ran.
 var ErrSetup = errors.New("n1probe: setup")
 
+var errRegister = errors.New("register")
+
 type probeNode struct {
 	nk    key.NodePublic
 	disco key.DiscoPublic
@@ -58,6 +61,7 @@ type probeNode struct {
 
 func randSuffix() string {
 	var b [3]byte
+
 	_, _ = rand.Read(b[:])
 
 	return hex.EncodeToString(b[:])
@@ -72,6 +76,8 @@ func randSuffix() string {
 //     session's machine, or to switch tenant with headers or a register.
 //
 // It returns one CaseResult per case; err is ErrSetup when no case ran.
+//
+//nolint:gocyclo // the N1 cases run one after another in one function, as the ticket lists them
 func SwitchTenant(ctx context.Context, cfg SwitchConfig) ([]CaseResult, error) {
 	if cfg.CloseWait <= 0 {
 		cfg.CloseWait = 5 * time.Second
@@ -104,7 +110,7 @@ func SwitchTenant(ctx context.Context, cfg SwitchConfig) ([]CaseResult, error) {
 		}
 
 		if !resp.OK() || !rr.MachineAuthorized {
-			return probeNode{}, fmt.Errorf("register %s: status %d, authorized %v", host, resp.Status, rr.MachineAuthorized)
+			return probeNode{}, fmt.Errorf("%w %s: status %d, authorized %v", errRegister, host, resp.Status, rr.MachineAuthorized)
 		}
 
 		return n, nil
@@ -157,7 +163,7 @@ func SwitchTenant(ctx context.Context, cfg SwitchConfig) ([]CaseResult, error) {
 
 			if resp.OK() {
 				r.Leak = true
-				r.LeakDetail = "request for the other tenant answered " + fmt.Sprint(resp.Status)
+				r.LeakDetail = "request for the other tenant answered " + strconv.Itoa(resp.Status)
 			}
 
 			if d := leakIn(resp.Body, foreign); d != "" {

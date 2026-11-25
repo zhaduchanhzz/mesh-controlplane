@@ -422,7 +422,7 @@ var errNoVerifyHandler = errors.New("no DERP verify handler for this runtime")
 // handle and returns that URL and a function that removes the route. A
 // request for a removed or unknown URL fails, and the DERP server (fail open
 // off) refuses the client.
-func RegisterVerifyHandler(handle func(*http.Request, io.Writer) error) (verifyURL string, unregister func()) {
+func RegisterVerifyHandler(handle func(*http.Request, io.Writer) error) (string, func()) {
 	verifyOnce.Do(func() {
 		t := http.DefaultTransport.(*http.Transport) //nolint:forcetypeassert
 		t.RegisterProtocol(DerpVerifyScheme, verifyDispatcher{})

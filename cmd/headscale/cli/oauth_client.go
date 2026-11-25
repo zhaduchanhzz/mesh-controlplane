@@ -39,7 +39,7 @@ var oauthClientsCmd = &cobra.Command{
 }
 
 var createOAuthClientCmd = &cobra.Command{
-	Use:   "create",
+	Use:   useCreate,
 	Short: "Create an OAuth client",
 	Long: `Create a general-purpose OAuth client. It authenticates with the OAuth 2.0
 client-credentials grant and mints short-lived, scope-limited access tokens.

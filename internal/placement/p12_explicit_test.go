@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
@@ -122,7 +121,7 @@ func TestMoveOwnerChecksTargetCapacity(t *testing.T) {
 			require.ErrorIs(t, err, ErrNoCapacity, "2 + 2 devices > 3")
 
 			row := count(t, gdb, `SELECT owner_epoch FROM tailnets WHERE id = ?`, moving.ID)
-			assert.Equal(t, int64(moving.OwnerEpoch), row, "nothing changed")
+			assert.EqualValues(t, moving.OwnerEpoch, row, "nothing changed")
 
 			// Same cluster again: a new epoch, whatever the load and even
 			// without a live lease (owner decision 2026-11-25).

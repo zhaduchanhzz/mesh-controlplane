@@ -61,8 +61,9 @@ func (f Fence) WithLease(holder string, epoch uint64) (Fence, error) {
 	return f, nil
 }
 
-// Lease is the cluster lease f claims, if any.
-func (f Fence) Lease() (holder string, epoch uint64, ok bool) {
+// Lease returns the holder and epoch of the cluster lease f claims; ok is
+// false if f claims none.
+func (f Fence) Lease() (string, uint64, bool) {
 	return f.leaseHolder, f.leaseEpoch, f.leaseHolder != ""
 }
 
