@@ -202,9 +202,9 @@ type (
 		KeyID          uint64 `path:"key_id" minimum:"1"`
 		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
 	}
-	apiKeyOut struct{ Body placement.APIKeyInfo }
+	apiKeyOut    struct{ Body placement.APIKeyInfo }
 	reconcileOut struct{ Body placement.Report }
-	auditOut  struct {
+	auditOut     struct {
 		Body struct {
 			Entries []placement.AuditEntry `json:"entries"`
 		}
