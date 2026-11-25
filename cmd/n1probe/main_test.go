@@ -39,3 +39,13 @@ func TestFloodNeverPrintsKey(t *testing.T) {
 	assert.Contains(t, out.String(), `"status_4xx"`)
 	assert.NotContains(t, out.String()+errb.String(), "verysecretvalue42")
 }
+
+func TestDERPCheckUsage(t *testing.T) {
+	var out, errb bytes.Buffer
+
+	assert.Equal(t, 2, run([]string{"derp-check", "--ip", "127.0.0.1"}, strings.NewReader(""), &out, &errb))
+	// Nothing listens there: no attempt admitted, exit 0, one JSON line per attempt.
+	assert.Equal(t, 0, run([]string{"derp-check", "--host", "relay.invalid", "--ip", "127.0.0.1", "--port", "1",
+		"--count", "2", "--timeout", "2s"}, strings.NewReader(""), &out, &errb), errb.String())
+	assert.Equal(t, 2, strings.Count(out.String(), `"admitted":false`))
+}
