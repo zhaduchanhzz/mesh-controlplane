@@ -1,8 +1,12 @@
 package db
 
 import (
+	"fmt"
+
 	"github.com/go-gormigrate/gormigrate/v2"
 	"gorm.io/gorm"
+
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 // TailnetMovesMigrationID adds tailnet_moves (P12b, owner decision Q2,
@@ -75,4 +79,49 @@ func tailnetMovesMigration() *gormigrate.Migration {
 			})
 		},
 	}
+}
+
+// MoveNotices returns, by tailnet ID, the open planned move (SCHEDULED or
+// REQUESTED) of each ACTIVE tailnet clusterID owns and would move away (P12b,
+// owner decision Q1): the time and the reason the tailnet's clients are told,
+// never the target cluster. Explicit SQL: tailnet_moves is a platform table.
+func (p *Platform) MoveNotices(clusterID string) (map[string]types.MoveNotice, error) {
+	if clusterID == "" {
+		return nil, errEmptyClusterID
+	}
+
+	ctx, cancel := p.lookupContext()
+	defer cancel()
+
+	rows, err := p.db.WithContext(ctx).Raw(`SELECT m.tailnet_id, m.scheduled_at, m.reason
+		FROM tailnet_moves m JOIN tailnets t ON t.id = m.tailnet_id
+		WHERE m.state IN ('SCHEDULED','REQUESTED') AND m.from_cluster_id = ?
+		  AND t.owner_cluster_id = ? AND t.status = ? AND t.deleted_at IS NULL`,
+		clusterID, clusterID, types.TailnetActive).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("listing planned moves of cluster %s: %w", clusterID, err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]types.MoveNotice)
+
+	for rows.Next() {
+		var (
+			id string
+			n  types.MoveNotice
+		)
+
+		if err := rows.Scan(&id, &n.At, &n.Reason); err != nil { //nolint:noinlineerr
+			return nil, fmt.Errorf("listing planned moves of cluster %s: %w", clusterID, err)
+		}
+
+		n.At = n.At.UTC()
+		out[id] = n
+	}
+
+	if err := rows.Err(); err != nil { //nolint:noinlineerr
+		return nil, fmt.Errorf("listing planned moves of cluster %s: %w", clusterID, err)
+	}
+
+	return out, nil
 }

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
 func TestTailnetMovesDDLInSchemaFilesAndLast(t *testing.T) {
@@ -60,6 +61,46 @@ func TestMigrationTailnetMoves(t *testing.T) {
 			if b.name == "postgres" {
 				require.Error(t, insertMove(p.db, "m5", "00000000-0000-4000-8000-00000000dead", "CANCELLED"), "unknown tailnet")
 			}
+		})
+	}
+}
+
+// MoveNotices: only open moves of ACTIVE tailnets this cluster owns and
+// moves away; never another cluster's, a closed move, or a deleted tailnet.
+func TestMoveNoticesOnlyOwnOpenMoves(t *testing.T) {
+	for _, b := range backends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			p := openPlatform(t, b.cfg(t, "", ""))
+			at := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+
+			ins := func(id string, tn tailnet.ID, from, state string) {
+				now := time.Now().UTC()
+				require.NoError(t, p.db.Exec(`INSERT INTO tailnet_moves (id, tailnet_id, from_cluster_id, to_cluster_id,
+					from_epoch, scheduled_at, reason, state, created_at, updated_at)
+					VALUES (?, ?, ?, 'cx', 1, ?, 'rebalance', ?, ?, ?)`, id, tn.String(), from, at, state, now, now).Error)
+			}
+
+			mine := platformTailnet(t, p, "local", types.TailnetActive, false)
+			requested := platformTailnet(t, p, "local", types.TailnetActive, false)
+			closed := platformTailnet(t, p, "local", types.TailnetActive, false)
+			other := platformTailnet(t, p, "other", types.TailnetActive, false)
+			gone := platformTailnet(t, p, "local", types.TailnetActive, true)
+
+			ins("m1", mine, "local", "SCHEDULED")
+			ins("m2", requested, "local", "REQUESTED")
+			ins("m3", closed, "local", "CANCELLED")
+			ins("m4", other, "other", "SCHEDULED")
+			ins("m5", gone, "local", "SCHEDULED")
+
+			got, err := p.MoveNotices("local")
+			require.NoError(t, err)
+			require.Len(t, got, 2)
+			assert.True(t, got[mine.String()].At.Equal(at))
+			assert.Equal(t, "rebalance", got[mine.String()].Reason)
+			assert.Contains(t, got, requested.String())
+
+			_, err = p.MoveNotices("")
+			require.Error(t, err)
 		})
 	}
 }

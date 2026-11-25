@@ -423,16 +423,67 @@ func (b *MapResponseBuilder) WithPeersRemoved(removedIDs ...types.NodeID) *MapRe
 	return b
 }
 
-// Build finalizes the response and returns marshaled bytes.
 // MoveNoticeID is the DisplayMessages key of a planned tailnet move (P12b).
 const MoveNoticeID tailcfg.DisplayMessageID = "mesh-tailnet-move"
 
+// displayMessagesCapVer is the first capability version whose clients read
+// MapResponse.DisplayMessages; older ones get MapResponse.Health.
+const displayMessagesCapVer tailcfg.CapabilityVersion = 117
+
+// moveNoticeText never names the target cluster or its URL (owner decision
+// Q3): the client asks bootstrap for its control URL after the move.
+func moveNoticeText(n *types.MoveNotice) string {
+	s := "This tailnet moves to another control cluster at " +
+		n.At.UTC().Format("2006-01-02 15:04 UTC") + "."
+	if n.Reason != "" {
+		s += " Reason: " + n.Reason + "."
+	}
+
+	return s + " After that time, run your re-bootstrap tool, or " +
+		"`tailscale up --login-server <control URL from bootstrap> --force-reauth` " +
+		"with the tailnet's pre-auth key."
+}
+
 // WithMoveNotice tells the client about a planned move of its tailnet
-// (P12b, owner decision Q1).
+// (P12b, owner decision Q1): a DisplayMessage (capver >= 117) or a Health
+// entry; once the notice is cleared it is deleted / health is restored. No
+// protocol change and no ControlURL change. The control plane sets no other
+// Health or DisplayMessages, so clearing them affects only this notice.
 func (b *MapResponseBuilder) WithMoveNotice() *MapResponseBuilder {
+	if b.mapper == nil || b.mapper.state == nil {
+		return b
+	}
+
+	n, seen := b.mapper.state.MoveNotice()
+	if n == nil && !seen {
+		return b
+	}
+
+	if b.capVer >= displayMessagesCapVer {
+		var dm *tailcfg.DisplayMessage
+		if n != nil {
+			dm = &tailcfg.DisplayMessage{
+				Title:    "Tailnet move scheduled",
+				Text:     moveNoticeText(n),
+				Severity: tailcfg.SeverityMedium,
+			}
+		}
+
+		b.resp.DisplayMessages = map[tailcfg.DisplayMessageID]*tailcfg.DisplayMessage{MoveNoticeID: dm}
+
+		return b
+	}
+
+	if n != nil {
+		b.resp.Health = []string{moveNoticeText(n)}
+	} else {
+		b.resp.Health = []string{}
+	}
+
 	return b
 }
 
+// Build finalizes the response and returns marshaled bytes.
 func (b *MapResponseBuilder) Build() (*tailcfg.MapResponse, error) {
 	if len(b.errs) > 0 {
 		return nil, multierr.New(b.errs...)

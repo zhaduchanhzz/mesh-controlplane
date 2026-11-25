@@ -472,6 +472,48 @@ func (c *Cluster) reconcile() {
 			c.retire(rt, "failed to start")
 		}
 	}
+
+	c.applyMoveNotices()
+}
+
+// applyMoveNotices gives each served tailnet the notice of its planned move,
+// or clears it (P12b, owner decision Q1), and sends a full map to the
+// tailnet's clients when it changed. Each runtime only sees its own
+// tailnet's notice. A failed listing changes nothing.
+func (c *Cluster) applyMoveNotices() {
+	notices, err := c.platform.MoveNotices(c.platform.ClusterID())
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: listing planned moves")
+
+		return
+	}
+
+	c.mu.RLock()
+	rts := make([]*tenantRuntime, 0, len(c.runtimes))
+	for _, rt := range c.runtimes {
+		rts = append(rts, rt)
+	}
+	c.mu.RUnlock()
+
+	for _, rt := range rts {
+		var n *types.MoveNotice
+		if v, ok := notices[rt.id.String()]; ok {
+			n = &v
+		}
+
+		if !rt.h.state.SetMoveNotice(n) {
+			continue
+		}
+
+		rt.h.Change(change.FullUpdate())
+
+		ev := log.Info().Str("tailnet", rt.id.String())
+		if n != nil {
+			ev = ev.Time("move_at", n.At)
+		}
+
+		ev.Bool("scheduled", n != nil).Msg("reconcile: planned move notice changed")
+	}
 }
 
 // tailnetDNS reads and checks tailnet id's stored DNS settings (ADR 0008):

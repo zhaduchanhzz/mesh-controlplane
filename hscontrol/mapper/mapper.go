@@ -269,6 +269,7 @@ func (m *mapper) fullMapResponse(
 		WithDomain().
 		WithCollectServicesDisabled().
 		WithDebugConfig().
+		WithMoveNotice().
 		WithSSHPolicy().
 		WithDNSConfig().
 		WithUserProfiles(peers).
@@ -359,9 +360,11 @@ func (m *mapper) buildFromChange(
 		WithDebugType(changeResponseDebug)
 
 	// Clients forget the logtail instruction when their process restarts, and
-	// every stream opens with a full map, so full maps carry it.
+	// every stream opens with a full map, so full maps carry it. The same
+	// holds for the notice of a planned tailnet move (P12b).
 	if resp.IsFull() {
 		builder.WithDebugConfig()
+		builder.WithMoveNotice()
 	}
 
 	if resp.IncludeSelf {

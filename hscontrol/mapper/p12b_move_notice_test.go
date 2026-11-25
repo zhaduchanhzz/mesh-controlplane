@@ -53,5 +53,10 @@ func TestMoveNoticeInMapResponse(t *testing.T) {
 	v, ok := resp.DisplayMessages[MoveNoticeID]
 	assert.True(t, ok, "the cleared notice is deleted on the client")
 	assert.Nil(t, v)
+
+	old, err = m.NewMapResponseBuilder(1).WithCapabilityVersion(116).WithMoveNotice().Build()
+	require.NoError(t, err)
+	assert.NotNil(t, old.Health, "older clients: health restored")
+	assert.Empty(t, old.Health)
 	_ = tailcfg.DisplayMessageID("")
 }
