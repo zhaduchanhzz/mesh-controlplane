@@ -1,0 +1,578 @@
+#!/usr/bin/env bash
+# P12b real-client E2E: a planned move of a tailnet between two clusters
+# (owner decisions Q1-Q7, 2026-11-26), measured.
+#
+#   c1 (mc-cp-c1): https://c1.cp.gta5web.online:8443
+#      VPS -> wg-mesh -> mc-cp 10.99.77.2:8443 (HAProxy mesh-c1-ha, transient) -> mc-cp 192.168.1.241:8443
+#   c2 (mc-c2):    https://c2.cp.gta5web.online:8445
+#      VPS -> wg-mesh -> mc-cp 10.99.77.2:8445 (HAProxy mesh-c2-ha, long-lived) -> mc-c2 192.168.1.244:8443
+#   bootstrap: https://boot.cp.gta5web.online:8444 (mc-cp, transient)
+#   mesh-placement: 127.0.0.1:9443 on mc-cp, mTLS with a throwaway CA, scheduler every 2 s
+#   clients: docker on mc-ci; re-bootstrap with mesh-rebootstrap on mc-ci
+#
+# One process per cluster (failover is P12's subject). Same isolation from the
+# long-lived lab as P12: run binary /usr/local/bin/headscale-cluster-p12b and
+# config /etc/headscale/cluster/config-p12b.yaml; the long-lived c2 (meshlab,
+# mc-c2 and mc-c2b) and the P02 POC on mc-cp are stopped for the run and
+# restarted at cleanup; database e2e_p12b<run> on mc-db, dropped at cleanup.
+#
+# Per client image (IMAGES, default v1.104.7 then v1.84.3) one round:
+#   M01 tailnet m<r> (placement picks the owner), N docker clients enrolled at
+#       the URL bootstrap gives; all Running, N nodes, a pair pings
+#   M02 ScheduleMove to the other cluster at now+LEAD with a reason (Q2): every
+#       client of m<r> shows the notice (Q1: DisplayMessages / Health), the
+#       tailnet's own /api/v2 scheduled-move shows time and reason (Q3); the
+#       target cluster is named nowhere; control tailnet o: no notice
+#   M03 the scheduler requests the move at scheduled_at, the owner hands over
+#       before the target loads (logs), epoch + 1, move HANDED_OVER; bootstrap
+#       gives the target URL
+#   M04 mesh-rebootstrap (Q5), started before scheduled_at with -from <source
+#       URL>, re-logs all N clients, PAR at a time: t50/t90/t100 (Q7); every
+#       client back Running at the target with the same IP (Q4: nodes kept);
+#       ping gap of the pair over the whole move
+#   M05 control tailnet o untouched: owner/epoch, pings, no notice
+# Then:
+#   M06 audit: one owner per tailnet, reconcile report empty, no move open
+#   M07 artifacts hold no secret
+#
+# Optional client VMs (VM_TARGETS="mesh@IP mesh@IP"; default none, needs the
+# owner's go-ahead): a second tailscaled per VM (own state, socket, tun, port;
+# the VM's own tailscaled is not touched), enrolled in m1 and re-bootstrapped
+# from this host with RB_LOCAL_BIN (a mesh-rebootstrap for this host).
+#
+# Usage: BIN=<headscale> PLBIN=<mesh-placement> BOOT_BIN=<mesh-bootstrap> RB_BIN=<mesh-rebootstrap> run.sh
+#        (linux/amd64). N=24 PAR=8 LEAD=60 IMAGES="tailscale/tailscale:v1.104.7 tailscale/tailscale:v1.84.3"
+# Thresholds: none yet (owner Q7: fixed after the first measurement); the
+# measurements are recorded, PASS/FAIL covers correctness only.
+# Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
+# shellcheck disable=SC2029
+set -u -o pipefail
+
+SSH_KEY=${SSH_KEY:-$HOME/.mesh-lab/mesh-lab}
+CP_SSH=${CP_SSH:-mesh@192.168.1.241}
+C2_SSH=${C2_SSH:-mesh@192.168.1.244}
+C2B_SSH=${C2B_SSH:-mesh@192.168.1.246}
+CI_SSH=${CI_SSH:-mesh@192.168.1.240}
+PG_SSH=${PG_SSH:-mesh@192.168.1.243}
+PG_LISTEN=${PG_LISTEN:-192.168.1.243:6432}
+MC_DB_ENV=${MC_DB_ENV:-$HOME/.mesh-lab/mc-db.env}
+C1_ID=mc-cp-c1
+C2_ID=mc-c2
+HOST1=c1.cp.gta5web.online
+HOST2=c2.cp.gta5web.online
+URL1=https://$HOST1:8443
+URL2=https://$HOST2:8445
+POC_HEALTH=https://a.cp.gta5web.online:8443/health
+BOOT_HOST=boot.cp.gta5web.online
+BOOT_URL=https://$BOOT_HOST:8444
+BOOT_LISTEN=10.99.77.2:8444
+IMAGES=${IMAGES:-tailscale/tailscale:v1.104.7 tailscale/tailscale:v1.84.3}
+N=${N:-24}
+PAR=${PAR:-8}
+LEAD=${LEAD:-60}
+VM_TARGETS=${VM_TARGETS:-}
+RB_LOCAL_BIN=${RB_LOCAL_BIN:-}
+BIN=${BIN:?BIN= linux/amd64 cluster binary}
+PLBIN=${PLBIN:?PLBIN= linux/amd64 mesh-placement binary}
+BOOT_BIN=${BOOT_BIN:?BOOT_BIN= linux/amd64 mesh-bootstrap binary}
+RB_BIN=${RB_BIN:?RB_BIN= linux/amd64 mesh-rebootstrap binary}
+KEEP=${KEEP:-0}
+LABEL=mesh-e2e=p12b
+PY=${PY:-python}
+REASON="p12b-e2e rebalance"
+NOTICE="moves to another control cluster"
+
+REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
+SHA=$(git -C "$REPO" rev-parse --short HEAD)
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+PG_DB=e2e_p12b$(tr 'A-Z' 'a-z' <<<"$RUN_ID")
+ART_DIR=$REPO/artifacts/$SHA/P12b/e2e-$RUN_ID
+mkdir -p "$ART_DIR/logs"
+TMPD=$(mktemp -d) && chmod 700 "$TMPD"
+CR=$(printf '\r')
+
+HS=/usr/local/bin/headscale-cluster-p12b
+CFG=/etc/headscale/cluster/config-p12b.yaml
+UNIT=mesh-p12b-e2e
+PLUNIT=mesh-placement-p12b
+BOOTUNIT=mesh-bootstrap-p12b
+PLDIR=/run/p12b-placement
+CIDIR=/dev/shm/p12b
+VMUNIT=p12b-ts
+VMSOCK=/run/p12b-ts/tailscaled.sock
+CLI1="sudo -u headscale $HS -c $CFG cluster --cluster-id $C1_ID"
+CLI2="sudo -u headscale $HS -c $CFG cluster --cluster-id $C2_ID"
+
+[ -z "$VM_TARGETS" ] || [ -n "$RB_LOCAL_BIN" ] || { echo "VM_TARGETS needs RB_LOCAL_BIN" >&2; exit 2; }
+[[ $N =~ ^[0-9]+$ ]] && [ "$N" -ge 2 ] && [[ $PAR =~ ^[0-9]+$ ]] && [ "$PAR" -ge 1 ] || { echo "bad N/PAR" >&2; exit 2; }
+
+redact() {
+  sed -E \
+    -e 's/(tskey|hskey)-[A-Za-z0-9_-]+/\1-<redacted>/g' \
+    -e 's#/register/[A-Za-z0-9_-]+#/register/<redacted>#g' \
+    -e 's/((mkey|nodekey|discokey|nlpub|privkey):)([0-9a-f]{8})[0-9a-f]{56}/\1\3…/g'
+}
+log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$ART_DIR/run.log" >&2; }
+ssh_() { local h=$1; shift; ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 "$h" "$@"; }
+cp_() { ssh_ "$CP_SSH" "$@"; }
+ci_() { ssh_ "$CI_SSH" "$@"; }
+pg_() { ssh_ "$PG_SSH" "$@"; }
+sshof() { case $1 in cp) echo "$CP_SSH";; c2) echo "$C2_SSH";; c2b) echo "$C2B_SSH";; esac; }
+on() { local n=$1; shift; ssh_ "$(sshof "$n")" "$@"; }
+nodeof() { [ "$1" = c1 ] && echo cp || echo c2; }
+urlof() { [ "$1" = c1 ] && echo $URL1 || echo $URL2; }
+idof() { [ "$1" = c1 ] && echo $C1_ID || echo $C2_ID; }
+otherc() { [ "$1" = c1 ] && echo c2 || echo c1; }
+cli() { local c=$1; shift; if [ "$c" = c1 ]; then cp_ "$CLI1 $*"; else on c2 "$CLI2 $*"; fi; }
+py() { local code=$1; shift; "$PY" -c "import sys; sys.stdout.reconfigure(newline='\n')
+$code" "$@"; }
+strip_cr() { local v; v=$(cat); printf '%s' "${v//$CR/}"; }
+now_ms() { py 'import time; print(int(time.time()*1000))' | strip_cr; }
+iso_in() { py 'import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=int(sys.argv[1]))).replace(microsecond=0).isoformat().replace("+00:00","Z"))' "$1" | strip_cr; }
+
+FAILS=0
+record() {
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$ART_DIR/results.tsv"
+  printf '%-5s %-6s %s\n' "$2" "$1" "$3" | tee -a "$ART_DIR/run.log"
+  [ "$2" = FAIL ] && FAILS=$((FAILS + 1))
+  return 0
+}
+
+# ------------------------------------------------------------ processes ---
+public_ready() { curl -s -o /dev/null -w '%{http_code}' -m 3 "$(urlof "$1")/ready" || true; }
+wait_public_ready() { local i; for i in $(seq 1 "$2"); do [ "$(public_ready "$1")" = 200 ] && return 0; sleep 1; done; return 1; }
+start_proc() { # CLUSTER
+  on "$(nodeof "$1")" "sudo systemctl reset-failed $UNIT 2>/dev/null; sudo systemd-run --quiet --unit=$UNIT --uid=headscale --gid=headscale \
+    -p RuntimeDirectory=headscale-cluster -p RuntimeDirectoryMode=0770 \
+    $HS -c $CFG cluster serve --cluster-id $(idof "$1")"
+}
+proc_log() { on "$(nodeof "$1")" "sudo journalctl -u $UNIT --since -${2}s --no-pager -o short-iso-precise" 2>/dev/null; }
+psql_() { pg_ "sudo docker exec mc-pg psql -At -U postgres -d $PG_DB -c \"$1\""; }
+
+# --------------------------------------------------------------- clients ---
+start_ts() {
+  ci_ "docker run -d --name $1 --hostname $1 --label $LABEL --cap-add=NET_ADMIN --cap-add=NET_RAW --device=/dev/net/tun \
+    --mount type=volume,src=$1,dst=/var/lib/tailscale,volume-label=$LABEL $2 \
+    tailscaled --state=/var/lib/tailscale/tailscaled.state >/dev/null && \
+    for i in \$(seq 1 60); do docker exec $1 tailscale status >/dev/null 2>&1; [ \$? -le 1 ] && exit 0; sleep 0.5; done"
+}
+ts_up() { # NAME URL KEYFILE [EXTRA]
+  ci_ "docker exec -i $1 timeout 60 tailscale up --login-server=$2 --auth-key=file:/dev/stdin --hostname=$1 ${4:-}" \
+    <"$3" 2>&1 | redact >>"$ART_DIR/logs/$1.cli.log"
+  return "${PIPESTATUS[0]}"
+}
+ts_json() { ci_ "docker exec $1 tailscale status --json" 2>/dev/null; }
+field() { ts_json "$1" | py "import json; d=json.load(sys.stdin); print($2)" 2>/dev/null | strip_cr; }
+npeers() { field "$1" "len(d.get('Peer') or {})"; }
+selfip() { field "$1" "d['Self']['TailscaleIPs'][0]"; }
+state() { field "$1" "d['BackendState']"; }
+has_notice() { field "$1" "any('$NOTICE' in h for h in (d.get('Health') or []))"; }
+health_text() { field "$1" "' | '.join(d.get('Health') or [])"; }
+ping_ok() { ci_ "docker exec $1 tailscale ping -c 3 --timeout 5s $2" >>"$ART_DIR/logs/$1-ping.log" 2>&1; }
+save_logs() { ci_ "docker logs $1 2>&1" | redact >"$ART_DIR/logs/$1.tailscaled.log" 2>/dev/null || true; }
+
+# Tailnets: OWNER_<slug> = c1|c2, ID_<slug>.
+owner() { eval "echo \$OWNER_$1"; }
+tid() { eval "echo \$ID_$1"; }
+node_count() { cli "$(owner "$1")" tailnet nodes --slug "$1" 2>/dev/null | py "import json; print(len(json.load(sys.stdin)))" | strip_cr; }
+
+# placement API over mTLS on mc-cp loopback: pl METHOD PATH [IDEMPOTENCY-KEY] [BODY]
+pl() {
+  local ik=${3:-} b=${4:-}
+  cp_ "sudo curl -s -m 10 --cacert $PLDIR/ca.crt --cert $PLDIR/op.crt --key $PLDIR/op.key -X $1 \
+    ${ik:+-H 'Idempotency-Key: $ik'} ${b:+-H 'Content-Type: application/json' --data '$b'} https://127.0.0.1:9443$2"
+}
+jget() { py "import json; d=json.loads(sys.argv[1]); print($2)" "$1" 2>/dev/null | strip_cr; }
+findings() { jget "$(pl GET /v1/reconcile)" "json.dumps(d.get('findings'))"; }
+
+# boot_req KEYFILE TENANT -> "<status> <body>" (key id + SHA-256 proof only)
+boot_req() {
+  local body out=$TMPD/boot.out code
+  body=$(py 'import hashlib,json
+k=open(sys.argv[1]).read().strip()
+i,s=k.split("hskey-auth-",1)[1].split("-",1)
+sys.stdout.write(json.dumps({"credential":{"kind":"authkey_proof","key_id":i,"proof":hashlib.sha256(s.encode()).hexdigest()},"tenant":sys.argv[2]}))' "$1" "$2" | strip_cr)
+  code=$(printf %s "$body" | curl -s -m 10 -o "$out" -w '%{http_code}' -H 'Content-Type: application/json' --data-binary @- "$BOOT_URL/v1/bootstrap")
+  printf '%s %s' "$code" "$(cat "$out" 2>/dev/null)"; rm -f "$out"
+}
+boot_url() { py 'import json; d=json.loads(sys.argv[1].split(" ",1)[1]); print(d.get("control_url",""))' "$1" 2>/dev/null | strip_cr; }
+
+# tenant_api SLUG PATH -> body, with the tailnet's API key at its owner's URL
+tenant_api() { curl -s -m 10 -H "Authorization: Bearer $(cat "$TMPD/api-$1")" "$(urlof "$(owner "$1")")$2"; }
+
+# ------------------------------------------------------------- tailnets ---
+# new_tailnet SLUG: created through placement, activated, allow-all policy,
+# reusable pre-auth key ($TMPD/key-SLUG) and API key ($TMPD/api-SLUG).
+new_tailnet() {
+  local s=$1 r id o pf=/var/lib/headscale/cluster/p12b-policy.hujson pol='{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}'
+  r=$(pl POST /v1/tailnets "p12b-t-$s" "{\"slug\":\"$s\",\"class\":\"shared\"}")
+  printf 'create %s %s\n' "$s" "$r" >>"$ART_DIR/logs/placement.log"
+  id=$(jget "$r" "d['id']"); o=$(jget "$r" "d['owner_cluster_id']")
+  [ -n "$id" ] || return 1
+  eval "ID_$s=$id"; if [ "$o" = $C1_ID ]; then eval "OWNER_$s=c1"; else eval "OWNER_$s=c2"; fi
+  pl POST "/v1/tailnets/$id/activate" "p12b-a-$s" '{"expected_epoch":1}' >>"$ART_DIR/logs/placement.log" || return 1
+  printf '%s\n' "$pol" | if [ "$(owner "$s")" = c1 ]; then cp_ "sudo install -o headscale -g headscale -m 0640 /dev/stdin $pf && $CLI1 tailnet policy --slug $s --file $pf; rc=\$?; sudo rm -f $pf; exit \$rc"
+    else on c2 "sudo install -o headscale -g headscale -m 0640 /dev/stdin $pf && $CLI2 tailnet policy --slug $s --file $pf; rc=\$?; sudo rm -f $pf; exit \$rc"; fi >/dev/null || return 1
+  cli "$(owner "$s")" tailnet authkey --slug "$s" --user "e2e-$s" --reusable --expiration 180m \
+    | py 'import json; print(json.load(sys.stdin)["key"])' | strip_cr >"$TMPD/key-$s"
+  chmod 600 "$TMPD/key-$s"; [ -s "$TMPD/key-$s" ] || return 1
+  r=$(pl POST "/v1/tailnets/$id/apikeys" "p12b-k-$s" '{"expires_in_seconds":10800}')
+  py 'import json; print(json.loads(sys.argv[1])["key"])' "$r" | strip_cr >"$TMPD/api-$s"; chmod 600 "$TMPD/api-$s"
+  [ -s "$TMPD/api-$s" ] || return 1
+  local i; for i in $(seq 1 20); do proc_log "$(owner "$s")" 120 | grep -q "loaded tailnet runtime.*slug=$s" && return 0; sleep 1; done
+  return 1
+}
+
+# enroll SLUG IMAGE NAME...: start and enroll at the URL bootstrap gives, PAR at a time.
+enroll() {
+  local s=$1 img=$2 u c n=0 rc=0; shift 2
+  u=$(boot_url "$(boot_req "$TMPD/key-$s" "$s")"); [ "$u" = "$(urlof "$(owner "$s")")" ] || return 1
+  for c in "$@"; do
+    { start_ts "$c" "$img" && ts_up "$c" "$u" "$TMPD/key-$s"; } >/dev/null 2>&1 || echo "$c" >>"$TMPD/enroll-failed" &
+    n=$((n + 1)); [ $((n % PAR)) = 0 ] && wait
+  done
+  wait
+  [ ! -s "$TMPD/enroll-failed" ] || { rc=1; log "enroll failed: $(tr '\n' ' ' <"$TMPD/enroll-failed")"; rm -f "$TMPD/enroll-failed"; }
+  return $rc
+}
+
+# -------------------------------------------------------------- VM clients ---
+vm_() { ssh_ "$1" "${@:2}"; }
+vm_start() { # TARGET SLUG URL
+  vm_ "$1" "set -e; sudo systemctl reset-failed $VMUNIT 2>/dev/null || true
+    sudo install -d -m 0700 /var/lib/p12b-ts /run/p12b-ts
+    sudo systemd-run --quiet --unit=$VMUNIT /usr/sbin/tailscaled --state=/var/lib/p12b-ts/tailscaled.state \
+      --socket=$VMSOCK --tun=p12bts0 --port=41642
+    for i in \$(seq 1 60); do sudo tailscale --socket=$VMSOCK status >/dev/null 2>&1; [ \$? -le 1 ] && break; sleep 0.5; done" || return 1
+  vm_ "$1" "sudo install -m 0600 /dev/stdin /run/p12b-ts/key" <"$TMPD/key-$2" || return 1
+  vm_ "$1" "sudo timeout 60 tailscale --socket=$VMSOCK up --login-server=$3 --auth-key=file:/run/p12b-ts/key --hostname=\$(hostname -s)-p12b" 2>&1 | redact >>"$ART_DIR/logs/vm-$1.cli.log"
+}
+vm_state() { vm_ "$1" "sudo tailscale --socket=$VMSOCK status --json" 2>/dev/null | py 'import json; d=json.load(sys.stdin); print(d["BackendState"], d["Self"]["TailscaleIPs"][0], any("'"$NOTICE"'" in h for h in (d.get("Health") or [])))' | strip_cr; }
+vm_stop() { vm_ "$1" "sudo systemctl stop $VMUNIT 2>/dev/null; sudo systemctl reset-failed $VMUNIT 2>/dev/null; sudo rm -rf /var/lib/p12b-ts /run/p12b-ts; ! ip link show p12bts0 >/dev/null 2>&1"; }
+
+# ---------------------------------------------------------------- cleanup ---
+CLEAN_OK=1
+cleanup() {
+  [ "$KEEP" = 1 ] && { log "KEEP=1: leaving everything running"; return; }
+  log "cleanup"
+  for c in $(ci_ "docker ps -a --filter label=$LABEL --format '{{.Names}}'" 2>/dev/null); do save_logs "$c"; done
+  ci_ "touch $CIDIR/stop-ping 2>/dev/null; sleep 1; docker ps -aq --filter label=$LABEL | xargs -r docker rm -f >/dev/null; \
+       docker volume ls -q --filter label=$LABEL | xargs -r docker volume rm >/dev/null; rm -rf $CIDIR; \
+       test -z \"\$(docker ps -aq --filter label=$LABEL)\" && ! test -e $CIDIR" || { log "mc-ci clients/files not removed"; CLEAN_OK=0; }
+  local t; for t in $VM_TARGETS; do vm_stop "$t" || { log "$t: p12b tailscaled not removed"; CLEAN_OK=0; }; done
+  local n
+  for n in cp c2; do
+    on $n "sudo systemctl stop $UNIT 2>/dev/null; sudo systemctl reset-failed $UNIT 2>/dev/null; \
+      sudo rm -f $CFG $HS; ! sudo test -e $CFG && ! test -e $HS" || { log "$n: run files not removed"; CLEAN_OK=0; }
+  done
+  cp_ "for u in $PLUNIT $BOOTUNIT mesh-c1-ha; do sudo systemctl stop \$u 2>/dev/null; sudo systemctl reset-failed \$u 2>/dev/null; done; \
+       sudo rm -rf $PLDIR /etc/haproxy/mesh-c1-p12b.cfg /usr/local/bin/mesh-placement-p12b /usr/local/bin/mesh-bootstrap-p12b; ! sudo test -e $PLDIR" \
+    || { log "mc-cp placement/bootstrap/HAProxy not removed"; CLEAN_OK=0; }
+  cp_ "sudo rm -f /etc/headscale/cluster/pg.pass; ! sudo test -e /etc/headscale/cluster/pg.pass && sudo systemctl start headscale-tailnets" \
+    || { log "mc-cp POC not restarted"; CLEAN_OK=0; }
+  for n in c2 c2b; do on $n "sudo systemctl start headscale-cluster" || { log "$n: long-lived c2 not started"; CLEAN_OK=0; }; done
+  [[ $PG_DB =~ ^e2e_[0-9a-z]+$ ]] && pg_ "sudo docker exec mc-pg dropdb -U postgres --if-exists --force $PG_DB && \
+    ! sudo docker exec mc-pg psql -At -U postgres -c \"SELECT 1 FROM pg_database WHERE datname = '$PG_DB'\" | grep -q 1" \
+    && log "dropped database $PG_DB" || { log "database $PG_DB not dropped"; CLEAN_OK=0; }
+  local i p=000 q=000
+  for i in $(seq 1 40); do
+    p=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$POC_HEALTH" || true); q=$(public_ready c2)
+    [ "$p$q" = 200200 ] && break; sleep 1
+  done
+  [ "$p" = 200 ] && log "P02 POC restored on mc-cp" || { log "POC not healthy ($p)"; CLEAN_OK=0; }
+  [ "$q" = 200 ] && log "long-lived c2 /ready 200 on meshlab" || { log "long-lived c2 /ready $q"; CLEAN_OK=0; }
+  rm -rf "$TMPD"
+}
+trap 'cleanup; exit 2' INT TERM
+
+# ------------------------------------------------------------------ setup ---
+setup() {
+  local pass i n
+  pass=$(grep -E '^MC_DB_APP_PASSWORD=' "$MC_DB_ENV" | head -1 | cut -d= -f2-); pass=${pass%"$CR"}
+  [ -n "$pass" ] || return 1
+  printf '%s' "$pass" >"$TMPD/pg.pass"; unset pass; chmod 600 "$TMPD/pg.pass"
+  log "database $PG_DB"
+  pg_ "sudo docker exec mc-pg createdb -U postgres -O headscale $PG_DB" || return 1
+
+  log "binary $HS on mc-cp and mc-c2"
+  for n in cp c2; do
+    scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$BIN" "$(sshof $n):/tmp/p12b-hs" || return 1
+    on $n "sudo install -m 0755 /tmp/p12b-hs $HS && rm -f /tmp/p12b-hs" || return 1
+  done
+
+  log "c1 config (e2e database; mc-cp on its LAN address behind HAProxy)"
+  awk -v host="${PG_LISTEN%:*}" -v port="${PG_LISTEN##*:}" -v db="$PG_DB" '
+    /^database:/ { print "database:\n  type: postgres\n  postgres:\n    host: " host "\n    port: " port \
+      "\n    name: " db "\n    user: headscale\n    pass: file:/etc/headscale/cluster/pg.pass\n    ssl: disable"; skip = 1; next }
+    skip && /^[^ ]/ { skip = 0 }
+    !skip { print }' "$REPO/infra/lab/mc-cp/cluster/config.yaml" | sed "s#^listen_addr: .*#listen_addr: 192.168.1.241:8443#" >"$TMPD/c1.yaml"
+  grep -q "^listen_addr: 192.168.1.241:8443" "$TMPD/c1.yaml" || return 1
+  cp_ "sudo systemctl stop headscale-tailnets headscale-cluster mesh-bootstrap-e2e 2>/dev/null; \
+       sudo install -d -o root -g headscale -m 0750 /etc/headscale/cluster && \
+       sudo install -d -o headscale -g headscale -m 0750 /var/lib/headscale /var/lib/headscale/cluster && \
+       sudo install -o root -g headscale -m 0640 /dev/stdin /etc/headscale/cluster/pg.pass" <"$TMPD/pg.pass" || return 1
+  cp_ "sudo install -o root -g headscale -m 0640 /dev/stdin $CFG" <"$TMPD/c1.yaml" || return 1
+  cp_ "sudo test -s /var/lib/headscale/cluster/noise_private.key" || return 1
+
+  log "mc-c2, mc-c2b: stop long-lived c2; run config = mc-c2's on $PG_DB (mc-c2b stays stopped)"
+  for n in c2 c2b; do on $n "sudo systemctl stop headscale-cluster" || return 1; done
+  on c2 "set -e; sudo sed 's/^    name: .*/    name: $PG_DB/' /etc/headscale/cluster/config.yaml | sudo install -o root -g headscale -m 0640 /dev/stdin $CFG
+    sudo grep -q '^    name: $PG_DB\$' $CFG" || return 1
+
+  log "HAProxy for c1 on mc-cp ($URL1 -> mc-cp)"
+  cp_ "sudo tee /etc/haproxy/mesh-c1-p12b.cfg >/dev/null && sudo haproxy -c -q -f /etc/haproxy/mesh-c1-p12b.cfg" <<EOF || return 1
+# P12b E2E only (infra/lab/e2e/p12b/run.sh).
+global
+  maxconn 4096
+defaults
+  mode tcp
+  timeout connect 3s
+  timeout client 1h
+  timeout server 1h
+  timeout tunnel 1h
+frontend c1
+  bind 10.99.77.2:8443
+  default_backend c1
+backend c1
+  server mc-cp 192.168.1.241:8443
+EOF
+  cp_ "sudo systemctl reset-failed mesh-c1-ha 2>/dev/null; sudo systemd-run --quiet --unit=mesh-c1-ha /usr/sbin/haproxy -Ws -f /etc/haproxy/mesh-c1-p12b.cfg" || return 1
+
+  log "mesh-placement on mc-cp loopback (throwaway CA under $PLDIR, scheduler every 2 s)"
+  scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$PLBIN" "$CP_SSH:/tmp/p12b-pl" || return 1
+  cp_ "set -e; sudo install -m 0755 /tmp/p12b-pl /usr/local/bin/mesh-placement-p12b; rm -f /tmp/p12b-pl
+    sudo install -d -o root -g headscale -m 0751 $PLDIR; cd $PLDIR
+    sudo openssl ecparam -name prime256v1 -genkey -noout -out ca.key 2>/dev/null
+    sudo openssl req -x509 -new -key ca.key -subj /CN=p12b-e2e-ca -days 1 -out ca.crt 2>/dev/null
+    sudo openssl ecparam -name prime256v1 -genkey -noout -out srv.key 2>/dev/null
+    sudo openssl req -new -key srv.key -subj /CN=localhost -out srv.csr 2>/dev/null
+    printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' | sudo tee srv.ext >/dev/null
+    sudo openssl x509 -req -in srv.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 -extfile srv.ext -out srv.crt 2>/dev/null
+    sudo openssl ecparam -name prime256v1 -genkey -noout -out op.key 2>/dev/null
+    sudo openssl req -new -key op.key -subj /CN=e2e-operator -out op.csr 2>/dev/null
+    printf 'subjectAltName=URI:spiffe://mesh/operator/e2e\nextendedKeyUsage=clientAuth\n' | sudo tee op.ext >/dev/null
+    sudo openssl x509 -req -in op.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 -extfile op.ext -out op.crt 2>/dev/null
+    sudo rm -f ca.key srv.csr op.csr srv.ext op.ext
+    sudo chgrp headscale srv.key srv.crt ca.crt; sudo chmod 0640 srv.key; sudo chmod 0600 op.key
+    sudo systemctl reset-failed $PLUNIT 2>/dev/null || true
+    sudo systemd-run --quiet --unit=$PLUNIT --uid=headscale --gid=headscale /usr/local/bin/mesh-placement-p12b \
+      -config $CFG -listen 127.0.0.1:9443 -tls-cert $PLDIR/srv.crt -tls-key $PLDIR/srv.key \
+      -client-ca $PLDIR/ca.crt -operators spiffe://mesh/operator/e2e -schedule-interval 2s" || return 1
+  for i in $(seq 1 30); do pl GET /v1/clusters >/dev/null 2>&1 && break; sleep 0.5; done
+  pl GET /v1/clusters | grep -q '"clusters"' || { log "placement API not answering"; return 1; }
+
+  log "register c1 and c2 through mesh-placement (ACTIVE, shared)"
+  pl POST /v1/clusters p12b-c1 "{\"id\":\"$C1_ID\",\"endpoint_url\":\"$URL1\",\"class\":\"shared\",\"state\":\"ACTIVE\",\"max_devices\":5000}" >/dev/null || return 1
+  pl POST /v1/clusters p12b-c2 "{\"id\":\"$C2_ID\",\"endpoint_url\":\"$URL2\",\"class\":\"shared\",\"state\":\"ACTIVE\",\"max_devices\":5000}" >/dev/null || return 1
+
+  log "start c1 (mc-cp) and c2 (mc-c2)"
+  start_proc c1 && start_proc c2 || return 1
+  wait_public_ready c1 40 && wait_public_ready c2 40 || { log "public /ready (c1=$(public_ready c1) c2=$(public_ready c2))"; return 1; }
+
+  log "bootstrap on mc-cp ($BOOT_URL)"
+  scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$BOOT_BIN" "$CP_SSH:/tmp/p12b-boot" || return 1
+  cp_ "set -e; sudo install -m 0755 /tmp/p12b-boot /usr/local/bin/mesh-bootstrap-p12b; rm -f /tmp/p12b-boot
+    sudo systemctl reset-failed $BOOTUNIT 2>/dev/null || true
+    sudo systemd-run --quiet --unit=$BOOTUNIT --uid=headscale --gid=headscale \
+      /usr/local/bin/mesh-bootstrap-p12b -config $CFG -listen $BOOT_LISTEN \
+      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST" || return 1
+  for i in $(seq 1 20); do [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$BOOT_URL/health")" = 200 ] && break; sleep 1; done
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$BOOT_URL/health")" = 200 ] || { log "bootstrap not healthy"; return 1; }
+
+  log "mesh-rebootstrap and images on mc-ci"
+  ci_ "rm -rf $CIDIR; install -d -m 0700 $CIDIR" || return 1
+  scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$RB_BIN" "$CI_SSH:$CIDIR/mesh-rebootstrap" || return 1
+  ci_ "chmod 0700 $CIDIR/mesh-rebootstrap" || return 1
+  local img; for img in $IMAGES; do ci_ "docker image inspect $img >/dev/null 2>&1 || docker pull -q $img >/dev/null" || return 1; done
+}
+
+# ------------------------------------------------------------------ cases ---
+# M00: control tailnet o (2 clients) that must not notice anything.
+t_m00() {
+  local p=""
+  new_tailnet o || { record M00 FAIL "control tailnet o"; return 1; }
+  enroll o "${IMAGES%% *}" p12b-o1 p12b-o2 || p="$p; enroll o"
+  local i; for i in $(seq 1 30); do [ "$(npeers p12b-o1)" = 1 ] && break; sleep 1; done
+  ping_ok p12b-o1 p12b-o2 || p="$p; o1 cannot ping o2"
+  O_ROW=$(jget "$(pl GET "/v1/tailnets/$(tid o)")" "d['owner_cluster_id']+'@'+str(d['owner_epoch'])")
+  [ -z "$p" ] && record M00 PASS "control tailnet o on $(owner o) ($O_ROW): o1<->o2" || record M00 FAIL "${p#; }"
+}
+
+# pinger A IPB: host-side loop on mc-ci, one ICMP echo every 200 ms through
+# A's tun, until $CIDIR/stop-ping (or 15 min). Lines: "<ms> <rc>".
+start_pinger() {
+  ci_ "rm -f $CIDIR/stop-ping $CIDIR/ping-$1; nohup bash -c 'end=\$((\$(date +%s) + 900)); \
+    while [ ! -e $CIDIR/stop-ping ] && [ \$(date +%s) -lt \$end ]; do \
+      t=\$(date +%s%3N); docker exec $1 ping -c 1 -W 1 $2 >/dev/null 2>&1; echo \"\$t \$?\"; sleep 0.2; \
+    done' >$CIDIR/ping-$1 2>&1 </dev/null &"
+}
+stop_pinger() { ci_ "touch $CIDIR/stop-ping; sleep 2; cat $CIDIR/ping-$1; rm -f $CIDIR/ping-$1 $CIDIR/stop-ping"; }
+# ping_gap FILE -> "<longest gap ms> <failed samples>/<samples>"
+ping_gap() { py 'import sys
+s=[tuple(map(int,l.split())) for l in open(sys.argv[1]) if len(l.split())==2]
+gap=0; start=None; fails=0
+for t,rc in s:
+    if rc!=0:
+        fails+=1
+        start = t if start is None else start
+    elif start is not None:
+        gap=max(gap,t-start); start=None
+if start is not None: gap=max(gap,(s[-1][0]-start) if s else 0)
+print(gap, "%d/%d" % (fails, len(s)))' "$1" | strip_cr; }
+
+# round R IMAGE: M01-M05 for tailnet m<R> with N clients of IMAGE.
+t_round() {
+  local r=$1 img=$2 s=m$1 p="" c i ver=${2##*:}
+  local names=(); for i in $(seq -w 1 "$N"); do names+=("p12b-$s-$i"); done
+  local a=${names[0]} b=${names[1]}
+
+  # M01
+  new_tailnet "$s" || { record "M01.$r" FAIL "$ver: tailnet $s"; return; }
+  local from=$(owner "$s") to; to=$(otherc "$from")
+  enroll "$s" "$img" "${names[@]}" || p="$p; enroll"
+  local vmt; for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_start "$vmt" "$s" "$(urlof "$from")" || p="$p; VM $vmt enroll"; done
+  local want=$N; [ "$r" = 1 ] && want=$((N + $(wc -w <<<"$VM_TARGETS")))
+  for i in $(seq 1 60); do [ "$(npeers "$a")" = $((want - 1)) ] && break; sleep 1; done
+  [ "$(npeers "$a")" = $((want - 1)) ] || p="$p; $a sees $(npeers "$a") peers, want $((want - 1))"
+  [ "$(node_count "$s")" = "$want" ] || p="$p; nodes $(node_count "$s") want $want"
+  ping_ok "$a" "$b" || p="$p; $a cannot ping $b"
+  for c in "${names[@]}"; do echo "$c $(selfip "$c")"; done >"$TMPD/ips-before-$s"
+  [ -z "$p" ] && record "M01.$r" PASS "$ver: tailnet $s on $from, $want clients enrolled at the URL bootstrap gave (PAR=$PAR); $a sees $((want - 1)) peers; ping ok" \
+    || { record "M01.$r" FAIL "$ver: ${p#; }"; return; }
+
+  # M02 schedule + notice
+  p=""; local at; at=$(iso_in "$LEAD")
+  local mv; mv=$(pl POST "/v1/tailnets/$(tid "$s")/moves" "p12b-m-$s" "{\"to_cluster\":\"$(idof "$to")\",\"scheduled_at\":\"$at\",\"reason\":\"$REASON\"}")
+  printf 'schedule %s %s\n' "$s" "$mv" >>"$ART_DIR/logs/placement.log"
+  local mid; mid=$(jget "$mv" "d['id']"); [ -n "$mid" ] && [ "$(jget "$mv" "d['state']")" = SCHEDULED ] || { record "M02.$r" FAIL "$ver: schedule [$mv]"; return; }
+  local t_sched; t_sched=$(now_ms)
+  local seen=0 t_seen=""
+  for i in $(seq 1 30); do
+    seen=0; for c in "${names[@]}"; do [ "$(has_notice "$c")" = True ] && seen=$((seen + 1)); done
+    [ "$seen" = "$N" ] && { t_seen=$(now_ms); break; }; sleep 1
+  done
+  [ "$seen" = "$N" ] || p="$p; notice on $seen/$N clients"
+  health_text "$a" >"$ART_DIR/logs/M02-$s-notice.txt"
+  grep -qF "$REASON" "$ART_DIR/logs/M02-$s-notice.txt" || p="$p; reason not in the notice"
+  grep -qiE "$(idof "$to")|$(urlof "$to")" "$ART_DIR/logs/M02-$s-notice.txt" && p="$p; notice names the target"
+  for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_state "$vmt" | grep -q ' True$' || p="$p; VM $vmt no notice [$(vm_state "$vmt")]"; done
+  local api; api=$(tenant_api "$s" /api/v2/tailnet/-/scheduled-move); printf '%s %s\n' "$s" "$api" >>"$ART_DIR/logs/M02-api.txt"
+  jget "$api" "d['scheduled'] and d['reason']=='$REASON'" | grep -q True || p="$p; API [$api]"
+  grep -qiE "$(idof "$to")|$HOST1|$HOST2" <<<"$api" && p="$p; API names a cluster"
+  api=$(tenant_api o /api/v2/tailnet/-/scheduled-move); printf 'o %s\n' "$api" >>"$ART_DIR/logs/M02-api.txt"
+  [ "$(jget "$api" "d['scheduled']")" = False ] || p="$p; o's API [$api]"
+  for c in p12b-o1 p12b-o2; do [ "$(has_notice "$c")" = False ] || p="$p; $c got a notice"; done
+  [ -z "$p" ] && record "M02.$r" PASS "$ver: move $mid $from->$to at $at scheduled; notice on all $N clients in $(( ${t_seen:-$t_sched} - t_sched )) ms, reason shown, target never named; /api/v2 scheduled-move of $s shows it, o's not; o's clients no notice" \
+    || record "M02.$r" FAIL "$ver: ${p#; }"
+
+  # M03 + M04: pinger, then mesh-rebootstrap waiting for a URL other than the source's.
+  p=""; local since; since=$(date +%s)
+  start_pinger "$a" "$(selfip "$b")"
+  printf '%s\n' "${names[@]}" | ci_ "cat >$CIDIR/targets-$s"
+  ci_ "umask 077; cat >$CIDIR/key-$s" <"$TMPD/key-$s"
+  ci_ "rm -f $CIDIR/rb-$s.done; nohup bash -c '$CIDIR/mesh-rebootstrap -bootstrap $BOOT_URL -authkey-file $CIDIR/key-$s -tenant $s \
+      -targets $CIDIR/targets-$s -concurrency $PAR -timeout 120s -max-wait 5m -poll 1s -from $(urlof "$from") -out $CIDIR/rb-$s.json \
+      -cmd \"docker exec -i {target} timeout 100 tailscale up --login-server={login_server} --auth-key=file:/dev/stdin --hostname={target} --force-reauth <$CIDIR/key-$s\" \
+      >$CIDIR/rb-$s.log 2>&1; echo \$? >$CIDIR/rb-$s.done' >/dev/null 2>&1 </dev/null &"
+  if [ "$r" = 1 ] && [ -n "$VM_TARGETS" ]; then
+    printf '%s\n' $VM_TARGETS >"$TMPD/vm-targets"
+    "$RB_LOCAL_BIN" -bootstrap "$BOOT_URL" -authkey-file "$TMPD/key-$s" -tenant "$s" -targets "$TMPD/vm-targets" -concurrency 2 -timeout 120s \
+      -max-wait 5m -poll 1s -from "$(urlof "$from")" -out "$ART_DIR/logs/rebootstrap-$s-vms.json" \
+      -cmd "ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes {target} 'sudo timeout 100 tailscale --socket=$VMSOCK up --login-server={login_server} --auth-key=file:/run/p12b-ts/key --hostname=\$(hostname -s)-p12b --force-reauth'" \
+      2>&1 | redact >"$ART_DIR/logs/rebootstrap-$s-vms.log" &
+  fi
+  for i in $(seq 1 $((LEAD + 420))); do ci_ "test -e $CIDIR/rb-$s.done" && break; sleep 1; done
+  wait
+  local rbrc; rbrc=$(ci_ "cat $CIDIR/rb-$s.done 2>/dev/null")
+  ci_ "cat $CIDIR/rb-$s.json 2>/dev/null" | redact >"$ART_DIR/logs/rebootstrap-$s.json"
+  ci_ "cat $CIDIR/rb-$s.log; rm -f $CIDIR/key-$s $CIDIR/rb-$s.* $CIDIR/targets-$s" | redact >"$ART_DIR/logs/rebootstrap-$s.log"
+  [ "$rbrc" = 0 ] || p="$p; mesh-rebootstrap rc=${rbrc:-none}"
+
+  # M03 the move itself
+  local m; m=$(pl GET "/v1/moves/$mid"); printf 'move %s %s\n' "$s" "$m" >>"$ART_DIR/logs/placement.log"
+  [ "$(jget "$m" "d['state']")" = HANDED_OVER ] || p="$p; move state [$(jget "$m" "d['state']")]"
+  local row; row=$(jget "$(pl GET "/v1/tailnets/$(tid "$s")")" "d['owner_cluster_id']+' '+str(d['owner_epoch'])+' '+str(d.get('moving_to_cluster_id'))")
+  [ "$row" = "$(idof "$to") 2 None" ] || p="$p; row [$row]"
+  eval "OWNER_$s=$to"
+  [ "$(boot_url "$(boot_req "$TMPD/key-$s" "$s")")" = "$(urlof "$to")" ] || p="$p; bootstrap not at $to"
+  local th tl
+  th=$(proc_log "$from" $(( $(date +%s) - since + 5 )) | grep "tailnet handed over" | grep -o '^[0-9T:.+-]*' | head -1)
+  tl=$(proc_log "$to" $(( $(date +%s) - since + 5 )) | grep "loaded tailnet runtime.*slug=$s" | grep -o '^[0-9T:.+-]*' | head -1)
+  [ -n "$th" ] && [ -n "$tl" ] && [[ "$th" < "$tl" ]] || p="$p; order handed-over=[$th] loaded=[$tl]"
+  [ -z "$p" ] && record "M03.$r" PASS "$ver: requested $(jget "$m" "d.get('requested_at')"), $from handed over ($th) before $to loaded ($tl); epoch 2; move HANDED_OVER $(jget "$m" "d.get('finished_at')"); bootstrap -> $to" \
+    || record "M03.$r" FAIL "$ver: ${p#; }"
+
+  # M04 clients at the target, same IPs; timings
+  p=""
+  local back=0; for c in "${names[@]}"; do [ "$(state "$c")" = Running ] && back=$((back + 1)); done
+  [ "$back" = "$N" ] || p="$p; Running $back/$N"
+  for c in "${names[@]}"; do echo "$c $(selfip "$c")"; done >"$TMPD/ips-after-$s"
+  cmp -s "$TMPD/ips-before-$s" "$TMPD/ips-after-$s" || p="$p; IPs changed: $(diff "$TMPD/ips-before-$s" "$TMPD/ips-after-$s" | grep -c '^>')"
+  for i in $(seq 1 60); do [ "$(npeers "$a")" = $((want - 1)) ] && break; sleep 1; done
+  [ "$(npeers "$a")" = $((want - 1)) ] || p="$p; $a sees $(npeers "$a") peers at $to"
+  [ "$(node_count "$s")" = "$want" ] || p="$p; nodes at $to $(node_count "$s") want $want (old nodes kept, Q4)"
+  ping_ok "$a" "$b" || p="$p; $a cannot ping $b at $to"
+  [ "$(has_notice "$a")" = False ] || p="$p; notice still shown at $to"
+  for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_state "$vmt" | grep -q '^Running ' || p="$p; VM $vmt [$(vm_state "$vmt")]"; done
+  stop_pinger "$a" >"$ART_DIR/logs/M04-$s-ping.txt"
+  local gap; gap=$(ping_gap "$ART_DIR/logs/M04-$s-ping.txt")
+  local tt; tt=$(py 'import json,sys,datetime
+d=json.load(open(sys.argv[1])); at=datetime.datetime.fromisoformat(sys.argv[2].replace("Z","+00:00"))
+st=datetime.datetime.fromisoformat(d["started_at"].replace("Z","+00:00")[:26]+"+00:00") if "." in d["started_at"] else datetime.datetime.fromisoformat(d["started_at"].replace("Z","+00:00"))
+off=int((st-at).total_seconds()*1000)
+f=lambda v: v if v<0 else v+off
+print("ok=%d failed=%d t50=%d t90=%d t100=%d ms (from run start); from scheduled_at: t50=%d t90=%d t100=%d ms" % (d["ok"],d["failed"],d["t50_ms"],d["t90_ms"],d["t100_ms"],f(d["t50_ms"]),f(d["t90_ms"]),f(d["t100_ms"])))' \
+    "$ART_DIR/logs/rebootstrap-$s.json" "$at" 2>/dev/null | strip_cr)
+  printf 'M04 %s %s N=%d PAR=%d: %s; ping gap %s ms (failed/samples %s)\n' "$s" "$ver" "$N" "$PAR" "$tt" "${gap%% *}" "${gap#* }" >>"$ART_DIR/timings.txt"
+  [ -z "$p" ] && record "M04.$r" PASS "$ver: $N clients re-bootstrapped $PAR at a time: $tt; all Running at $to, same IPs (nodes kept), $a sees $((want - 1)) peers, notice gone; ping gap ${gap%% *} ms" \
+    || record "M04.$r" FAIL "$ver: ${p#; }; $tt; gap ${gap%% *} ms"
+
+  # M05 control tailnet untouched
+  p=""
+  [ "$(jget "$(pl GET "/v1/tailnets/$(tid o)")" "d['owner_cluster_id']+'@'+str(d['owner_epoch'])")" = "$O_ROW" ] || p="$p; o owner/epoch changed"
+  ping_ok p12b-o1 p12b-o2 || p="$p; o1 cannot ping o2"
+  for c in p12b-o1 p12b-o2; do [ "$(has_notice "$c")" = False ] || p="$p; $c notice"; [ "$(npeers "$c")" = 1 ] || p="$p; $c peers $(npeers "$c")"; done
+  [ -z "$p" ] && record "M05.$r" PASS "$ver: control tailnet o unchanged ($O_ROW), o1<->o2, no notice, sees only its own peer" || record "M05.$r" FAIL "$ver: ${p#; }"
+}
+
+t_m06() {
+  local p="" f open
+  local ep; ep=$(psql_ "SELECT slug||'='||owner_cluster_id||'@'||owner_epoch||'/'||COALESCE(moving_to_cluster_id,'-') FROM tailnets ORDER BY slug" | tr '\n' ' ')
+  printf 'owners %s\n' "$ep" >>"$ART_DIR/logs/audit.txt"
+  grep -q '/[^-]' <<<"$ep" && p="$p; a move still requested [$ep]"
+  open=$(psql_ "SELECT count(*) FROM tailnet_moves WHERE state IN ('SCHEDULED','REQUESTED')")
+  [ "$open" = 0 ] || p="$p; $open open moves"
+  psql_ "SELECT tailnet_id||' '||from_cluster_id||'->'||to_cluster_id||' '||state||' '||scheduled_at||' '||COALESCE(requested_at::text,'-')||' '||COALESCE(finished_at::text,'-') FROM tailnet_moves ORDER BY created_at" >>"$ART_DIR/logs/audit.txt"
+  psql_ "SELECT actor||' '||action||' '||outcome FROM platform_audit WHERE action IN ('ScheduleMove','MoveDue','MoveOwner','MoveFinished','HandOver') ORDER BY id" >>"$ART_DIR/logs/audit.txt"
+  f=$(findings); printf 'M06 reconcile %s\n' "$f" >>"$ART_DIR/logs/reconcile.txt"
+  [ "$f" = "[]" ] || p="$p; reconcile findings $f"
+  [ -z "$p" ] && record M06 PASS "one owner per tailnet, none moving ($ep); no open move; reconcile []" || record M06 FAIL "${p#; }"
+}
+
+t_m07() {
+  local hits
+  hits=$(grep -rlE 'hskey-(auth|api)-[A-Za-z0-9]{6,}|privkey:[0-9a-f]{64}|nodekey:[0-9a-f]{64}|mkey:[0-9a-f]{64}|BEGIN [A-Z ]*PRIVATE KEY' "$ART_DIR" 2>/dev/null | grep -v results.tsv)
+  [ -z "$hits" ] && record M07 PASS "no auth key, API key, private key or full machine/node key in the artifacts" || record M07 FAIL "unredacted in: $(echo "$hits" | tr '\n' ' ')"
+}
+
+# ------------------------------------------------------------------- main ---
+T0=$(date +%s)
+log "P12b E2E $RUN_ID at $SHA: c1 $URL1, c2 $URL2, images [$IMAGES], N=$N PAR=$PAR LEAD=${LEAD}s, VMs [${VM_TARGETS:-none}] (artifacts: ${ART_DIR#"$REPO"/})"
+if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
+  log "setup failed (see logs/setup.log)"; cleanup; exit 2
+fi
+{ echo "images: $IMAGES"; echo "commit: $SHA"; echo "database: $PG_DB (mc-db via PgBouncer $PG_LISTEN)"; echo "N=$N PAR=$PAR LEAD=$LEAD"
+  echo "cluster binary: $(sha256sum "$BIN" | cut -c1-16)"; echo "mesh-placement: $(sha256sum "$PLBIN" | cut -c1-16)"
+  echo "mesh-bootstrap: $(sha256sum "$BOOT_BIN" | cut -c1-16)"; echo "mesh-rebootstrap: $(sha256sum "$RB_BIN" | cut -c1-16)"; } >>"$ART_DIR/env.txt"
+if t_m00; then
+  R=0; for img in $IMAGES; do R=$((R + 1)); t_round "$R" "$img"; done
+  t_m06
+fi
+for c in c1 c2; do proc_log $c $(( $(date +%s) - T0 + 5 )) | redact >"$ART_DIR/logs/$c-process.log"; done
+cp_ "sudo journalctl -u $PLUNIT -u $BOOTUNIT --no-pager" 2>&1 | redact >"$ART_DIR/logs/placement-bootstrap.log"
+t_m07
+cleanup
+log "done in $(( $(date +%s) - T0 ))s: $FAILS FAIL, cleanup_ok=$CLEAN_OK"
+[ "$CLEAN_OK" = 1 ] || exit 2
+[ "$FAILS" = 0 ] || exit 1
+exit 0
