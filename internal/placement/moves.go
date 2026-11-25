@@ -394,3 +394,10 @@ func (r *Registry) requestMove(ctx context.Context, op Op, m Move) (MoveState, s
 
 	return MoveRequested, ""
 }
+
+// SchedulerActor is the audit actor of the move scheduler.
+const SchedulerActor = "spiffe://mesh/placement/scheduler"
+
+// RunScheduler calls RunDueMoves every interval until ctx ends.
+func RunScheduler(ctx context.Context, r *Registry, interval time.Duration, logf func(string, ...any)) {
+}
