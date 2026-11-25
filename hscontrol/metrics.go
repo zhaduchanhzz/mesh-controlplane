@@ -38,4 +38,11 @@ var (
 		Name:      "mapresponse_ended_total",
 		Help:      "total count of new mapsessions ended",
 	}, []string{"reason"})
+	// tailnetMapSessions is the open long-poll map sessions by tailnet
+	// (P08b): the tailnet ID while the label cap allows, "other" past it.
+	tailnetMapSessions = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: prometheusNamespace,
+		Name:      "tailnet_map_sessions",
+		Help:      "Open long-poll map sessions by tailnet; tailnets past the label cap are summed under tailnet=\"other\".",
+	}, []string{"tailnet"})
 )

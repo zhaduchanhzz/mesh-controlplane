@@ -18,6 +18,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tenantlabel"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/zstdframe"
 )
@@ -175,6 +176,10 @@ func (m *mapSession) serveLongPoll() {
 	// Add/Done must precede cleanup: LIFO defers make shutdown's Wait cover Disconnect.
 	m.h.clientStreamsOpen.Add(1)
 	defer m.h.clientStreamsOpen.Done()
+
+	sessions := tailnetMapSessions.WithLabelValues(tenantlabel.Label(m.h.state.TailnetID()))
+	sessions.Inc()
+	defer sessions.Dec()
 
 	// connectGen is set by [state.State.Connect] below and captured by the deferred cleanup closure.
 	// Each Connect acquires one live session in state; the cleanup must release

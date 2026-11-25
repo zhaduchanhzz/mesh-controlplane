@@ -26,6 +26,13 @@ var (
 		Help: "Peer entries in which the incremental adjacency differed from a full build at reconciliation: " +
 			"extra (listed, the full build does not: an isolation fault) or missing.",
 	}, []string{"kind"})
+	// tailnetNetmapDivergence is nodestore_netmap_divergence_total by
+	// tailnet (P08b, R10 of P00d): which tenant an isolation fault is in.
+	tailnetNetmapDivergence = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: prometheusNamespace,
+		Name:      "tailnet_netmap_divergence_total",
+		Help:      "nodestore_netmap_divergence_total by tailnet; tailnets past the label cap are summed under tailnet=\"other\".",
+	}, []string{"tailnet", "kind"})
 	nodeStoreReconcileDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Namespace: prometheusNamespace,
 		Name:      "nodestore_netmap_reconcile_duration_seconds",
@@ -149,6 +156,8 @@ func (s *NodeStore) reconcileSnapshot(snap *Snapshot) ReconcileResult {
 	nodeStoreReconciles.WithLabelValues("diverged").Inc()
 	nodeStoreNetmapDivergence.WithLabelValues("extra").Add(float64(res.Extra))
 	nodeStoreNetmapDivergence.WithLabelValues("missing").Add(float64(res.Missing))
+	tailnetNetmapDivergence.WithLabelValues(s.metricLabel, "extra").Add(float64(res.Extra))
+	tailnetNetmapDivergence.WithLabelValues(s.metricLabel, "missing").Add(float64(res.Missing))
 
 	var entries int64
 	for _, peers := range full {

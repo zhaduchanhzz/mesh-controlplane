@@ -543,16 +543,18 @@ tuning:
   # request is authenticated by an API key bound to one tailnet (P08b). Cluster
   # mode only.
   tenant_api:
-    # Requests per second for the whole process, counted before authentication;
-    # GlobalBurst is its bucket size.
+    # Requests per second for the whole process, counted before the API key is
+    # looked up.
     global_rate: 200
+    # The bucket size of `tuning.tenant_api.global_rate`.
     global_burst: 400
-    # Requests per second per tailnet, all of its keys together; TailnetBurst is
-    # its bucket size.
+    # Requests per second per tailnet, all of its keys together.
     tailnet_rate: 20
+    # The bucket size of `tuning.tenant_api.tailnet_rate`.
     tailnet_burst: 40
-    # Requests per second per API key; KeyBurst is its bucket size.
+    # Requests per second per API key.
     key_rate: 10
+    # The bucket size of `tuning.tenant_api.key_rate`.
     key_burst: 20
   # How many tailnets get a `tailnet` label of their own on the per-tailnet
   # metrics of a cluster process (headscale_tailnet_*, operator metrics listener

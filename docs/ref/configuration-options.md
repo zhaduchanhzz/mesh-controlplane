@@ -4018,26 +4018,26 @@ Limits the request rate of the public /api/v2 of a cluster, where each request i
 - **Default:** `200`
 - **Env:** `HEADSCALE_TUNING_TENANT_API_GLOBAL_RATE`
 
-Requests per second for the whole process, counted before authentication; GlobalBurst is its bucket size.
+Requests per second for the whole process, counted before the API key is looked up.
 
 === "YAML"
 
     ```yaml
     tuning:
       tenant_api:
-        global_rate: 200
+        global_rate: 500
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_TUNING_TENANT_API_GLOBAL_RATE=200
+    export HEADSCALE_TUNING_TENANT_API_GLOBAL_RATE=500
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.tuning.tenant_api.global_rate = 200;
+    services.headscale.settings.tuning.tenant_api.global_rate = 500;
     ```
 
 #### `tuning.tenant_api.global_burst` { #tuning.tenant_api.global_burst data-toc-label="global_burst" }
@@ -4046,24 +4046,26 @@ Requests per second for the whole process, counted before authentication; Global
 - **Default:** `400`
 - **Env:** `HEADSCALE_TUNING_TENANT_API_GLOBAL_BURST`
 
+The bucket size of [`tuning.tenant_api.global_rate`](#tuning.tenant_api.global_rate).
+
 === "YAML"
 
     ```yaml
     tuning:
       tenant_api:
-        global_burst: 400
+        global_burst: 1000
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_TUNING_TENANT_API_GLOBAL_BURST=400
+    export HEADSCALE_TUNING_TENANT_API_GLOBAL_BURST=1000
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.tuning.tenant_api.global_burst = 400;
+    services.headscale.settings.tuning.tenant_api.global_burst = 1000;
     ```
 
 #### `tuning.tenant_api.tailnet_rate` { #tuning.tenant_api.tailnet_rate data-toc-label="tailnet_rate" }
@@ -4072,26 +4074,26 @@ Requests per second for the whole process, counted before authentication; Global
 - **Default:** `20`
 - **Env:** `HEADSCALE_TUNING_TENANT_API_TAILNET_RATE`
 
-Requests per second per tailnet, all of its keys together; TailnetBurst is its bucket size.
+Requests per second per tailnet, all of its keys together.
 
 === "YAML"
 
     ```yaml
     tuning:
       tenant_api:
-        tailnet_rate: 20
+        tailnet_rate: 50
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_TUNING_TENANT_API_TAILNET_RATE=20
+    export HEADSCALE_TUNING_TENANT_API_TAILNET_RATE=50
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.tuning.tenant_api.tailnet_rate = 20;
+    services.headscale.settings.tuning.tenant_api.tailnet_rate = 50;
     ```
 
 #### `tuning.tenant_api.tailnet_burst` { #tuning.tenant_api.tailnet_burst data-toc-label="tailnet_burst" }
@@ -4100,24 +4102,26 @@ Requests per second per tailnet, all of its keys together; TailnetBurst is its b
 - **Default:** `40`
 - **Env:** `HEADSCALE_TUNING_TENANT_API_TAILNET_BURST`
 
+The bucket size of [`tuning.tenant_api.tailnet_rate`](#tuning.tenant_api.tailnet_rate).
+
 === "YAML"
 
     ```yaml
     tuning:
       tenant_api:
-        tailnet_burst: 40
+        tailnet_burst: 100
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_TUNING_TENANT_API_TAILNET_BURST=40
+    export HEADSCALE_TUNING_TENANT_API_TAILNET_BURST=100
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.tuning.tenant_api.tailnet_burst = 40;
+    services.headscale.settings.tuning.tenant_api.tailnet_burst = 100;
     ```
 
 #### `tuning.tenant_api.key_rate` { #tuning.tenant_api.key_rate data-toc-label="key_rate" }
@@ -4126,26 +4130,26 @@ Requests per second per tailnet, all of its keys together; TailnetBurst is its b
 - **Default:** `10`
 - **Env:** `HEADSCALE_TUNING_TENANT_API_KEY_RATE`
 
-Requests per second per API key; KeyBurst is its bucket size.
+Requests per second per API key.
 
 === "YAML"
 
     ```yaml
     tuning:
       tenant_api:
-        key_rate: 10
+        key_rate: 25
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_TUNING_TENANT_API_KEY_RATE=10
+    export HEADSCALE_TUNING_TENANT_API_KEY_RATE=25
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.tuning.tenant_api.key_rate = 10;
+    services.headscale.settings.tuning.tenant_api.key_rate = 25;
     ```
 
 #### `tuning.tenant_api.key_burst` { #tuning.tenant_api.key_burst data-toc-label="key_burst" }
@@ -4154,24 +4158,26 @@ Requests per second per API key; KeyBurst is its bucket size.
 - **Default:** `20`
 - **Env:** `HEADSCALE_TUNING_TENANT_API_KEY_BURST`
 
+The bucket size of [`tuning.tenant_api.key_rate`](#tuning.tenant_api.key_rate).
+
 === "YAML"
 
     ```yaml
     tuning:
       tenant_api:
-        key_burst: 20
+        key_burst: 50
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_TUNING_TENANT_API_KEY_BURST=20
+    export HEADSCALE_TUNING_TENANT_API_KEY_BURST=50
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.tuning.tenant_api.key_burst = 20;
+    services.headscale.settings.tuning.tenant_api.key_burst = 50;
     ```
 
 ### `tuning.tailnet_metric_label_limit` { #tuning.tailnet_metric_label_limit data-toc-label="tailnet_metric_label_limit" }
@@ -4186,19 +4192,19 @@ How many tailnets get a `tailnet` label of their own on the per-tailnet metrics 
 
     ```yaml
     tuning:
-      tailnet_metric_label_limit: 2000
+      tailnet_metric_label_limit: 5000
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_TUNING_TAILNET_METRIC_LABEL_LIMIT=2000
+    export HEADSCALE_TUNING_TAILNET_METRIC_LABEL_LIMIT=5000
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.tuning.tailnet_metric_label_limit = 2000;
+    services.headscale.settings.tuning.tailnet_metric_label_limit = 5000;
     ```
 
 ## Removed keys { #removed-keys }

@@ -158,6 +158,10 @@ type NodeStore struct {
 	counted      int
 	countClosed  bool
 	tailnetGauge prometheus.Gauge
+	// metricLabel is the tailnet label of the per-tailnet metrics
+	// (internal/tenantlabel); set by SetMetricsTailnet before Start, read
+	// by the writer.
+	metricLabel string
 }
 
 func NewNodeStore(allNodes types.Nodes, peersFunc PeersFunc, batchSize int, batchTimeout time.Duration) *NodeStore {
@@ -166,6 +170,7 @@ func NewNodeStore(allNodes types.Nodes, peersFunc PeersFunc, batchSize int, batc
 	snap := snapshotFromNodes(nodes, peersFunc, nil, false, false)
 
 	store := &NodeStore{
+		metricLabel:  tenantlabel.Other,
 		peersFunc:    peersFunc,
 		batchSize:    batchSize,
 		batchTimeout: batchTimeout,
@@ -573,7 +578,8 @@ func (s *NodeStore) SetMetricsTailnet(id string) {
 		return
 	}
 
-	s.tailnetGauge = tailnetNodes.WithLabelValues(tenantlabel.Label(id))
+	s.metricLabel = tenantlabel.Label(id)
+	s.tailnetGauge = tailnetNodes.WithLabelValues(s.metricLabel)
 	s.tailnetGauge.Add(float64(s.counted))
 }
 

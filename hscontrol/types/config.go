@@ -1054,7 +1054,7 @@ type Tuning struct {
 	// their own on the per-tailnet metrics of a cluster process
 	// (headscale_tailnet_*, operator metrics listener only); the others are
 	// summed under tailnet="other". The label is the tailnet ID.
-	TailnetMetricLabelLimit int `example:"2000" koanf:"tailnet_metric_label_limit"`
+	TailnetMetricLabelLimit int `example:"5000" koanf:"tailnet_metric_label_limit"`
 }
 
 // TenantAPIConfig is the token buckets of the public /api/v2 of a cluster
@@ -1063,19 +1063,24 @@ type Tuning struct {
 // a token. Refused requests get 429.
 type TenantAPIConfig struct {
 	// GlobalRate is requests per second for the whole process, counted
-	// before authentication; global_burst is its bucket size.
-	GlobalRate  int `example:"200" koanf:"global_rate"`
-	GlobalBurst int `example:"400" koanf:"global_burst"`
+	// before the API key is looked up.
+	GlobalRate int `example:"500" koanf:"global_rate"`
+
+	// GlobalBurst is the bucket size of `tuning.tenant_api.global_rate`.
+	GlobalBurst int `example:"1000" koanf:"global_burst"`
 
 	// TailnetRate is requests per second per tailnet, all of its keys
-	// together; tailnet_burst is its bucket size.
-	TailnetRate  int `example:"20" koanf:"tailnet_rate"`
-	TailnetBurst int `example:"40" koanf:"tailnet_burst"`
+	// together.
+	TailnetRate int `example:"50" koanf:"tailnet_rate"`
 
-	// KeyRate is requests per second per API key; key_burst is its bucket
-	// size.
-	KeyRate  int `example:"10" koanf:"key_rate"`
-	KeyBurst int `example:"20" koanf:"key_burst"`
+	// TailnetBurst is the bucket size of `tuning.tenant_api.tailnet_rate`.
+	TailnetBurst int `example:"100" koanf:"tailnet_burst"`
+
+	// KeyRate is requests per second per API key.
+	KeyRate int `example:"25" koanf:"key_rate"`
+
+	// KeyBurst is the bucket size of `tuning.tenant_api.key_rate`.
+	KeyBurst int `example:"50" koanf:"key_burst"`
 }
 
 // ClusterLeaseConfig times the cluster lease (P11b). Expiry is decided by
