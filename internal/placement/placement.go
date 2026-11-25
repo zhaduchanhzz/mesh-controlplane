@@ -168,6 +168,11 @@ var (
 	// ErrNoCapacity reports that no ACTIVE cluster of the class can take a
 	// tailnet.
 	ErrNoCapacity = errors.New("no cluster with capacity")
+	// ErrNoLiveLease reports a named cluster (CreateTailnetOn, MoveOwner to
+	// another cluster) with no process holding its lease: nothing would
+	// serve the tailnet. Always returned joined with ErrNoCapacity (P12,
+	// owner decision 2026-11-25).
+	ErrNoLiveLease = errors.New("no process holds the cluster lease")
 	// ErrClusterFull reports that the shared cluster owning the tailnet has
 	// reached its max_devices (P10d). It is returned joined with
 	// ErrQuotaExceeded, so callers that refuse on a quota refuse on it too.

@@ -133,7 +133,7 @@ Kết quả: exit 0 (mc-ci, 2026-11-25).
 - Báo cáo reconcile có R10.
 - Bootstrap trả `MOVING`, sau khi trao tay thì trả URL của đích.
 
-**Lưu ý khi gộp với `feat/P12-cli`:** nhánh đó thêm vào `MoveOwner` các kiểm tra sức chứa và lease của đích. Các kiểm tra này vẫn đúng ở bước yêu cầu, nhưng phải gộp tay vì cùng sửa thân hàm `MoveOwner`. Ngoài ra, `ReassignTailnet` của platform admin vẫn lật thẳng owner; sau khi gộp, CLI `reassign` sẽ đi qua `Registry.MoveOwner`.
+**Gộp với `feat/P12-cli` (2026-11-25, nhánh `feat/P12-cli-merge`):** chỉ xung đột ở doc comment của `MoveOwner`. Thân hàm gộp tự động: các kiểm tra sức chứa và lease của đích nằm ở bước yêu cầu. Test CLI và test placement của nhánh đó được sửa theo ngữ nghĩa yêu cầu chuyển. CLI `reassign` in thêm `moving_to`.
 
 ## Bước 4 — Noise key của cluster trong registry (Q6)
 
@@ -280,7 +280,7 @@ infra/lab/scripts/shard-test.sh -n 6 -tags p05cluster ./hscontrol/servertest/
 
 - **Move gây gián đoạn:** khoảng 2–4 s không cluster nào phục vụ tailnet. Client phải đăng nhập lại ở đích (ADR 0005); P12b sẽ xử lý.
 - **Move có thể kẹt:** nếu nguồn treo nhưng vẫn giữ lease, move bị kẹt. R10 làm lộ trường hợp này; operator dùng `CancelMove`.
-- **`ReassignTailnet` vẫn lật owner thẳng:** CLI `reassign` trên nhánh này chưa đi qua trao tay. `feat/P12-cli` chuyển CLI sang `Registry.MoveOwner`; khi gộp phải xử lý tay xung đột trong `MoveOwner`.
+- **CLI `reassign`** đi qua `Registry.MoveOwner` từ khi gộp `feat/P12-cli`, nên cũng theo cơ chế trao tay. `Platform.ReassignTailnet` (lật thẳng) chỉ còn test dùng.
 - **Không có FK** `tailnets.owner_cluster_id → clusters` (Q10); trường hợp lệch được báo bằng R1.
 - **F02 / P08 (v1.84.3):** có thể một frame dựng khi còn lease được ghi ra muộn sau SIGCONT, do kẽ hở check-then-act ở cấp µs (xem mục E2E). Dữ liệu vẫn bị fence ở DB. Chủ dự án chấp nhận cho P12 (2026-11-25); cần đo chính xác ở P13/P14.
 - **Isolation:** không có trường hợp tenant thấy dữ liệu, peer hay node của tenant khác, và không có owner kép ở dữ liệu. Ngoại lệ duy nhất cần ghi là P08 ở trên.

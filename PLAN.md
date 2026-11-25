@@ -195,10 +195,10 @@ CREATE TABLE clusters (
   id TEXT PRIMARY KEY,
   endpoint_url TEXT NOT NULL UNIQUE,        -- https://cluster-2.cp.gta5web.online:8443
   class TEXT NOT NULL CHECK (class IN ('shared','dedicated')),
-  state TEXT NOT NULL CHECK (state IN ('READY','DRAINING','MAINTENANCE','UNAVAILABLE'))
+  state TEXT NOT NULL DEFAULT 'DISABLED' CHECK (state IN ('ACTIVE','DRAINING','DISABLED'))
 );
 CREATE TABLE cluster_leases (
-  cluster_id TEXT PRIMARY KEY REFERENCES clusters(id),
+  cluster_id TEXT PRIMARY KEY,              -- không FK (P12 Q10)
   holder TEXT NOT NULL,                     -- ID của process (instance)
   epoch BIGINT NOT NULL CHECK (epoch >= 1),
   expires_at TIMESTAMPTZ NOT NULL           -- so với now() của PostgreSQL
@@ -207,7 +207,7 @@ CREATE TABLE tailnets (
   id TEXT PRIMARY KEY,
   slug TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL CHECK (status IN ('PENDING','ACTIVE','SUSPENDED','MOVING','DELETING')),
-  owner_cluster_id TEXT NOT NULL REFERENCES clusters(id),
+  owner_cluster_id TEXT NOT NULL,           -- không FK (P12 Q10): owner chưa đăng ký = R1, GET /v1/reconcile
   owner_epoch BIGINT NOT NULL CHECK (owner_epoch >= 1),
   policy_revision BIGINT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL
