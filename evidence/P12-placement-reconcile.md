@@ -55,25 +55,64 @@ Kết quả: exit 0 (mc-ci, 2026-11-25).
 - Hành vi (fence, chỉ owner nạp tailnet, failover tách biệt giữa cluster) đã có từ P10 và P11b. Bước 3 thêm harness hai cluster ID và test xác nhận; không đổi code sản phẩm.
 - Lần chạy đầu fail ở test failover. Nguyên nhân là test đọc `selfKey` sau `Reconnect`, lúc netmap chưa về; đã sửa trong test.
 
-### R11 — cửa sổ owner kép trong bộ nhớ sau `MoveOwner` (Q7: đo, không đổi cơ chế)
+### R11 — cửa sổ owner kép trong bộ nhớ sau `MoveOwner`
 
-**Cách đo:** sau khi CAS commit, cứ 5 ms kiểm `Runtime(tailnet)` ở cả hai cluster.
+**Đo lần đầu (cơ chế cũ, `d17deba`):** `MoveOwner` lật owner ngay. Hai cluster cùng giữ runtime trong **0–213 ms**; đo 12 lần, trong đó 6 lần có chồng lấn.
+
+**Quyết định Q7 của chủ dự án (2026-11-25):** không chấp nhận cửa sổ này; phải loại bỏ trong P12. Cơ chế được chọn là trao tay (ADR 0010, đã duyệt).
+
+**Cơ chế trao tay:**
+1. `MoveOwner` sang cluster khác chỉ ghi yêu cầu `moving_to`.
+2. Nguồn retire runtime của tailnet.
+3. Sau khi runtime đã ngừng, `HandOver` lật owner, `epoch + 1`, dưới lease của nguồn.
+4. Nếu nguồn chết (không còn lease sống), đích tự lật (`TakeOver`).
+5. Đích chỉ nạp khi đã là owner.
+
+| Commit | Nội dung | Kết quả |
+|---|---|---|
+| `d769cfd` | RED: lấy mẫu 5 ms, cấm bất kỳ mẫu nào thấy cả hai cluster cùng giữ runtime | Fail: 3/6 lần move có 13–14 mẫu chồng lấn |
+| `298e5f0` | RED cho ADR 0010 (DB, placement, API, bootstrap, servertest) | 11 test fail |
+| `c42c67a` | GREEN | Xem bảng dưới |
+
+**Số đo sau khi sửa** (`TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11`, 6 lần move):
 
 | Đại lượng | Giá trị |
 |---|---|
-| Cluster đích nạp xong | 1,77–2,01 s sau CAS |
-| Cluster nguồn retire xong | 1,72–1,99 s sau CAS |
-| Cửa sổ cả hai cùng giữ runtime | lần 1: 0 / 67 / 68 ms (min / median / max, n = 6); lần 2 (race): 0 / 207 / 213 ms (n = 6) |
+| Cửa sổ chồng lấn | **0 ms** ở cả 6 lần; 0 mẫu chồng lấn |
+| Nguồn retire | 1,89–1,99 s sau khi ghi yêu cầu |
+| Đích nạp | 1,96–3,93 s sau khi ghi yêu cầu |
+| Ghi qua runtime cũ của nguồn sau khi lật | `ErrFenced`, 6/6 |
+| `owner_epoch` | Tăng đúng 1 mỗi lần, từ 3 lên 8 |
+| `moving_to` sau khi lật | Rỗng |
 
-**Diễn giải:**
-- Hai cluster reconcile bằng ticker riêng, mỗi 2 s, lệch pha nhau.
-- Cửa sổ tối đa theo thiết kế ≈ một chu kỳ (2 s) cộng thời gian nạp tailnet. Test chặn ở mức ≤ 3 s.
-- Trong cửa sổ đó, ghi của nguồn đã bị fence ở DB, nên dữ liệu không có owner kép.
-- Thứ còn lộ là: nguồn có thể vẫn gửi MapResponse từ bộ nhớ, cho tới khi retire đóng các stream.
-- Chủ dự án quyết định có chấp nhận mức này hay không (Q7). Phương án rút ngắn, chẳng hạn đích chỉ nạp sau khi nguồn đã retire, thuộc P12b.
+Đích nạp chậm hơn trước (~2–4 s so với ~2 s): đó là chi phí đã ghi trong ADR. Trong khoảng này không cluster nào phục vụ tailnet, và bootstrap trả `MOVING`.
+
+**Nguồn chết** (`TestTwoClustersMoveFromDeadClusterIsTakenOver`):
+- Dừng process duy nhất của c1, rồi yêu cầu chuyển tailnet sang c2.
+- c2 tự nhận tay (`TakeOver`), nạp tailnet và cho client mới đăng ký.
+
+**Unit test (SQLite + PostgreSQL):**
+- `HandOver`:
+  - không có yêu cầu thì từ chối;
+  - holder lease sai thì từ chối;
+  - epoch sai thì từ chối;
+  - chỉ thành công một lần.
+- `TakeOver`:
+  - lease của nguồn còn sống thì từ chối;
+  - cluster thứ ba không nhận được;
+  - 8 lần `TakeOver` đồng thời chỉ 1 lần thắng.
+- `MoveOwner` / `CancelMove`:
+  - mỗi lúc chỉ một yêu cầu chờ; yêu cầu thứ hai bị `ErrConflict`;
+  - `CancelMove` không đổi owner hay epoch;
+  - chuyển trong cùng cluster tăng epoch ngay.
+- Không xóa được cluster đang là đích của một yêu cầu chuyển.
+- Báo cáo reconcile có R10.
+- Bootstrap trả `MOVING`, sau khi trao tay thì trả URL của đích.
+
+**Lưu ý khi gộp với `feat/P12-cli`:** nhánh đó thêm vào `MoveOwner` các kiểm tra sức chứa và lease của đích. Các kiểm tra này vẫn đúng ở bước yêu cầu, nhưng phải gộp tay vì cùng sửa thân hàm `MoveOwner`. Ngoài ra, `ReassignTailnet` của platform admin vẫn lật thẳng owner; sau khi gộp, CLI `reassign` sẽ đi qua `Registry.MoveOwner`.
 
 ## Còn lại
 
 - Bước 4: cluster tự ghi và đối chiếu Noise key khi lấy lease (Q6).
-- Bước 5: CLI đi qua Registry (Q5) và sửa docs Q10. Đang làm song song trên nhánh `feat/P12-cli`.
+- Bước 5: CLI đi qua Registry (Q5) và sửa docs Q10. Đã xong trên nhánh `feat/P12-cli`; chủ dự án yêu cầu giữ nhánh riêng.
 - Bước 7: E2E lab và evidence cuối.

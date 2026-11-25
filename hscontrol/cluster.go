@@ -533,6 +533,10 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 	c.order = removeID(c.order, rt.id)
 
 	stopped := make(chan struct{})
+	if c.retiring == nil {
+		c.retiring = make(map[tailnet.ID]chan struct{})
+	}
+
 	c.retiring[rt.id] = stopped
 	c.mu.Unlock()
 
@@ -587,6 +591,10 @@ func (c *Cluster) handOverRequested() {
 			c.mu.Unlock()
 
 			continue
+		}
+
+		if c.handingOver == nil {
+			c.handingOver = make(map[tailnet.ID]bool)
 		}
 
 		c.handingOver[id] = true
