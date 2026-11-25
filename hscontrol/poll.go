@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
@@ -18,6 +19,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tenantlabel"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/zstdframe"
 )
@@ -57,6 +59,11 @@ type mapSession struct {
 
 	node types.NodeView
 	w    http.ResponseWriter
+
+	// tailnetSent counts this session's frames on
+	// headscale_tailnet_mapresponses_sent_total (P08b), by type; nil until
+	// the first write.
+	tailnetSent map[string]prometheus.Counter
 
 	log zerolog.Logger
 }
@@ -175,6 +182,10 @@ func (m *mapSession) serveLongPoll() {
 	// Add/Done must precede cleanup: LIFO defers make shutdown's Wait cover Disconnect.
 	m.h.clientStreamsOpen.Add(1)
 	defer m.h.clientStreamsOpen.Done()
+
+	sessions := tailnetMapSessions.WithLabelValues(tenantlabel.Label(m.h.state.TailnetID()))
+	sessions.Inc()
+	defer sessions.Dec()
 
 	// connectGen is set by [state.State.Connect] below and captured by the deferred cleanup closure.
 	// Each Connect acquires one live session in state; the cleanup must release
@@ -420,6 +431,16 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 	}
 
 	mapResponseSent.WithLabelValues("ok", sentType).Inc()
+
+	if m.tailnetSent == nil {
+		label := tenantlabel.Label(m.h.state.TailnetID())
+		m.tailnetSent = map[string]prometheus.Counter{
+			"update":    tailnetMapSent.WithLabelValues(label, "update"),
+			"keepalive": tailnetMapSent.WithLabelValues(label, "keepalive"),
+		}
+	}
+
+	m.tailnetSent[sentType].Inc()
 
 	m.log.Trace().
 		Caller().

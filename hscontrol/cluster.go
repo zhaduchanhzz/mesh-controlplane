@@ -29,6 +29,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tenantlabel"
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 	"tailscale.com/tailcfg"
@@ -123,6 +124,9 @@ type Cluster struct {
 	lease   *lease.Manager
 	leaseMu sync.Mutex
 	ready   atomic.Bool
+
+	// api is the public /api/v2 (P08b): rate limits by key and tailnet.
+	api *clusterAPI
 }
 
 // tenantRuntime is one loaded tailnet: its runtime, the ownership epoch it
@@ -142,6 +146,9 @@ type tenantRuntime struct {
 
 	cancel context.CancelFunc // stops its scheduled tasks
 	stop   func()             // from startRuntime
+
+	// api is the runtime's public v2 API (P08b), built on first use.
+	api runtimeAPI
 }
 
 // NewCluster opens the platform database and builds a runtime for every
@@ -209,6 +216,10 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		runtimes: make(map[tailnet.ID]*tenantRuntime),
 		lease:    mgr,
 	}
+	c.api = newClusterAPI(c)
+
+	// P08b: per-tailnet metric labels are capped (owner decision Q5).
+	tenantlabel.SetLimit(cfg.Tuning.TailnetMetricLabelLimit)
 
 	return c, nil
 }
@@ -988,6 +999,10 @@ func (c *Cluster) HTTPHandler() http.Handler {
 	r.Get("/robots.txt", c.front.RobotsHandler)
 	r.Head("/machine/ping-response", c.PingResponseHandler)
 
+	// P08b: the tenant API, keyed by a platform-issued API key bound to
+	// one tailnet. No /api/v1.
+	r.Handle("/api/v2/*", http.HandlerFunc(c.APIv2Handler))
+
 	r.Get("/register/{auth_id}", clusterRegistrationDisabled)
 	r.Get("/auth/{auth_id}", clusterRegistrationDisabled)
 
@@ -1058,6 +1073,21 @@ func (c *Cluster) Serve(ctx context.Context) error {
 		log.Info().Msgf("cluster metrics (operators only) on %s", mln.Addr())
 	}
 
+	// P08b: live operator administration, on the unix socket only.
+	var adminSrv *http.Server
+
+	if c.cfg.UnixSocket != "" {
+		aln, err := listenAdminSocket(c.cfg)
+		if err != nil {
+			return err
+		}
+
+		adminSrv = &http.Server{Handler: c.AdminHandler(), ReadTimeout: types.HTTPTimeout}
+
+		errorGroup.Go(serveHTTP(adminSrv, aln))
+		log.Info().Msgf("cluster admin API (operators only) on unix socket %s", c.cfg.UnixSocket)
+	}
+
 	log.Info().
 		Str("cluster", c.platform.ClusterID()).
 		Str("holder", c.lease.Holder()).
@@ -1099,6 +1129,12 @@ func (c *Cluster) Serve(ctx context.Context) error {
 		if metricsSrv != nil {
 			if err := metricsSrv.Shutdown(shutdownCtx); err != nil { //nolint:noinlineerr
 				log.Error().Err(err).Msg("shutting down cluster metrics server")
+			}
+		}
+
+		if adminSrv != nil {
+			if err := adminSrv.Shutdown(shutdownCtx); err != nil { //nolint:noinlineerr
+				log.Error().Err(err).Msg("shutting down cluster admin socket")
 			}
 		}
 

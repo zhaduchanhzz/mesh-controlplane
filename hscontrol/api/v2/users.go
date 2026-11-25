@@ -92,7 +92,7 @@ func registerUsers(api huma.API, b Backend) {
 		Security:    security,
 		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
 	}, scope.UsersRead), func(ctx context.Context, in *listUsersInput) (*listUsersOutput, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}

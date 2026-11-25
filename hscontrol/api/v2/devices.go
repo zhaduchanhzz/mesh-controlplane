@@ -241,7 +241,7 @@ func registerDevices(api huma.API, b Backend) {
 		Security:    security,
 		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
 	}, scope.DevicesCoreRead), func(ctx context.Context, in *listDevicesInput) (*listDevicesOutput, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}

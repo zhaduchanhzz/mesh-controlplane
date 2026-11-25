@@ -3417,6 +3417,14 @@ Holds performance settings that rarely need changing.
         renew_interval: 3s
         acquire_interval: 1s
         safety_margin: 2s
+      tenant_api:
+        global_rate: 200
+        global_burst: 400
+        tailnet_rate: 20
+        tailnet_burst: 40
+        key_rate: 10
+        key_burst: 20
+      tailnet_metric_label_limit: 2000
     ```
 
 ### `tuning.batch_change_delay` { #tuning.batch_change_delay data-toc-label="batch_change_delay" }
@@ -3985,6 +3993,218 @@ How long before the TTL the active process stops serving when it could not renew
 
     ```nix
     services.headscale.settings.tuning.cluster_lease.safety_margin = "5s";
+    ```
+
+### `tuning.tenant_api` { #tuning.tenant_api data-toc-label="tenant_api" }
+
+Limits the request rate of the public /api/v2 of a cluster, where each request is authenticated by an API key bound to one tailnet (P08b). Cluster mode only.
+
+??? example "All `tuning.tenant_api` keys and defaults"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        global_rate: 200
+        global_burst: 400
+        tailnet_rate: 20
+        tailnet_burst: 40
+        key_rate: 10
+        key_burst: 20
+    ```
+
+#### `tuning.tenant_api.global_rate` { #tuning.tenant_api.global_rate data-toc-label="global_rate" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `200`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_GLOBAL_RATE`
+
+Requests per second for the whole process, counted before the API key is looked up.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        global_rate: 500
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_GLOBAL_RATE=500
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.global_rate = 500;
+    ```
+
+#### `tuning.tenant_api.global_burst` { #tuning.tenant_api.global_burst data-toc-label="global_burst" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `400`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_GLOBAL_BURST`
+
+The bucket size of [`tuning.tenant_api.global_rate`](#tuning.tenant_api.global_rate).
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        global_burst: 1000
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_GLOBAL_BURST=1000
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.global_burst = 1000;
+    ```
+
+#### `tuning.tenant_api.tailnet_rate` { #tuning.tenant_api.tailnet_rate data-toc-label="tailnet_rate" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `20`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_TAILNET_RATE`
+
+Requests per second per tailnet, all of its keys together.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        tailnet_rate: 50
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_TAILNET_RATE=50
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.tailnet_rate = 50;
+    ```
+
+#### `tuning.tenant_api.tailnet_burst` { #tuning.tenant_api.tailnet_burst data-toc-label="tailnet_burst" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `40`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_TAILNET_BURST`
+
+The bucket size of [`tuning.tenant_api.tailnet_rate`](#tuning.tenant_api.tailnet_rate).
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        tailnet_burst: 100
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_TAILNET_BURST=100
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.tailnet_burst = 100;
+    ```
+
+#### `tuning.tenant_api.key_rate` { #tuning.tenant_api.key_rate data-toc-label="key_rate" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `10`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_KEY_RATE`
+
+Requests per second per API key.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        key_rate: 25
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_KEY_RATE=25
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.key_rate = 25;
+    ```
+
+#### `tuning.tenant_api.key_burst` { #tuning.tenant_api.key_burst data-toc-label="key_burst" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `20`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_KEY_BURST`
+
+The bucket size of [`tuning.tenant_api.key_rate`](#tuning.tenant_api.key_rate).
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        key_burst: 50
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_KEY_BURST=50
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.key_burst = 50;
+    ```
+
+### `tuning.tailnet_metric_label_limit` { #tuning.tailnet_metric_label_limit data-toc-label="tailnet_metric_label_limit" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `2000`
+- **Env:** `HEADSCALE_TUNING_TAILNET_METRIC_LABEL_LIMIT`
+
+How many tailnets get a `tailnet` label of their own on the per-tailnet metrics of a cluster process (headscale_tailnet_*, operator metrics listener only); the others are summed under tailnet="other". The label is the tailnet ID.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tailnet_metric_label_limit: 5000
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TAILNET_METRIC_LABEL_LIMIT=5000
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tailnet_metric_label_limit = 5000;
     ```
 
 ## Removed keys { #removed-keys }

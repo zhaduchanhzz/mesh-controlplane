@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -346,4 +347,76 @@ func TestSpec(t *testing.T) {
 
 	_, err = NewAuthorizer(nil)
 	require.Error(t, err)
+}
+
+// P08b: tenant API keys through the operator API: minted once (a replay
+// does not show the key again), listed without secrets, revoked; every call
+// audited under the certificate identity.
+func TestOperatorAPIKeys(t *testing.T) {
+	e := newEnv(t)
+	c := e.client(e.opCA.issue(t, "alice", x509.ExtKeyUsageClientAuth, alice))
+
+	cluster := map[string]any{"id": "c1", "endpoint_url": "https://c1.cp.example.test:8443", "class": "shared", "state": "ACTIVE", "max_devices": 100}
+	code, _ := e.do(t, c, call{method: http.MethodPost, path: "/v1/clusters", key: "c1", body: cluster})
+	require.Equal(t, http.StatusCreated, code)
+
+	code, tn := e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}})
+	require.Equal(t, http.StatusCreated, code)
+	id := tn["id"].(string)
+
+	mint := call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/apikeys", key: "k1", body: map[string]any{"expires_in_seconds": 3600}}
+
+	code, _ = e.do(t, c, call{method: http.MethodPost, path: mint.path, body: mint.body})
+	assert.Equal(t, http.StatusUnprocessableEntity, code, "Idempotency-Key is required")
+
+	code, _ = e.do(t, c, call{method: http.MethodPost, path: mint.path, key: "k0", body: map[string]any{"expires_in_seconds": 400 * 24 * 3600}})
+	assert.Equal(t, http.StatusUnprocessableEntity, code, "lifetime above 365 days")
+
+	code, k := e.do(t, c, mint)
+	require.Equal(t, http.StatusCreated, code, k)
+	key, _ := k["key"].(string)
+	require.NotEmpty(t, key)
+	assert.Equal(t, id, k["tailnet_id"])
+	assert.Nil(t, k["replayed"])
+
+	code, again := e.do(t, c, mint)
+	require.Equal(t, http.StatusCreated, code)
+	assert.Nil(t, again["key"], "the key is shown once")
+	assert.Equal(t, true, again["replayed"])
+	assert.Equal(t, k["id"], again["id"])
+
+	code, list := e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/" + id + "/apikeys"})
+	require.Equal(t, http.StatusOK, code)
+	require.Len(t, list["keys"], 1)
+	b, _ := json.Marshal(list)
+	assert.NotContains(t, string(b), key[len(key)-10:], "listing shows no secret")
+
+	keyID := int(k["id"].(float64))
+	revoke := call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/apikeys/" + strconv.Itoa(keyID) + "/revoke", key: "r1"}
+	code, rev := e.do(t, c, revoke)
+	require.Equal(t, http.StatusOK, code, rev)
+	assert.NotNil(t, rev["revoked"])
+
+	code, _ = e.do(t, c, call{method: http.MethodPost, path: revoke.path, key: "r2"})
+	assert.Equal(t, http.StatusNotFound, code, "revoked twice")
+
+	code, _ = e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/not-a-uuid/apikeys"})
+	assert.Equal(t, http.StatusNotFound, code)
+
+	code, a := e.do(t, c, call{method: http.MethodGet, path: "/v1/audit?limit=100"})
+	require.Equal(t, http.StatusOK, code)
+
+	outcomes := map[string]int{}
+
+	for _, en := range a["entries"].([]any) {
+		m := en.(map[string]any)
+		outcomes[m["action"].(string)+"/"+m["outcome"].(string)]++
+		ab, _ := json.Marshal(m)
+		assert.NotContains(t, string(ab), key[len(key)-10:], "audit shows no secret")
+	}
+
+	assert.Equal(t, 1, outcomes["CreateAPIKey/ok"])
+	assert.Equal(t, 1, outcomes["CreateAPIKey/replay"])
+	assert.Equal(t, 1, outcomes["RevokeAPIKey/ok"])
+	assert.Equal(t, 1, outcomes["RevokeAPIKey/error"])
 }

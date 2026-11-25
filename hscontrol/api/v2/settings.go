@@ -67,7 +67,7 @@ func registerSettings(api huma.API, b Backend) {
 		Security:    security,
 		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
 	}, scope.FeatureSettingsRead), func(ctx context.Context, in *getSettingsInput) (*settingsOutput, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +96,7 @@ func registerSettings(api huma.API, b Backend) {
 		SkipValidateBody: true,
 		Errors:           []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusNotImplemented},
 	}, scope.FeatureSettings), func(ctx context.Context, in *patchSettingsInput) (*settingsOutput, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}

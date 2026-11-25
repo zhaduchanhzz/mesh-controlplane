@@ -151,13 +151,17 @@ func registerKeys(api huma.API, b Backend) {
 			http.StatusNotFound,
 		},
 	}, func(ctx context.Context, in *createKeyInput) (*keyOutput, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}
 
 		switch in.Body.KeyType {
 		case keyTypeClient:
+			if b.Tailnet != "" {
+				return nil, huma.Error403Forbidden(errClusterForbidden)
+			}
+
 			return createOAuthClient(ctx, b, in.Body)
 		case "", keyTypeAuth:
 			return createAuthKey(ctx, b, in.Body)
@@ -199,7 +203,7 @@ func registerKeys(api huma.API, b Backend) {
 			http.StatusNotFound,
 		},
 	}, func(ctx context.Context, in *keyByIDInput) (*keyOutput, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}
@@ -244,14 +248,15 @@ func registerKeys(api huma.API, b Backend) {
 			http.StatusNotFound,
 		},
 	}, func(ctx context.Context, in *keyByIDInput) (*deleteKeyOutput, error) {
-		err := requireDefaultTailnet(in.Tailnet)
+		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
 		}
 
 		// Gated on oauth_keys:read for the same no-existence-oracle reason as
 		// getKey; a reader that may not write is then refused (probe-U U5k).
-		if requireKeyScope(ctx, scope.OAuthKeysRead) == nil {
+		// Cluster mode has no tenant OAuth clients (P08b).
+		if b.Tailnet == "" && requireKeyScope(ctx, scope.OAuthKeysRead) == nil {
 			_, err = b.State.GetOAuthClientByClientID(in.KeyID)
 			if err == nil {
 				err = requireKeyScope(ctx, scope.OAuthKeys)
@@ -291,7 +296,7 @@ func registerKeys(api huma.API, b Backend) {
 }
 
 func listKeys(ctx context.Context, b Backend, in *listKeysInput) (*listKeysOutput, error) {
-	err := requireDefaultTailnet(in.Tailnet)
+	err := requireTailnet(b, in.Tailnet)
 	if err != nil {
 		return nil, err
 	}

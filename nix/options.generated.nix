@@ -1199,5 +1199,63 @@ in
         example = "5s";
       };
     };
+    tenant_api = {
+      global_rate = lib.mkOption {
+        type = lib.types.int;
+        default = 200;
+        description = ''
+          Requests per second for the whole process, counted before the API key is looked up.
+        '';
+        example = 500;
+      };
+      global_burst = lib.mkOption {
+        type = lib.types.int;
+        default = 400;
+        description = ''
+          The bucket size of `tuning.tenant_api.global_rate`.
+        '';
+        example = 1000;
+      };
+      tailnet_rate = lib.mkOption {
+        type = lib.types.int;
+        default = 20;
+        description = ''
+          Requests per second per tailnet, all of its keys together.
+        '';
+        example = 50;
+      };
+      tailnet_burst = lib.mkOption {
+        type = lib.types.int;
+        default = 40;
+        description = ''
+          The bucket size of `tuning.tenant_api.tailnet_rate`.
+        '';
+        example = 100;
+      };
+      key_rate = lib.mkOption {
+        type = lib.types.int;
+        default = 10;
+        description = ''
+          Requests per second per API key.
+        '';
+        example = 25;
+      };
+      key_burst = lib.mkOption {
+        type = lib.types.int;
+        default = 20;
+        description = ''
+          The bucket size of `tuning.tenant_api.key_rate`.
+        '';
+        example = 50;
+      };
+    };
+    tailnet_metric_label_limit = lib.mkOption {
+      type = lib.types.int;
+      default = 2000;
+      description = ''
+        How many tailnets get a `tailnet` label of their own on the per-tailnet metrics of a cluster process (headscale_tailnet_*, operator metrics listener only); the others are summed under tailnet="other". The label is the tailnet ID.
+      '';
+      example = 5000;
+    };
   };
 }

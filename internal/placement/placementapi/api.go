@@ -176,7 +176,34 @@ type (
 	auditIn struct {
 		Limit int `query:"limit" minimum:"1" maximum:"1000" default:"100"`
 	}
-	auditOut struct {
+	createAPIKeyBody struct {
+		ExpiresInSeconds int64  `json:"expires_in_seconds" minimum:"1" maximum:"31536000" doc:"lifetime of the key, at most 365 days"`
+		User             string `json:"user,omitempty" maxLength:"256" required:"false" doc:"user of the tailnet the key acts as; must exist"`
+	}
+	createAPIKeyIn struct {
+		ID             string `path:"id" maxLength:"128"`
+		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+		Body           createAPIKeyBody
+	}
+	apiKeyCreated struct {
+		placement.APIKeyInfo
+
+		Key      string `json:"key,omitempty" doc:"the API key; shown only by the call that created it"`
+		Replayed bool   `json:"replayed,omitempty" doc:"an idempotent replay: the key was shown by the first call and cannot be shown again"`
+	}
+	apiKeyCreatedOut struct{ Body apiKeyCreated }
+	apiKeysOut       struct {
+		Body struct {
+			Keys []placement.APIKeyInfo `json:"keys"`
+		}
+	}
+	revokeAPIKeyIn struct {
+		ID             string `path:"id" maxLength:"128"`
+		KeyID          uint64 `path:"key_id" minimum:"1"`
+		IdempotencyKey string `header:"Idempotency-Key" required:"true" minLength:"1" maxLength:"200"`
+	}
+	apiKeyOut struct{ Body placement.APIKeyInfo }
+	auditOut  struct {
 		Body struct {
 			Entries []placement.AuditEntry `json:"entries"`
 		}
@@ -212,6 +239,12 @@ func register(api huma.API, h *handlers) {
 		Summary: "Compare-and-swap the owner cluster; owner_epoch + 1"}, h.moveOwner)
 	huma.Register(api, huma.Operation{OperationID: "getTailnetQuota", Method: http.MethodGet, Path: "/v1/tailnets/{id}/quota", Tags: tag,
 		Summary: "Enrollment quota decision of a tailnet"}, h.quota)
+	huma.Register(api, huma.Operation{OperationID: "createTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys", Tags: tag,
+		Summary: "Mint an API key bound to the tailnet (tenant /api/v2); the key is shown once", DefaultStatus: http.StatusCreated}, h.createAPIKey)
+	huma.Register(api, huma.Operation{OperationID: "listTailnetAPIKeys", Method: http.MethodGet, Path: "/v1/tailnets/{id}/apikeys", Tags: tag,
+		Summary: "List the API keys of a tailnet (no secrets)"}, h.listAPIKeys)
+	huma.Register(api, huma.Operation{OperationID: "revokeTailnetAPIKey", Method: http.MethodPost, Path: "/v1/tailnets/{id}/apikeys/{key_id}/revoke", Tags: tag,
+		Summary: "Revoke an API key of the tailnet"}, h.revokeAPIKey)
 	huma.Register(api, huma.Operation{OperationID: "listAudit", Method: http.MethodGet, Path: "/v1/audit", Tags: tag,
 		Summary: "Newest operator audit entries"}, h.audit)
 }
@@ -486,4 +519,48 @@ func (h *handlers) audit(ctx context.Context, in *auditIn) (*auditOut, error) {
 	out.Body.Entries = es
 
 	return out, nil
+}
+
+func (h *handlers) createAPIKey(ctx context.Context, in *createAPIKeyIn) (*apiKeyCreatedOut, error) {
+	o, err := op(ctx, "createTailnetAPIKey", in.IdempotencyKey, in.ID, in.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	info, key, err := h.reg.CreateAPIKey(ctx, o, in.ID, time.Duration(in.Body.ExpiresInSeconds)*time.Second, in.Body.User)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	return &apiKeyCreatedOut{Body: apiKeyCreated{APIKeyInfo: info, Key: key, Replayed: key == ""}}, nil
+}
+
+func (h *handlers) listAPIKeys(ctx context.Context, in *idPath) (*apiKeysOut, error) {
+	if err := readGuard(ctx); err != nil { //nolint:noinlineerr
+		return nil, err
+	}
+
+	keys, err := h.reg.ListAPIKeys(ctx, in.ID)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	out := &apiKeysOut{}
+	out.Body.Keys = keys
+
+	return out, nil
+}
+
+func (h *handlers) revokeAPIKey(ctx context.Context, in *revokeAPIKeyIn) (*apiKeyOut, error) {
+	o, err := op(ctx, "revokeTailnetAPIKey", in.IdempotencyKey, in.ID, in.KeyID)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := h.reg.RevokeAPIKey(ctx, o, in.ID, in.KeyID)
+	if err != nil {
+		return nil, apiError(err)
+	}
+
+	return &apiKeyOut{Body: info}, nil
 }

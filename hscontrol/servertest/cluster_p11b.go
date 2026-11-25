@@ -4,6 +4,7 @@ package servertest
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -25,6 +26,8 @@ type ClusterProcess struct {
 	Cluster *hscontrol.Cluster
 	// Addr is the process's own listener (not the cluster URL).
 	Addr string
+	// AdminSocket is the process's admin unix socket (P08b).
+	AdminSocket string
 
 	cancel context.CancelFunc
 	done   chan error
@@ -129,6 +132,11 @@ func (tc *TestCluster) startProcess(tb testing.TB, addr string) *ClusterProcess 
 
 	cfg := *tc.cfg
 	cfg.Addr = cfgListenAddr(addr)
+	// P08b: each process has its own admin socket (they would share a
+	// host's path only if they shared the host).
+	if len(tc.procs) > 0 && cfg.UnixSocket != "" {
+		cfg.UnixSocket = fmt.Sprintf("%s.%d", cfg.UnixSocket, len(tc.procs))
+	}
 
 	c, err := hscontrol.NewCluster(&cfg)
 	if err != nil {
@@ -136,7 +144,7 @@ func (tc *TestCluster) startProcess(tb testing.TB, addr string) *ClusterProcess 
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	p := &ClusterProcess{Cluster: c, Addr: addr, cancel: cancel, done: make(chan error, 1)}
+	p := &ClusterProcess{Cluster: c, Addr: addr, AdminSocket: cfg.UnixSocket, cancel: cancel, done: make(chan error, 1)}
 
 	go func() { p.done <- c.Serve(ctx) }()
 
