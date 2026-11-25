@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -252,8 +253,10 @@ func (r *Registry) ListClusters(ctx context.Context) ([]ClusterUsage, error) {
 }
 
 // PlaceTailnet returns the cluster a new tailnet of class would get now:
-// an ACTIVE cluster of the class with room, the least loaded first
-// (devices / max_devices), then by id. A dedicated cluster has room only
+// an ACTIVE cluster of the class with room and a process holding a live
+// cluster lease (P12, owner decision Q2), the least loaded first
+// (devices / max_devices), then the fewest live tailnets (P12, Q1: new,
+// empty tailnets spread), then by id. A dedicated cluster has room only
 // while it owns no live tailnet. CreateTailnet makes the same choice under
 // lock, in its own transaction.
 func (r *Registry) PlaceTailnet(ctx context.Context, class Class) (Cluster, error) {
@@ -289,9 +292,20 @@ func place(db *gorm.DB, class Class, lock bool) (Cluster, error) {
 		return Cluster{}, err
 	}
 
+	live, err := liveLeases(db)
+	if err != nil {
+		return Cluster{}, err
+	}
+
 	cands := make([]ClusterUsage, 0, len(cs))
 
 	for _, c := range cs {
+		// No process serves the cluster (never started, stopped, lost
+		// its lease): a tailnet placed there would not be served.
+		if !live[c.ID] {
+			continue
+		}
+
 		u := usage[c.ID]
 		if class == ClassDedicated && u.Tailnets > 0 {
 			continue
@@ -316,6 +330,10 @@ func place(db *gorm.DB, class Class, lock bool) (Cluster, error) {
 		case l < rr:
 			return -1
 		case l > rr:
+			return 1
+		case a.Tailnets < b.Tailnets:
+			return -1
+		case a.Tailnets > b.Tailnets:
 			return 1
 		case a.ID < b.ID:
 			return -1
@@ -375,6 +393,30 @@ type usageRow struct {
 // clusterUsage counts, per owning cluster, live tailnets and their live
 // devices. Raw on purpose: nodes is a tenant table and this is the one
 // cross-tenant read placement makes; it returns counts only.
+// liveLeases returns the clusters whose cluster_leases row has not expired
+// by the database clock (P11b): a process of the cluster holds its lease.
+// A read only; placement never takes or changes a lease.
+func liveLeases(db *gorm.DB) (map[string]bool, error) {
+	now := lease.SQLiteNow
+	if isPostgres(db) {
+		now = lease.PostgresNow
+	}
+
+	var ids []string
+
+	err := db.Raw(`SELECT cluster_id FROM cluster_leases WHERE expires_at > ` + now).Scan(&ids).Error
+	if err != nil {
+		return nil, fmt.Errorf("reading cluster leases: %w", err)
+	}
+
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
+	}
+
+	return out, nil
+}
+
 func clusterUsage(db *gorm.DB) (map[string]usageRow, error) {
 	var rows []usageRow
 

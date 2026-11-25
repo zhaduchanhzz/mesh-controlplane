@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
@@ -120,6 +122,10 @@ func TestBootstrapStoreFollowsOwner(t *testing.T) {
 					ID: c.id, EndpointURL: c.url, Class: placement.ClassShared,
 					State: placement.ClusterActive, MaxDevices: 100,
 				})
+				require.NoError(t, err)
+
+				// Placement chooses only clusters with a live lease (P12 Q2).
+				_, err = lease.NewStore(p.RegistryDB()).Acquire(ctx, c.id, "test-"+c.id, time.Hour)
 				require.NoError(t, err)
 			}
 

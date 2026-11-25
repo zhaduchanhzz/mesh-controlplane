@@ -2,6 +2,7 @@ package placementapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 )
 
@@ -94,6 +96,16 @@ type env struct {
 	rootCAs *x509.CertPool
 	opCA    *ca
 	reg     *placement.Registry
+	leases  *lease.Store
+}
+
+// live takes cluster id's lease as its running process would: placement
+// only chooses clusters with a live lease (P12, owner decision Q2).
+func (e *env) live(t *testing.T, id string) {
+	t.Helper()
+
+	_, err := e.leases.Acquire(context.Background(), id, "test-"+id, time.Hour)
+	require.NoError(t, err)
 }
 
 func newEnv(t *testing.T) *env {
@@ -132,7 +144,7 @@ func newEnv(t *testing.T) *env {
 	roots := x509.NewCertPool()
 	roots.AddCert(serverCA.cert)
 
-	return &env{srv: srv, rootCAs: roots, opCA: opCA, reg: reg}
+	return &env{srv: srv, rootCAs: roots, opCA: opCA, reg: reg, leases: lease.NewStore(p.RegistryDB())}
 }
 
 func (e *env) client(certs ...tls.Certificate) *http.Client {
@@ -258,6 +270,8 @@ func TestOperatorFlow(t *testing.T) {
 	cluster2 := map[string]any{"id": "c2", "endpoint_url": "https://c2.cp.example.test:8443", "class": "shared", "state": "ACTIVE", "max_devices": 100}
 	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/clusters", key: "c2", body: cluster2})
 	require.Equal(t, http.StatusCreated, code)
+	e.live(t, "c1")
+	e.live(t, "c2")
 
 	create := call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}}
 	code, tn := e.do(t, c, create)
@@ -359,6 +373,7 @@ func TestOperatorAPIKeys(t *testing.T) {
 	cluster := map[string]any{"id": "c1", "endpoint_url": "https://c1.cp.example.test:8443", "class": "shared", "state": "ACTIVE", "max_devices": 100}
 	code, _ := e.do(t, c, call{method: http.MethodPost, path: "/v1/clusters", key: "c1", body: cluster})
 	require.Equal(t, http.StatusCreated, code)
+	e.live(t, "c1")
 
 	code, tn := e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}})
 	require.Equal(t, http.StatusCreated, code)

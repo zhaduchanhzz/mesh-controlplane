@@ -111,6 +111,10 @@ func addCluster(t *testing.T, r *Registry, id string, class Class, state Cluster
 	})
 	require.NoError(t, err)
 
+	// A process of the cluster holds its lease (P12: placement skips
+	// clusters without one).
+	setLease(t, r.db, id, true)
+
 	return c
 }
 
