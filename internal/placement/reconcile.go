@@ -48,11 +48,20 @@ const (
 	// FindingPendingTooLong (R9): a tailnet PENDING for longer than
 	// Config.PendingMaxAge (Count and Limit in seconds).
 	FindingPendingTooLong FindingCode = "R9_TAILNET_PENDING_TOO_LONG"
+	// FindingMovePendingTooLong (R10, ADR 0010): a move requested longer
+	// than Config.MoveMaxAge ago and not handed over (Count and Limit in
+	// seconds; ClusterID is the owner). Typically the owner hangs while
+	// holding its lease.
+	FindingMovePendingTooLong FindingCode = "R10_MOVE_PENDING_TOO_LONG"
 )
 
 // DefaultPendingMaxAge is how long a tailnet may stay PENDING before the
 // reconcile report lists it (R9).
 const DefaultPendingMaxAge = 24 * time.Hour
+
+// DefaultMoveMaxAge is how long a requested move may stay pending before
+// the reconcile report lists it (R10).
+const DefaultMoveMaxAge = 5 * time.Minute
 
 // Finding is one anomaly. It carries identifiers and counts only: no slug,
 // endpoint, key or tenant data (I15).

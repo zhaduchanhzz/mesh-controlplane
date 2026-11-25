@@ -104,8 +104,10 @@ func (tc *TestCluster) PlaceTailnet(tb testing.TB, slug string) string {
 	return tn.OwnerClusterID
 }
 
-// MoveOwner moves slug from cluster from to cluster to through the registry
-// (compare-and-swap at the current epoch; owner_epoch + 1).
+// MoveOwner requests the move of slug from cluster from to cluster to
+// through the registry, at the current epoch (ADR 0010: the owner hands it
+// over once it stopped serving; owner_epoch + 1 then). It returns the epoch
+// the move was requested at.
 func (tc *TestCluster) MoveOwner(tb testing.TB, slug, from, to string) uint64 {
 	tb.Helper()
 

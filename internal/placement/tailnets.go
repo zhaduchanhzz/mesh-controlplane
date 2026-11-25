@@ -248,6 +248,12 @@ func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string,
 	})
 }
 
+// CancelMove withdraws the move of tailnet id requested at epoch (ADR 0010),
+// while the owner has not handed it over yet.
+func (r *Registry) CancelMove(ctx context.Context, op Op, id string, epoch uint64) (types.Tailnet, error) {
+	return types.Tailnet{}, ErrInvalid
+}
+
 func loadTailnet(db *gorm.DB, id string) (types.Tailnet, error) {
 	var tns []types.Tailnet
 

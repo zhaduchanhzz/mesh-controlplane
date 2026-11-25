@@ -104,10 +104,10 @@ func TestTwoClustersServeOnlyOwnedTailnets(t *testing.T) {
 }
 
 // MoveOwner c1 → c2 and back, several times: the source retires, the
-// target loads; a write through the source's runtime after the move is
+// target loads; a write through the source's runtime after the hand-over is
 // fenced in the database (no dual owner of data). Owner decision Q7
 // (2026-11-25): no in-memory overlap either (R11) — at no sample may both
-// clusters hold a runtime of the tailnet (ADR 0010, serving claim).
+// clusters hold a runtime of the tailnet (ADR 0010, hand-over).
 func TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11(t *testing.T) {
 	c1 := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: "p12-mv"})
 	c2 := c1.AddCluster(t)
@@ -125,12 +125,7 @@ func TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11(t *testing.T) {
 		src := from.Runtime(t, slug)
 
 		start := time.Now()
-		epoch := c1.MoveOwner(t, slug, from.ClusterID, to.ClusterID)
-
-		// The source still holds its runtime in memory right after the
-		// move; a write through it is refused by the fence.
-		_, _, err := src.GetState().CreateUser(types.User{Name: fmt.Sprintf("late-%d", i)})
-		require.ErrorIs(t, err, tenantscope.ErrFenced, "move %d: write by the source after the move", i)
+		epoch := c1.MoveOwner(t, slug, from.ClusterID, to.ClusterID) + 1
 
 		var srcGone, dstUp time.Duration
 
@@ -158,7 +153,15 @@ func TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11(t *testing.T) {
 
 		require.NotZero(t, srcGone, "move %d: source retired", i)
 		require.NotZero(t, dstUp, "move %d: target loaded", i)
-		assert.Equal(t, epoch, c1.TailnetRow(t, slug).OwnerEpoch)
+
+		row := c1.TailnetRow(t, slug)
+		assert.Equal(t, to.ClusterID, row.OwnerClusterID)
+		assert.Equal(t, epoch, row.OwnerEpoch, "one hand-over, epoch + 1")
+		assert.Nil(t, row.MovingToClusterID)
+
+		// The source's runtime object, retired, cannot write either.
+		_, _, err := src.GetState().CreateUser(types.User{Name: fmt.Sprintf("late-%d", i)})
+		require.ErrorIs(t, err, tenantscope.ErrFenced, "move %d: write by the source after the hand-over", i)
 
 		overlap := max(srcGone-dstUp, 0)
 		assert.Zero(t, both, "move %d: samples where both clusters held a runtime", i)
@@ -239,6 +242,31 @@ func TestFailoverInOneClusterLeavesTheOtherAlone(t *testing.T) {
 	assert.Equal(t, nkA0, selfKey(t, a[0]), "same node key: no new login")
 	assert.Equal(t, nkA1, selfKey(t, a[1]), "same node key: no new login")
 	notServedFor(t, c2, "p12-fa", 3*time.Second)
+}
+
+// ADR 0010 §4: the move of a tailnet whose owner cluster has no process
+// left (no live lease) is completed by the target, which then serves it.
+func TestTwoClustersMoveFromDeadClusterIsTakenOver(t *testing.T) {
+	c1 := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: "p12-dead"})
+	c2 := c1.AddCluster(t)
+
+	const slug = "p12-dead"
+
+	c1.WaitRuntime(t, slug, true, clusterWait)
+	c1.StopProcess(t, c1.Primary()) // releases c1's lease; nothing serves c1
+
+	epoch := c1.MoveOwner(t, slug, c1.ClusterID, c2.ClusterID)
+
+	c2.WaitRuntime(t, slug, true, clusterWait)
+
+	row := c1.TailnetRow(t, slug)
+	assert.Equal(t, c2.ClusterID, row.OwnerClusterID)
+	assert.Equal(t, epoch+1, row.OwnerEpoch)
+	assert.Nil(t, row.MovingToClusterID)
+
+	c2.SetPolicyViaDB(t, slug, allowAll)
+	cl := enroll(t, c2.Tenant(t, slug), "dana", "dead-1", "dead-2")
+	waitPeersExactly(t, cl[0], selfKey(t, cl[1]))
 }
 
 func short(id string) string { return id[len(id)-8:] }

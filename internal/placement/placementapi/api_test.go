@@ -295,7 +295,8 @@ func TestOperatorFlow(t *testing.T) {
 		body: map[string]any{"from_cluster": "c1", "from_epoch": 1, "to_cluster": "c2"}}
 	code, moved := e.do(t, c, move)
 	require.Equal(t, http.StatusOK, code, moved)
-	assert.EqualValues(t, 2, moved["owner_epoch"])
+	assert.EqualValues(t, 1, moved["owner_epoch"], "a move request (ADR 0010)")
+	assert.Equal(t, "c2", moved["moving_to_cluster_id"])
 
 	code, _ = e.do(t, c, move)
 	require.Equal(t, http.StatusOK, code, "replay")
@@ -303,11 +304,12 @@ func TestOperatorFlow(t *testing.T) {
 	stale := move
 	stale.key = "m2"
 	code, _ = e.do(t, c, stale)
-	assert.Equal(t, http.StatusConflict, code, "stale epoch")
+	assert.Equal(t, http.StatusConflict, code, "a move is already pending")
 
 	code, got := e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/" + id})
 	require.Equal(t, http.StatusOK, code)
-	assert.EqualValues(t, 2, got["owner_epoch"])
+	assert.EqualValues(t, 1, got["owner_epoch"])
+	assert.Equal(t, "c2", got["moving_to_cluster_id"])
 	assert.EqualValues(t, 0, got["devices"])
 
 	code, q := e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/" + id + "/quota"})

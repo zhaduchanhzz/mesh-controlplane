@@ -1,108 +1,136 @@
-# ADR 0010 — Claim phục vụ tailnet: không hai cluster cùng giữ runtime của một tailnet
+# ADR 0010 — Trao tay tailnet giữa cluster: nguồn ngừng phục vụ rồi mới lật owner
 
-- **Trạng thái:** Đề xuất (P12, 2026-11-25). Chờ chủ dự án duyệt trước khi cài.
-- **Bối cảnh quyết định:** chủ dự án trả lời Q7 ngày 2026-11-25. Cửa sổ R11 không chấp nhận được và phải loại bỏ ngay trong P12, không đẩy sang P12b.
+- **Trạng thái:** Chấp nhận. Chủ dự án duyệt ngày 2026-11-25 ("Đồng ý cách trao tay").
+- **Ticket:** P12, quyết định Q7 ngày 2026-11-25. Cửa sổ R11 phải loại bỏ ngay trong P12.
 - **Liên quan:**
   - ADR 0003: move không tự động.
-  - ADR 0005: một Noise key cho mỗi cluster; lease cluster; failover không đổi `owner_epoch`.
+  - ADR 0005: một Noise key cho mỗi cluster; lease cluster.
   - ADR 0007: runtime chỉ cho tailnet mà cluster sở hữu.
+  - P10: CAS owner/epoch, fence.
+  - P11: bootstrap trả `MOVING`.
   - P11b: `cluster_leases`.
+- Tên file giữ nguyên như bản đề xuất đầu (bảng claim) để link không gãy. Bản đó đã bị thay bằng cơ chế dưới đây; xem §Phương án đã loại.
 
 ## Bối cảnh
 
-Ownership của tailnet nằm ở `tailnets.owner_cluster_id` / `owner_epoch` (P10).
+Ownership của tailnet là cặp (`tailnets.owner_cluster_id`, `owner_epoch`), gọi tắt là (owner, epoch). Từ P10:
+- `owner_epoch` chỉ tăng; trigger trong DB chặn giảm.
+- Mọi câu ghi dữ liệu tenant bị fence theo (owner, epoch) và theo lease (`tenantscope.checkFence`).
 
-- Mọi lệnh ghi dữ liệu tenant đều bị fence theo owner+epoch và theo lease (`tenantscope.checkFence`), nên **dữ liệu** không bao giờ có hai owner.
-- Còn **bộ nhớ** thì mỗi cluster tự reconcile theo ticker riêng, `reconcileInterval = 2 s`:
-  - cluster nguồn retire runtime khi thấy mình không còn sở hữu tailnet;
-  - cluster đích nạp runtime khi thấy mình đã sở hữu.
-- Hai sự kiện đó độc lập nhau. Đích có thể nạp **trước** khi nguồn retire.
+Vì vậy **dữ liệu** không bao giờ có hai owner. **Bộ nhớ** thì khác. Trước ADR này, `MoveOwner` lật owner ngay lập tức. Sau đó mỗi cluster tự reconcile theo ticker riêng mỗi 2 s:
+- cluster nguồn retire runtime;
+- cluster đích nạp runtime.
 
-**Số đo P12 bước 3** (`evidence/P12-placement-reconcile.md`): sau `MoveOwner`, hai cluster cùng giữ runtime trong **0–213 ms** (12 lần đo). Giới hạn trên theo thiết kế ≈ 2 s cộng thời gian nạp.
-
-**Hệ quả trong cửa sổ đó:**
-- Client còn nối với nguồn vẫn nhận MapResponse từ bộ nhớ của nguồn, trong khi đích đã phục vụ.
-- Nguồn không ghi được, nhưng vẫn đọc và đẩy netmap cũ.
+Hai việc này độc lập, nên đích có thể nạp trước khi nguồn retire. P12 bước 3 đo được hai bên cùng giữ runtime trong 0–213 ms (R11). Trong khoảng đó, client còn nối với nguồn vẫn nhận netmap từ bộ nhớ của nguồn, trong khi đích đã phục vụ.
 
 ## Quyết định
 
-**1. Bảng mới `tailnet_serving`** (bảng platform, không phải bảng tenant):
-- Một dòng cho mỗi tailnet **đang có runtime ở một cluster nào đó**.
-- Khóa chính `tailnet_id`, nên mỗi tailnet có nhiều nhất một cluster phục vụ.
+Một lần chuyển sang cluster khác gồm **hai bước**:
+1. **Yêu cầu.**
+2. **Lật owner.** Chỉ làm sau khi nguồn đã ngừng phục vụ.
+
+Không thêm bảng, không thêm migration. Dùng cột `tailnets.moving_to_cluster_id` có từ P11.
+
+### Vai trò các cột
+
+| Cột | Ý nghĩa |
+|---|---|
+| `owner_cluster_id`, `owner_epoch` | Quyền sở hữu, **duy nhất** quyết định ai nạp runtime và ai được ghi. Không đổi. |
+| `moving_to_cluster_id` | Chỉ là yêu cầu đang chờ. **Không** cho cluster đích quyền gì. |
+
+### 1. Yêu cầu: `Registry.MoveOwner(from, fromEpoch, to)` với `to ≠ from`
+
+- Chữ ký hàm giữ nguyên. Kiểm như cũ: đích đã đăng ký, `ACTIVE`, luật dedicated.
+- Ghi bằng CAS:
+  ```
+  SET moving_to_cluster_id = to
+  WHERE owner = from AND epoch = fromEpoch AND moving_to_cluster_id IS NULL
+  ```
+  Owner và epoch **không đổi**.
+- Mỗi tailnet có nhiều nhất một yêu cầu đang chờ. Yêu cầu thứ hai trả `ErrConflict`. Owner/epoch lệch trả `ErrStaleEpoch`.
+- `to = from` (tăng epoch trong cùng cluster) vẫn lật ngay như cũ, vì một process tự retire rồi tự nạp, không có hai bên.
+- **Hủy yêu cầu:** `Registry.CancelMove(id, epoch)` xóa `moving_to` khi owner/epoch vẫn như lúc đặt.
+
+### 2. Nguồn ngừng phục vụ
+
+- Ở lượt reconcile kế (≤ 2 s), process đang giữ lease của cluster nguồn thấy tailnet của mình có `moving_to`.
+- `OwnedTailnets` không còn liệt kê tailnet có `moving_to`, nên cả `reconcile` lẫn `onLeaseAcquired` đều không nạp nó.
+- Runtime, nếu có, bị retire theo thứ tự hiện có:
+  1. ra khỏi routing;
+  2. đánh dấu `retired`;
+  3. đóng Noise session;
+  4. kết thúc map stream;
+  5. drain request đang chạy.
+
+### 3. Lật owner: `Platform.HandOver(id, epoch)`
+
+Chạy **sau khi** retire xong. Nếu tailnet không có runtime (không `ACTIVE`, hoặc chưa nạp được) thì chạy ngay. Một transaction, dưới `LockOwnership`:
 
 ```
-tailnet_serving(
-  tailnet_id  text PRIMARY KEY,
-  cluster_id  text NOT NULL,
-  owner_epoch bigint NOT NULL,   -- epoch mà runtime được nạp
-  holder      text NOT NULL,     -- process (lease holder) đang giữ
-  updated_at  timestamp NOT NULL
-)
+SET owner_cluster_id = moving_to, owner_epoch = owner_epoch + 1, moving_to_cluster_id = NULL
+WHERE owner = mình AND epoch = E AND moving_to IS NOT NULL
+  AND lease của cluster mình, đúng holder và epoch lease của process này, còn sống theo đồng hồ DB
 ```
 
-- Migration mới thêm vào **cuối** chuỗi, chạy trong transaction, không có FK (giống `cluster_leases`).
-- `schema.sql` và `schema_postgres.sql` được cập nhật song song.
+- Process mất lease giữa chừng thì không lật được. Standby của cùng cluster, khi lên, làm tiếp bước 2–3.
+- Drain quá `runtimeDrainTimeout`: vẫn lật. Runtime đã `retired` (mọi request mới bị từ chối) và session đã đóng.
 
-**2. Claim trước khi nạp.** `load()` (gọi từ reconcile và từ `onLeaseAcquired`) chỉ dựng runtime sau khi claim thành công. Claim là **một câu lệnh** upsert có điều kiện. Nó thành công khi:
-- chưa có dòng nào cho tailnet; hoặc
-- dòng hiện có thuộc chính cluster này (process khác cùng cluster sau failover, hoặc epoch mới của cùng cluster); hoặc
-- cluster đang giữ dòng **không còn lease sống**, theo đồng hồ của DB (process đã chết hẳn; TTL lease bảo đảm nó không còn phục vụ).
+### 4. Nguồn chết hẳn: `Platform.TakeOver(id, from, epoch)`
 
-Nếu claim không thành công, tailnet chưa được nạp ở lượt này. Log ghi "đợi cluster X nhả", và lượt reconcile sau thử lại.
+- Điều kiện: cluster nguồn không còn lease sống, nên không process nào của nó phục vụ.
+- Process đang giữ lease của cluster đích lật bằng cùng câu CAS, kèm điều kiện thêm: **không có** dòng `cluster_leases` còn hạn của nguồn.
+- Nếu standby của nguồn lên cùng lúc và cũng lật, hai bên CAS cùng (owner, epoch, moving_to), nên chỉ một bên thắng.
 
-**3. Nhả sau khi đã ngừng phục vụ.** `retire()` xóa dòng claim sau khi runtime đã:
-- ra khỏi routing (request mới bị từ chối);
-- đóng các Noise session;
-- kết thúc mọi map stream (`clientStreamsOpen.Wait`).
+### 5. Đích nạp
 
-Câu xóa có điều kiện `cluster_id = mình AND owner_epoch = epoch của runtime`, nên không xóa nhầm claim mới của chính cluster sau khi tăng epoch.
+Đích nạp tailnet ở lượt reconcile kế, khi `owner_cluster_id = mình`. Tới lúc đó nguồn chắc chắn đã ngừng phục vụ: thứ tự ghi trong DB bảo đảm điều này, không dựa vào thời gian.
 
-Nếu drain quá `runtimeDrainTimeout`, vẫn nhả claim. Lý do: runtime đã bị đánh dấu `retired` (mọi request mới bị từ chối) và session đã đóng; giữ claim mãi sẽ khóa tailnet.
+### 6. Bootstrap
 
-**4. Lease mất** (`onLeaseLost`): retire mọi runtime, nên nhả mọi claim.
-- Process chết đột ngột không kịp nhả: claim của nó hết hiệu lực khi lease cluster hết hạn (TTL P11b, ~10 s).
-- Standby của **cùng cluster** claim lại ngay, vì cùng `cluster_id`.
+Trả `MOVING` (503) trong khi `moving_to` được đặt; P11 đã có sẵn nhánh này. Sau khi lật, trả URL của đích.
 
-**5. Báo cáo reconcile:** thêm mục R10 (thay ý nghĩa cũ của R10 trong inventory, vốn chưa có đường ghi). R10 báo claim thuộc cluster không còn sở hữu tailnet, hoặc không còn lease sống.
+### 7. Báo cáo reconcile
+
+Thêm **R10_MOVE_PENDING_TOO_LONG**: yêu cầu chuyển tồn tại quá `Config.MoveMaxAge` (mặc định 5 phút). Tình huống điển hình: nguồn treo nhưng vẫn giữ lease. Operator chọn hủy hoặc xử lý cluster nguồn.
+
+## Bất biến
+
+1. Tại mọi thời điểm, nhiều nhất một cluster nạp runtime của một tailnet. Chỉ cluster bằng `owner_cluster_id` được nạp, và owner chỉ đổi sau khi runtime của owner cũ đã ngừng, hoặc khi owner cũ không còn lease sống.
+2. `owner_epoch` chỉ tăng; mỗi epoch ứng với đúng một owner. Chuyển qua lại nhiều lần chỉ làm epoch tăng tiếp.
+3. Ghi dữ liệu tenant vẫn bị fence theo (owner, epoch, lease) như P10b/P11b.
 
 ## Hệ quả
 
 **Tốt:**
-- Tại mọi thời điểm, nhiều nhất một cluster giữ runtime của một tailnet. Bất biến này do khóa chính trong DB đảm bảo, không dựa vào thời gian.
 - R11 trong bộ nhớ = 0.
-- Failover trong một cluster không chậm thêm, vì cùng `cluster_id` claim lại ngay.
+- Không đổi schema.
+- Client trong lúc chuyển nhận `MOVING` đúng ngữ nghĩa.
+- P12b dùng lại nguyên cơ chế, chỉ thêm thông báo, re-bootstrap và đổi ControlURL.
 
 **Chi phí:**
-- **Move chậm hơn.** Đích chỉ nạp sau khi nguồn nhả:
-  - nguồn mất ≤ 2 s để thấy mình mất ownership, cộng thời gian drain;
-  - đích mất thêm ≤ 2 s tới lượt reconcile kế.
-  - Tổng ≈ 2–4 s, trước đây ≈ 2 s.
-  - Trong khoảng này **không cluster nào** phục vụ tailnet: client đang nối với nguồn bị cắt, client tới đích nhận lỗi tạm thời và thử lại. Đây là đánh đổi có chủ đích: thà gián đoạn ngắn còn hơn hai owner.
-- **Nếu process nguồn treo nhưng vẫn giữ lease** (renew được, không reconcile được), đích bị chặn cho tới khi nguồn tự fence hoặc mất lease. R10 trong báo cáo reconcile làm việc này lộ ra cho operator.
-- **Mỗi lần nạp/retire thêm một câu ghi** vào bảng platform. Không nằm trên đường nóng (map, register).
-
-**Không đổi:**
-- Fence dữ liệu.
-- `owner_epoch`.
-- Lease cluster.
-- Bootstrap.
-- Một Noise key mỗi cluster (ADR 0005, AGENTS 12).
+- **Move ≈ 2–4 s.** Nguồn mất ≤ 2 s để thấy yêu cầu, cộng thời gian drain; đích mất ≤ 2 s tới lượt reconcile kế. Trong khoảng này không cluster nào phục vụ tailnet: client của nguồn bị cắt stream, client mới nhận `MOVING` và thử lại.
+- **Nguồn treo nhưng vẫn giữ lease:** move kẹt cho tới khi nguồn mất lease, hoặc operator hủy. R10 làm việc này lộ ra.
+- **Đường lật trực tiếp còn sót:** `ReassignTailnet` của platform admin (CLI `reassign`) vẫn lật thẳng owner. Nhánh `feat/P12-cli` (Q5) chuyển CLI sang `Registry.MoveOwner`, nên khi gộp sẽ theo cơ chế trao tay.
 
 ## Phương án đã loại
 
-- **Rút `reconcileInterval` xuống ngắn (ví dụ 200 ms):** chỉ thu nhỏ cửa sổ, không loại bỏ; tăng tải đọc DB trên mọi cluster.
-- **Đích chờ một khoảng cố định sau `MoveOwner`:** dựa vào thời gian, không bảo đảm khi nguồn chậm.
-- **LISTEN/NOTIFY của PostgreSQL:** không có trên SQLite; qua PgBouncer transaction mode không dùng được LISTEN. Ngoài ra vẫn cần một bất biến trong DB.
-- **Dùng `moving_to_cluster_id` (MOVING) làm bước bàn giao:** thuộc thủ tục move có kế hoạch của P12b (thông báo, re-bootstrap). Claim là bất biến độc lập, P12b dùng lại được.
+- **Bảng claim `tailnet_serving`** (bản đề xuất đầu của ADR này): cùng bất biến, nhưng cần bảng và migration mới, thêm một câu ghi mỗi lần nạp/retire, và client không nhận được `MOVING`.
+- **Rút `reconcileInterval`:** chỉ thu nhỏ cửa sổ, không loại bỏ.
+- **Đích chờ một khoảng cố định:** dựa vào thời gian.
+- **LISTEN/NOTIFY:** không có trên SQLite; không dùng được qua PgBouncer transaction mode.
 
 ## Kiểm chứng
 
-- **Test RED** `TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11`: lấy mẫu mỗi 5 ms; không lần lấy mẫu nào được thấy hai cluster cùng giữ runtime. Test cũ cho thấy chồng lấn ở 6/12 lần move.
-- **Unit test claim** trên SQLite và PostgreSQL:
-  - chiếm khi đã có người giữ thì bị từ chối;
-  - nhả xong thì chiếm được;
-  - lease của người giữ hết hạn thì chiếm được;
-  - cùng cluster thì claim lại được;
-  - xóa với epoch cũ thì không xóa claim mới.
-- **Test khi nguồn drain chậm** (một request treo): đích không nạp cho tới khi nguồn nhả.
-- **E2E P12** (bước 7): `MoveOwner` giữa c1 và c2 với client thật. Log hai cluster cho thấy thời điểm retire của nguồn < thời điểm nạp của đích.
+- **Servertest** `TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11`:
+  - lấy mẫu mỗi 5 ms; không mẫu nào thấy hai cluster cùng giữ runtime (đã RED: 3/6 lần move có chồng lấn);
+  - sau khi lật, ghi qua runtime cũ của nguồn bị `ErrFenced`;
+  - epoch tăng đúng 1 mỗi lần move.
+- **Servertest nguồn chết:** dừng mọi process của nguồn sau khi đã yêu cầu chuyển; đích tự lật sau khi lease nguồn hết hạn rồi nạp.
+- **Unit (SQLite + PostgreSQL):**
+  - `MoveOwner` chỉ đặt `moving_to`; yêu cầu thứ hai `ErrConflict`; `CancelMove`;
+  - `HandOver` cần lease sống đúng holder;
+  - `TakeOver` bị từ chối khi lease nguồn còn sống;
+  - CAS đồng thời: chỉ một bên thắng;
+  - bootstrap trả `MOVING` rồi URL đích;
+  - R10 trong báo cáo reconcile.
+- **E2E P12 bước 7:** chuyển tailnet giữa c1 và c2 với client thật; log thời điểm retire của nguồn < thời điểm nạp của đích.

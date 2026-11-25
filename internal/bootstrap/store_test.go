@@ -173,6 +173,13 @@ func TestBootstrapStoreFollowsOwner(t *testing.T) {
 
 			_, err = r.MoveOwner(ctx, testOp, tn.ID, "c1", tn.OwnerEpoch, "c2")
 			require.NoError(t, err)
+			assert.Equal(t, OutcomeMoving, resolve("").Outcome, "requested, not handed over yet (ADR 0010)")
+
+			// c1's serving process hands the tailnet over (p is c1's platform).
+			p.SetLease("test-c1", 1)
+			to, err := p.HandOver(tailnet.MustParseID(tn.ID), tn.OwnerEpoch)
+			require.NoError(t, err)
+			require.Equal(t, "c2", to)
 
 			got = resolve("")
 			require.Equal(t, OutcomeOK, got.Outcome)
