@@ -61,9 +61,9 @@ type mapSession struct {
 	w    http.ResponseWriter
 
 	// tailnetSent counts this session's frames on
-	// headscale_tailnet_mapresponses_sent_total (P08b); nil until the
-	// first write.
-	tailnetSent prometheus.Counter
+	// headscale_tailnet_mapresponses_sent_total (P08b), by type; nil until
+	// the first write.
+	tailnetSent map[string]prometheus.Counter
 
 	log zerolog.Logger
 }
@@ -433,10 +433,14 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 	mapResponseSent.WithLabelValues("ok", sentType).Inc()
 
 	if m.tailnetSent == nil {
-		m.tailnetSent = tailnetMapSent.WithLabelValues(tenantlabel.Label(m.h.state.TailnetID()))
+		label := tenantlabel.Label(m.h.state.TailnetID())
+		m.tailnetSent = map[string]prometheus.Counter{
+			"update":    tailnetMapSent.WithLabelValues(label, "update"),
+			"keepalive": tailnetMapSent.WithLabelValues(label, "keepalive"),
+		}
 	}
 
-	m.tailnetSent.Inc()
+	m.tailnetSent[sentType].Inc()
 
 	m.log.Trace().
 		Caller().

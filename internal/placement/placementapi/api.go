@@ -177,7 +177,7 @@ type (
 		Limit int `query:"limit" minimum:"1" maximum:"1000" default:"100"`
 	}
 	createAPIKeyBody struct {
-		ExpiresInSeconds int64 `json:"expires_in_seconds" minimum:"1" maximum:"31536000" doc:"lifetime of the key, at most 365 days"`
+		ExpiresInSeconds int64  `json:"expires_in_seconds" minimum:"1" maximum:"31536000" doc:"lifetime of the key, at most 365 days"`
 		User             string `json:"user,omitempty" maxLength:"256" required:"false" doc:"user of the tailnet the key acts as; must exist"`
 	}
 	createAPIKeyIn struct {

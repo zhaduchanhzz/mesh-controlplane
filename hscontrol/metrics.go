@@ -44,8 +44,8 @@ var (
 	tailnetMapSent = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: prometheusNamespace,
 		Name:      "tailnet_mapresponses_sent_total",
-		Help:      "Map frames (updates and keepalives) written to clients, by tailnet; tailnets past the label cap are summed under tailnet=\"other\".",
-	}, []string{"tailnet"})
+		Help:      "Map frames written to clients, by tailnet and type (update, keepalive); tailnets past the label cap are summed under tailnet=\"other\".",
+	}, []string{"tailnet", "type"})
 	// tailnetMapSessions is the open long-poll map sessions by tailnet
 	// (P08b): the tailnet ID while the label cap allows, "other" past it.
 	tailnetMapSessions = promauto.NewGaugeVec(prometheus.GaugeOpts{

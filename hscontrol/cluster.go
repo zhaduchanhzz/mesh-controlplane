@@ -122,11 +122,11 @@ type Cluster struct {
 	// reconcile, so no runtime is loaded outside a held lease. ready is set
 	// once the tailnets are loaded and cleared first when the lease ends.
 	lease   *lease.Manager
+	leaseMu sync.Mutex
+	ready   atomic.Bool
 
 	// api is the public /api/v2 (P08b): rate limits by key and tailnet.
 	api *clusterAPI
-	leaseMu sync.Mutex
-	ready   atomic.Bool
 }
 
 // tenantRuntime is one loaded tailnet: its runtime, the ownership epoch it

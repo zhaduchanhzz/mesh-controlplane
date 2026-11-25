@@ -3,9 +3,9 @@ package state
 import (
 	"testing"
 
-	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )
 
 func p08bNodes(ids ...types.NodeID) types.Nodes {

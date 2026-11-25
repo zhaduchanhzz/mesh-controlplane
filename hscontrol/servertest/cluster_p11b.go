@@ -3,8 +3,8 @@
 package servertest
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
