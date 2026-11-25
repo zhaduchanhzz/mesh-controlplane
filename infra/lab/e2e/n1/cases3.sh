@@ -175,3 +175,43 @@ for n in (d.get("nodes") if isinstance(d, dict) else d) or []:
     live "$1" node delete --slug "$2" --id "$id" >>"$ART_DIR/logs/drop-nodes.log" 2>&1 || return 1
   done
 }
+
+# S04: a new tailnet is created PENDING with {"grants":[]} in the same
+# transaction. Before ACTIVE no client can enrol; once ACTIVE its default
+# policy denies (two real clients in it see no peer), {} denies too, and an
+# explicit grant connects them (positive control).
+t_s04() {
+  local p="" r i k
+  cli c1 "tailnet create --slug d" | py 'import json; print(json.load(sys.stdin)["id"])' | strip_cr >"$TMPD/id-d" || p="$p; create d"
+  k=$(cli c1 "tailnet authkey --slug d --user n1-d --reusable --expiration 30m" 2>>"$ART_DIR/logs/s04.log")
+  if [ -n "$k" ]; then
+    py 'import json; print(json.loads(sys.argv[1])["key"])' "$k" | strip_cr >"$TMPD/key-d"
+    ts_aside $B2 >/dev/null 2>&1 || p="$p; park b2"
+    r=0; ts_up $B2 "$URL1" "$TMPD/key-d" n1-d0 || r=$?; [ $r != 0 ] || p="$p; enrolled into a PENDING tailnet"
+    [ -z "$(node_id c1 d n1-d0)" ] || p="$p; node in a PENDING tailnet"
+    ts_back $B2 >/dev/null 2>&1
+  else
+    echo "authkey for PENDING d refused (expected or acceptable)" >>"$ART_DIR/logs/s04.log"
+  fi
+  cli c1 "tailnet status --slug d --set ACTIVE" >/dev/null || p="$p; activate d"
+  k=$(cli c1 "tailnet authkey --slug d --user n1-d --reusable --expiration 30m") || p="$p; authkey d"
+  py 'import json; print(json.loads(sys.argv[1])["key"])' "$k" | strip_cr >"$TMPD/key-d"
+  ts_aside $A2 >/dev/null 2>&1 || p="$p; park a2"
+  ts_aside $B2 >/dev/null 2>&1 || p="$p; park b2"
+  ts_up $A2 "$URL1" "$TMPD/key-d" n1-d1 || p="$p; d1 up"
+  ts_up $B2 "$URL1" "$TMPD/key-d" n1-d2 || p="$p; d2 up"
+  for i in $(seq 1 20); do [ -n "$(node_id c1 d n1-d1)" ] && [ -n "$(node_id c1 d n1-d2)" ] && break; sleep 1; done
+  sleep 8
+  [ -z "$(peers $A2)$(peers $B2)" ] || p="$p; default policy of a new tailnet lets d1/d2 see [$(peers $A2)|$(peers $B2)]"
+  set_policy d '{}' || p="$p; policy {} refused"
+  sleep 8
+  [ -z "$(peers $A2)$(peers $B2)" ] || p="$p; policy {} lets d1/d2 see [$(peers $A2)|$(peers $B2)]"
+  set_policy d '{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}' || p="$p; policy allow d"
+  wait_peers $A2 n1-d2 40 || p="$p; positive control: d1 sees [$(peers $A2)]"
+  grep -qE 'n1-(a1|b1)' <<<"$(peers $A2)$(peers $B2)" && p="$p; d sees A or B"
+  ts_back $A2 >/dev/null 2>&1 || p="$p; a2 back"
+  ts_back $B2 >/dev/null 2>&1 || p="$p; b2 back"
+  wait_peers $A1 n1-a2 40 || p="$p; a1 peers [$(peers $A1)]"
+  rm -f "$TMPD/key-d"
+  [ -z "$p" ] && record S04 PASS "new tailnet d: no enrolment while PENDING; once ACTIVE two real clients see no peer under the default policy and under {}; an explicit grant connects them" || record S04 FAIL "${p#; }"
+}

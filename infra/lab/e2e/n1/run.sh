@@ -16,7 +16,8 @@
 #
 # Batch 1 cases: E00 environment (relay, verify secret, underlay isolation),
 # S01, S02, S03, S11 (n1probe switch-tenant), S15 (relay region, relay path,
-# unknown key refused by derp-check when available, after failover).
+# unknown key refused by derp-check). Batch 2 (cases2.sh): S07, S08, S10,
+# S12, S14, S16, S17, S18, M06. Batch 3 (cases3.sh): S04, S05, S06, S09, S13.
 #
 # Usage: MODE=off|on V=1.104.7|1.84.3 BIN=… PROBE_BIN=… infra/lab/e2e/n1/run.sh
 # Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
@@ -172,6 +173,7 @@ cleanup() {
     vm "$ip" "sudo nft delete table inet n1test 2>/dev/null; true" >/dev/null 2>&1
     ts_stop "$ip" >/dev/null 2>&1 || { log "$ip tailscaled not stopped"; CLEAN_OK=0; }
   done
+  vps "rm -f /tmp/n1s13-$RUN_ID-*" >/dev/null 2>&1 || true
   relay "sudo journalctl -u n1-derp-c1 -u n1-derp-c2 --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/derper.log" || true
   relay "for u in n1-derp-c1 n1-derp-c2; do sudo systemctl stop \$u 2>/dev/null; sudo systemctl reset-failed \$u 2>/dev/null; done; \
     sudo rm -rf /run/n1-derp; ! sudo test -e /run/n1-derp" || { log "relay not cleaned"; CLEAN_OK=0; }
@@ -432,6 +434,8 @@ t_s11() {
   rc=$(grep -o 'rc=[0-9]*' <<<"$out" | tail -1 | cut -d= -f2)
   local n; n=$(grep -c '"pass":true' <<<"$out")
   [ "$rc" = 0 ] || p="rc=$rc, $(grep -c '"pass":false' <<<"$out") case(s) failed"
+  drop_nodes c1 a n1probe- && drop_nodes c1 b n1probe- || p="${p:+$p; }probe nodes not deleted"
+  for s in a b; do live c1 node list --slug $s 2>/dev/null | grep -q n1probe- && p="${p:+$p; }probe nodes left in $s"; done
   [ -z "$p" ] && record S11 PASS "n1probe switch-tenant against c1 (real cluster, public URL): $n cases refused, no leak (S11 a/b/d)" || record S11 FAIL "$p"
 }
 
@@ -464,9 +468,11 @@ NFT" || p="$p; nft on a2"
   [ -z "$p" ] && record S15 PASS "clients home on own relay region n1c1; a1->a2 relayed via DERP(n1c1) with verify; unknown key refused by the relay" || record S15 FAIL "${p#; }"
 }
 
-# Batch 2 cases.
+# Batch 2 and 3 cases.
 # shellcheck source=cases2.sh
 . "$(dirname "$0")/cases2.sh"
+# shellcheck source=cases3.sh
+. "$(dirname "$0")/cases3.sh"
 
 # --------------------------------------------------------------------- main ---
 T0=$(date +%s)
@@ -488,10 +494,15 @@ t_s10
 t_s12
 t_s14
 t_m06
+t_s05
+t_s06
+t_s09
+t_s04
 t_s17 c1 "${F02_ROUNDS:-3}"
 t_s17 c2 "${F02_ROUNDS:-3}"
 t_s16 S16 c1
 t_s18
+t_s13
 for n in cp c1b c2 c2b; do on $n "sudo journalctl -u $UNIT --since -$(( $(date +%s) - T0 + 5 ))s --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/$n-process.log"; done
 hits=$(grep -rlE 'hskey-(auth|api)-[A-Za-z0-9]{6,}|privkey:[0-9a-f]{64}|nodekey:[0-9a-f]{64}|mkey:[0-9a-f]{64}|BEGIN [A-Z ]*PRIVATE KEY|secret=[A-Za-z0-9]{20,}' "$ART_DIR" 2>/dev/null | grep -v results.tsv)
 [ -z "$hits" ] && record S99 PASS "no auth key, private key, full key or verify secret in the artifacts" || record S99 FAIL "unredacted in: $hits"
