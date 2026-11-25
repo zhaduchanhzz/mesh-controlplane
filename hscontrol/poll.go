@@ -413,15 +413,30 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 	// P11b: nothing is sent once this cluster process lost its lease (or
 	// the runtime was retired), even if the stream has not been closed yet.
 	if !m.h.servable() {
+		mapResponseNotServable.WithLabelValues("before_encode").Inc()
+
 		return errMapSessionStopped
 	}
 
 	startWrite := time.Now()
 
-	err := writeMapResponse(m.w, m.req.Compress, m.isStreaming(), msg)
+	data, err := encodeMapResponse(m.req.Compress, msg)
 	if err != nil {
 		return err
 	}
+
+	if mapWriteHook != nil {
+		mapWriteHook()
+	}
+
+	gate := time.Now()
+
+	err = writeMapFrame(m.w, m.isStreaming(), data)
+	if err != nil {
+		return err
+	}
+
+	recordFrameWritten(gate, time.Now())
 
 	// Every frame written to a client, behind the servable gate above: the
 	// P11b E2E reads it to prove a process without the lease sends nothing.
@@ -453,14 +468,14 @@ func (m *mapSession) writeMap(msg *tailcfg.MapResponse) error {
 	return nil
 }
 
-// writeMapResponse writes a single map response frame: the JSON body,
+// encodeMapResponse builds a single map response frame: the JSON body,
 // zstd-framed when the client asked for compression, behind a little-endian
 // length prefix. Tailscale clients request zstd unconditionally and decode
 // every frame with it, so the compression step is not optional.
-func writeMapResponse(w http.ResponseWriter, compress string, flush bool, msg *tailcfg.MapResponse) error {
+func encodeMapResponse(compress string, msg *tailcfg.MapResponse) ([]byte, error) {
 	jsonBody, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("marshalling map response: %w", err)
+		return nil, fmt.Errorf("marshalling map response: %w", err)
 	}
 
 	if compress == util.ZstdCompression {
@@ -472,7 +487,12 @@ func writeMapResponse(w http.ResponseWriter, compress string, flush bool, msg *t
 	binary.LittleEndian.PutUint32(data, uint32(len(jsonBody)))
 	data = append(data, jsonBody...)
 
-	_, err = w.Write(data)
+	return data, nil
+}
+
+// writeMapFrame writes an encoded frame and flushes a stream.
+func writeMapFrame(w http.ResponseWriter, flush bool, data []byte) error {
+	_, err := w.Write(data)
 	if err != nil {
 		return err
 	}
