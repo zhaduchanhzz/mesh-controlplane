@@ -19,6 +19,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tenantlabel"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/key"
 	"tailscale.com/types/views"
@@ -77,11 +78,21 @@ var (
 		Help:      "Duration of NodeStore snapshot building from nodes",
 		Buckets:   prometheus.DefBuckets,
 	})
+	// nodestore_nodes is the sum over the running NodeStores of the
+	// process (one per tailnet runtime in cluster mode): each store adds
+	// the change of its own count (P08b).
 	nodeStoreNodesCount = promauto.NewGauge(prometheus.GaugeOpts{
 		Namespace: prometheusNamespace,
 		Name:      "nodestore_nodes",
-		Help:      "Number of nodes in the NodeStore",
+		Help:      "Number of nodes in the NodeStores of this process",
 	})
+	// tailnetNodes is nodestore_nodes by tailnet: the tailnet ID while
+	// the label cap allows, "other" past it (P08b, internal/tenantlabel).
+	tailnetNodes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: prometheusNamespace,
+		Name:      "tailnet_nodes",
+		Help:      "Number of nodes in the NodeStore of each tailnet runtime; tailnets past the label cap are summed under tailnet=\"other\".",
+	}, []string{"tailnet"})
 	nodeStorePeersCalculationDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Namespace: prometheusNamespace,
 		Name:      "nodestore_peers_calculation_duration_seconds",
@@ -138,6 +149,15 @@ type NodeStore struct {
 
 	batchSize    int
 	batchTimeout time.Duration
+
+	// counted is the node count this store has added to the gauges; the
+	// writer and Stop update it under countMu, and once countClosed is
+	// set (Stop) the store adds nothing more. tailnetGauge is nil until
+	// SetMetricsTailnet.
+	countMu      sync.Mutex
+	counted      int
+	countClosed  bool
+	tailnetGauge prometheus.Gauge
 }
 
 func NewNodeStore(allNodes types.Nodes, peersFunc PeersFunc, batchSize int, batchTimeout time.Duration) *NodeStore {
@@ -153,8 +173,7 @@ func NewNodeStore(allNodes types.Nodes, peersFunc PeersFunc, batchSize int, batc
 	}
 	store.data.Store(&snap)
 
-	// Initialize node count gauge
-	nodeStoreNodesCount.Set(float64(len(nodes)))
+	store.setCount(len(nodes))
 
 	return store
 }
@@ -533,6 +552,52 @@ func (s *NodeStore) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopped)
 	})
+
+	s.countMu.Lock()
+	defer s.countMu.Unlock()
+
+	if !s.countClosed {
+		s.countClosed = true
+		s.addCount(-s.counted)
+		s.counted = 0
+	}
+}
+
+// SetMetricsTailnet labels this store's node count by the tailnet it
+// serves on headscale_tailnet_nodes (P08b). Call it once, before Start.
+func (s *NodeStore) SetMetricsTailnet(id string) {
+	s.countMu.Lock()
+	defer s.countMu.Unlock()
+
+	if s.countClosed || s.tailnetGauge != nil {
+		return
+	}
+
+	s.tailnetGauge = tailnetNodes.WithLabelValues(tenantlabel.Label(id))
+	s.tailnetGauge.Add(float64(s.counted))
+}
+
+// setCount records n as this store's node count: the gauges move by the
+// change, so they stay the sum over the running stores of the process.
+func (s *NodeStore) setCount(n int) {
+	s.countMu.Lock()
+	defer s.countMu.Unlock()
+
+	if s.countClosed {
+		return
+	}
+
+	s.addCount(n - s.counted)
+	s.counted = n
+}
+
+// addCount moves the gauges by d. countMu must be held.
+func (s *NodeStore) addCount(d int) {
+	nodeStoreNodesCount.Add(float64(d))
+
+	if s.tailnetGauge != nil {
+		s.tailnetGauge.Add(float64(d))
+	}
 }
 
 // processWrite processes the write queue in batches.
@@ -752,8 +817,7 @@ func (s *NodeStore) applyBatch(batch []work) {
 		nodeStoreSnapshotBuilds.WithLabelValues("recomputed").Inc()
 	}
 
-	// Update node count gauge
-	nodeStoreNodesCount.Set(float64(len(nodes)))
+	s.setCount(len(nodes))
 
 	// Release the writers in queue order, so completions are observed in
 	// the order the writes were queued: a caller released by a later work

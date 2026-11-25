@@ -460,6 +460,7 @@ func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 	}
 
 	polMan.SetRouterSession(nodeStore.RouterSession)
+	nodeStore.SetMetricsTailnet(db.Tailnet().ID)
 	nodeStore.reservedLabel = func(label string) bool {
 		return cfg.DNSConfig.BaseDomain != "" && cfg.HasExtraRecord(label+"."+cfg.DNSConfig.BaseDomain)
 	}
