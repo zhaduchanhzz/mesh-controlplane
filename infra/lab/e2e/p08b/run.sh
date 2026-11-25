@@ -197,9 +197,10 @@ setup() {
   grep -q '^unix_socket: /var/run/headscale-cluster/cluster.sock' "$TMPD/c1.yaml" || return 1
 
   log "binaries to mc-cp"
-  local b
-  for b in "$BIN:headscale-cluster" "$PLBIN:mesh-placement"; do
-    gzip -c "${b%%:*}" | cp_ "gunzip -c >/tmp/p08b-bin && sudo install -m 0755 /tmp/p08b-bin /usr/local/bin/${b##*:} && rm -f /tmp/p08b-bin" || return 1
+  local src dst
+  for dst in headscale-cluster mesh-placement; do
+    src=$BIN; [ $dst = mesh-placement ] && src=$PLBIN
+    gzip -c "$src" | cp_ "gunzip -c >/tmp/p08b-bin && sudo install -m 0755 /tmp/p08b-bin /usr/local/bin/$dst && rm -f /tmp/p08b-bin" || return 1
   done
   log "headscale-cluster $(cp_ 'sha256sum /usr/local/bin/headscale-cluster' | cut -c1-16)…"
 
