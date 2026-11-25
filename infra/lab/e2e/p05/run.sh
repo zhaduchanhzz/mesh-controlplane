@@ -202,6 +202,9 @@ setup() {
   log "seeding tailnets a, b (ACTIVE) and c (SUSPENDED) while the cluster is stopped"
   local pol='{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}'
   local s pf=/var/lib/headscale/cluster-e2e/policy.hujson
+  # P10: new devices enroll only into tailnets of a registered cluster; P12
+  # (Q5): the CLI creates tailnets only on a registered ACTIVE cluster.
+  cp_ "$HSC register --class shared --max-devices 5000 >/dev/null" || return 1
   for s in a b c; do
     cp_ "$HSC tailnet create --slug $s >/dev/null && $HSC tailnet status --slug $s --set ACTIVE" || return 1
   done
@@ -218,8 +221,6 @@ setup() {
     [ -s "$TMPD/key-$s" ] || return 1
   done
   cp_ "$HSC tailnet status --slug c --set SUSPENDED" || return 1
-  # P10: new devices enroll only into tailnets of a registered cluster.
-  cp_ "$HSC register --class shared --max-devices 5000 >/dev/null" || return 1
   printf 'hskey-auth-AAAAAAAAAAAA-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n' >"$TMPD/key-bogus"
 
   log "starting cluster"
@@ -631,7 +632,11 @@ t_p10() {
 
   # F03: move A to another cluster: this cluster stops serving it (new
   # registrations refused); B and D are unaffected.
+  # P12 (Q5): the CLI moves a tailnet only to a registered ACTIVE cluster, so
+  # mc-cp-c2 is registered first (an endpoint no process answers).
   local rm=0
+  cp_ "${HSC% --cluster-id *} --cluster-id mc-cp-c2 register --class shared --max-devices 5000 --endpoint https://mc-cp-c2.invalid:8443 >/dev/null" \
+    || record F03 FAIL "could not register mc-cp-c2"
   if cp_ "$HSC tailnet reassign --slug a --to mc-cp-c2 >/dev/null"; then
     sleep 4
     start_ts p05-y2 >/dev/null
@@ -766,7 +771,7 @@ t_bootstrap() {
   [ "$code" = 200 ] || { record B01 FAIL "bootstrap not healthy ($code)"; return; }
 
   # B01 (F06): a valid key of ACTIVE tailnet b gets this cluster's URL, only.
-  # (a was moved to the unregistered mc-cp-c2 by F03: see B06.)
+  # (a was moved to mc-cp-c2 by F03: see B06.)
   r=$(boot_req "$TMPD/key-b" b)
   printf 'B01 %s\n' "$r" >>"$ART_DIR/logs/bootstrap-responses.txt"
   code=${r%% *}
@@ -809,12 +814,14 @@ t_bootstrap() {
   [ -z "$problems" ] && record B04 PASS "only /v1/bootstrap and /health; debug/metrics/openapi 404; foreign Host 421" \
     || record B04 FAIL "${problems#; }"
 
-  # B06 (F06): a, moved by F03 to mc-cp-c2 (not registered), is 503 to a
-  # valid key holder and never gets this cluster's URL.
+  # B06 (F06): a, moved by F03 to mc-cp-c2, gets mc-cp-c2's URL and never
+  # this cluster's. (Before P12 mc-cp-c2 was unregistered and B06 expected
+  # 503; the CLI can no longer move a tailnet to an unregistered cluster,
+  # Q5. The unregistered-owner 503 is covered by internal/bootstrap tests.)
   r=$(boot_req "$TMPD/key-a" a)
   printf 'B06 %s\n' "$r" >>"$ART_DIR/logs/bootstrap-responses.txt"
-  { [ "${r%% *}" = 503 ] && ! grep -q "cp.gta5web" <<<"$r"; } \
-    && record B06 PASS "moved tenant a (owner cluster not registered): 503 to the key holder, no URL" \
+  { [ "${r%% *}" = 200 ] && grep -q "mc-cp-c2.invalid" <<<"$r" && ! grep -q "cp.gta5web" <<<"$r"; } \
+    && record B06 PASS "moved tenant a: owner mc-cp-c2's URL to the key holder, never this cluster's" \
     || record B06 FAIL "got [$r]"
 
   cp_ "sudo journalctl -u mesh-bootstrap-e2e --no-pager" 2>&1 | redact >"$ART_DIR/logs/bootstrap.log"
