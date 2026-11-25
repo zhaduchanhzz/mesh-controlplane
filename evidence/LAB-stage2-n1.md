@@ -52,7 +52,7 @@ Các luật:
 
 ## Kiểm chứng sau khi áp dụng
 
-Các ca L01–L08 trong runbook; điền kết quả vào đây.
+Kết quả L01–L08: xem mục "4. Kiểm chứng" bên dưới (cả 8 ca PASS).
 
 ## Thực hiện (2026-11-25)
 
