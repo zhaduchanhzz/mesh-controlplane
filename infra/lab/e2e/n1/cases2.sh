@@ -53,9 +53,24 @@ t_s08() {
   field $B1 "any(q.get('ExitNodeOption') for q in (d.get('Peer') or {}).values())" | grep -q True && p="$p; B got an exit node approved in A"
   # The same route ID space: approving node id of A under slug b must fail.
   live c1 routes approve --slug b --id "$ia" --routes 10.99.0.0/24 >>"$ART_DIR/logs/routes.log" 2>&1 && p="$p; approved A's node under B"
-  # Use the exit node in A; b1's view unchanged.
-  TS $A1 "set --exit-node=n1-a2" >/dev/null 2>&1 || p="$p; a1 cannot use a2 as exit node"
-  TS $A1 "set --exit-node=" >/dev/null 2>&1
+  # Use the exit node in A. With an exit node a1's replies to the harness
+  # (mc-ci, a private address the lab may not reach) leave through a2 and the
+  # SSH session hangs (run at e2183ed): set, check and unset run detached on
+  # a1 in one transient unit, which always unsets; the harness reads the
+  # result after.
+  vm $A1 "cat >/tmp/n1-exit.sh" <<EOF
+T="/opt/tailscale/$V/tailscale --socket=$TSS"
+trap '\$T set --exit-node= ; touch /tmp/n1-exit.done' EXIT
+rm -f /tmp/n1-exit.json /tmp/n1-exit.done
+\$T set --exit-node=n1-a2 || exit 1
+sleep 4
+\$T status --json >/tmp/n1-exit.json
+EOF
+  vm $A1 "sudo systemd-run --quiet --collect --unit=n1-exit -p RuntimeMaxSec=40 bash /tmp/n1-exit.sh" || p="$p; exit-node unit"
+  local j; for j in $(seq 1 30); do vm $A1 "test -e /tmp/n1-exit.done" 2>/dev/null && break; sleep 2; done
+  vm $A1 "sudo cat /tmp/n1-exit.json" 2>/dev/null | py 'import json; d = json.load(sys.stdin); print("yes" if d.get("ExitNodeStatus") else "no")' | strip_cr | grep -q yes \
+    || p="$p; a1 did not use a2 as exit node"
+  [ -z "$(field $A1 "(d.get('ExitNodeStatus') or {}).get('ID', '')")" ] || p="$p; a1 still has an exit node"
   TS $A2 "set --advertise-routes= --advertise-exit-node=false" >/dev/null 2>&1
   TS $B2 "set --advertise-routes= --advertise-exit-node=false" >/dev/null 2>&1
   [ -z "$p" ] && record S08 PASS "same route 10.99.0.0/24 + exit node in A and B: approved only in A, seen only by A; A's node id refused under B; a1 used a2 as exit node" || record S08 FAIL "${p#; }"

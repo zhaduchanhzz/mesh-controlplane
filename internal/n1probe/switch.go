@@ -40,6 +40,7 @@ type CaseResult struct {
 	Error         string `json:"error,omitempty"`
 	Refused       bool   `json:"refused"`
 	SessionClosed bool   `json:"session_closed"`
+	CloseHow      string `json:"close_how,omitempty"`
 	Dials         int    `json:"dials"`
 	Leak          bool   `json:"leak"`
 	LeakDetail    string `json:"leak_detail,omitempty"`
@@ -171,7 +172,7 @@ func SwitchTenant(ctx context.Context, cfg SwitchConfig) ([]CaseResult, error) {
 			}
 		}
 
-		r.SessionClosed = s.WaitPeerClosed(cfg.CloseWait)
+		r.SessionClosed, r.CloseHow = s.Closed(ctx, cfg.CloseWait)
 		r.Dials = s.Dials()
 		r.Pass = !r.Leak && r.Refused && (!needClose || r.SessionClosed) && r.Dials <= 1
 	}
@@ -281,7 +282,7 @@ func SwitchTenant(ctx context.Context, cfg SwitchConfig) ([]CaseResult, error) {
 		if err == nil && resp.OK() && rr != nil && rr.MachineAuthorized {
 			r.Status = resp.Status
 			r.Leak, r.LeakDetail = true, "B's key registered on a session bound to A"
-			r.SessionClosed = s.WaitPeerClosed(cfg.CloseWait)
+			r.SessionClosed, r.CloseHow = s.Closed(ctx, cfg.CloseWait)
 			r.Dials = s.Dials()
 
 			return

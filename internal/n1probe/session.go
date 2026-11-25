@@ -70,13 +70,17 @@ func urlPort(u *url.URL) string {
 // only: another port is refused (ErrNotURLPort) and does not count; a
 // second connection is refused (ErrSessionUsed).
 func (s *Session) systemDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.conns) > 0 {
+		s.redials++ // the client wants another connection (Closed)
+	}
+
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil || port != s.port {
 		return nil, fmt.Errorf("%w: %s (want %s)", ErrNotURLPort, addr, s.port)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if len(s.conns) > 0 {
 		return nil, ErrSessionUsed
@@ -102,8 +106,9 @@ type Session struct {
 	host   string
 	port   string // the URL's port: the only one the session dials
 
-	mu    sync.Mutex
-	conns []*trackedConn
+	mu      sync.Mutex
+	conns   []*trackedConn
+	redials int // dial attempts (any port) after the connection existed
 }
 
 type trackedConn struct {
@@ -209,6 +214,45 @@ func (s *Session) WaitPeerClosed(d time.Duration) bool {
 				return true
 			}
 		}
+	}
+}
+
+// Closed reports whether the server closed the session; how says what
+// decided it (for the evidence). Over plain HTTP the server's close reaches
+// the tracked TCP connection (WaitPeerClosed). Over TLS (a real cluster
+// terminates TLS itself) the server's close_notify ends the stream in the TLS
+// layer above it, so the TCP read never fails. Then one more request on the
+// session decides: with one request in flight the client dials again only
+// when its connection is unusable, so any dial attempt during that request
+// (refused by the session, as every second dial is) means the server closed
+// the session. An HTTP answer means it is open. (The client retries refused
+// dials with backoff, so the request's own error is often just its
+// deadline: it is not what decides.)
+func (s *Session) Closed(ctx context.Context, d time.Duration) (closed bool, how string) {
+	if s.WaitPeerClosed(d) {
+		return true, "tcp close"
+	}
+
+	s.mu.Lock()
+	before := s.redials
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+
+	resp, err := s.Post(ctx, "/machine/map", key.NodePublic{}, tailcfg.MapRequest{Version: tailcfg.CurrentCapabilityVersion}, nil)
+
+	s.mu.Lock()
+	redials := s.redials - before
+	s.mu.Unlock()
+
+	switch {
+	case err == nil:
+		return false, "next request answered " + strconv.Itoa(resp.Status)
+	case redials > 0:
+		return true, fmt.Sprintf("next request needed a new connection (%d dial attempt(s) refused)", redials)
+	default:
+		return false, "next request failed without a redial: " + err.Error()
 	}
 }
 

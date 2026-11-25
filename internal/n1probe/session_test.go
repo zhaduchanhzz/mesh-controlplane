@@ -70,3 +70,23 @@ func TestURLPortDefaults(t *testing.T) {
 		assert.Equal(t, want, urlPort(u), in)
 	}
 }
+
+// Lab bug (N1 run at e2183ed): a real cluster terminates TLS, so its close of
+// a switched session never reaches the tracked TCP connection; the client
+// then asks for a new connection (any port, retried with backoff). Closed
+// counts those attempts: each is refused and counted, none is dialled.
+func TestSessionCountsRedials(t *testing.T) {
+	s := &Session{port: "8443"}
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	s.conns = []*trackedConn{{Conn: c1}}
+
+	for _, addr := range []string{"192.0.2.1:8443", "192.0.2.1:80", "192.0.2.1:8443"} {
+		_, err := s.systemDial(t.Context(), "tcp", addr)
+		require.Error(t, err, addr)
+	}
+
+	assert.Equal(t, 3, s.redials, "every attempt after the connection existed")
+	assert.Equal(t, 1, s.Dials(), "nothing was dialled")
+}
