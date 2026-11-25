@@ -120,3 +120,38 @@ func (tc *TestCluster) MoveOwner(tb testing.TB, slug, from, to string) uint64 {
 
 	return tn.OwnerEpoch
 }
+
+// RegisteredNoiseKey reads clusters.noise_public_key of the cluster under
+// test ("" when unset).
+func (tc *TestCluster) RegisteredNoiseKey(tb testing.TB) string {
+	tb.Helper()
+
+	var keys []*string
+
+	err := tc.raw.Raw(`SELECT noise_public_key FROM clusters WHERE id = ?`, tc.ClusterID).Scan(&keys).Error
+	if err != nil || len(keys) != 1 {
+		tb.Fatalf("servertest: registered noise key: %v (%d rows)", err, len(keys))
+	}
+
+	if keys[0] == nil {
+		return ""
+	}
+
+	return *keys[0]
+}
+
+// SetRegisteredNoiseKey sets clusters.noise_public_key of the cluster under
+// test, as an operator would (empty clears it).
+func (tc *TestCluster) SetRegisteredNoiseKey(tb testing.TB, k string) {
+	tb.Helper()
+
+	var v any
+	if k != "" {
+		v = k
+	}
+
+	err := tc.raw.Exec(`UPDATE clusters SET noise_public_key = ? WHERE id = ?`, v, tc.ClusterID).Error
+	if err != nil {
+		tb.Fatalf("servertest: set registered noise key: %v", err)
+	}
+}

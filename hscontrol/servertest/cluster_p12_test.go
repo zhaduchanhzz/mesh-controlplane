@@ -4,6 +4,7 @@ package servertest_test
 
 import (
 	"fmt"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
@@ -267,6 +268,34 @@ func TestTwoClustersMoveFromDeadClusterIsTakenOver(t *testing.T) {
 	c2.SetPolicyViaDB(t, slug, allowAll)
 	cl := enroll(t, c2.Tenant(t, slug), "dana", "dead-1", "dead-2")
 	waitPeersExactly(t, cl[0], selfKey(t, cl[1]))
+}
+
+// P12, owner decision Q6: each cluster records its Noise public key in the
+// registry when it takes its lease; a process whose key differs from the
+// registered one does not serve (stays standby) until the operator fixes
+// the registry; the registered key is never overwritten by the process.
+func TestClusterRecordsNoiseKeyAndRefusesMismatch(t *testing.T) {
+	c1 := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: "p12-nk"})
+	c2 := c1.AddCluster(t)
+
+	k1, k2 := c1.NoiseKey(t).String(), c2.NoiseKey(t).String()
+	require.NotEqual(t, k1, k2, "one Noise key per cluster")
+	assert.Equal(t, k1, c1.RegisteredNoiseKey(t), "c1 recorded its key")
+	assert.Equal(t, k2, c2.RegisteredNoiseKey(t), "c2 recorded its key")
+
+	// c2 restarts with a registry row that names another key.
+	c2.StopProcess(t, c2.Primary())
+	c2.SetRegisteredNoiseKey(t, k1)
+
+	p := c2.StartProcess(t)
+	assert.Never(t, func() bool { return c2.ProcessGet(t, p, "/ready") == http.StatusOK }, 3*time.Second, 100*time.Millisecond,
+		"a process whose key differs from the registry must not serve")
+	assert.Equal(t, k1, c2.RegisteredNoiseKey(t), "the registered key is not overwritten")
+
+	// The operator clears the wrong entry: the process records its key and serves.
+	c2.SetRegisteredNoiseKey(t, "")
+	c2.WaitReady(t, p, clusterWait)
+	assert.Equal(t, k2, c2.RegisteredNoiseKey(t))
 }
 
 func short(id string) string { return id[len(id)-8:] }
