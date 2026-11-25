@@ -128,7 +128,7 @@ resource "proxmox_virtual_environment_vm" "stage2" {
 output "stage2_vms" {
   value = {
     for k, v in local.stage2_vms : k => {
-      vm_id = proxmox_virtual_environment_vm.stage2[k].vm_id
+      vm_id = v.vm_id # from the variable: importing one VM must not need the others in state
       role  = v.role
       vnet  = var.stage2_vnets[v.net].id
       ipv4  = v.ipv4
