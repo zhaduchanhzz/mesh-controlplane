@@ -44,15 +44,6 @@ variable "stage2_vnets" {
     dhcp_end   = string
   }))
   default = {
-    mgmt = {
-      id         = "mcmgmt"
-      alias      = "mesh-lab mgmt (runner and operator only)"
-      cidr       = "10.77.10.0/24"
-      gateway    = "10.77.10.1"
-      snat       = true
-      dhcp_start = "10.77.10.100"
-      dhcp_end   = "10.77.10.199"
-    }
     client_a = {
       id         = "mccla"
       alias      = "mesh-lab client-a underlay"
@@ -73,7 +64,7 @@ variable "stage2_vnets" {
     }
     services = {
       id         = "mcsvc"
-      alias      = "mesh-lab services (registry shards edge relay)"
+      alias      = "mesh-lab services (DERP relay)"
       cidr       = "10.77.40.0/24"
       gateway    = "10.77.40.1"
       snat       = true
@@ -107,7 +98,7 @@ variable "stage2_vnets" {
 }
 
 variable "stage2_vms" {
-  description = "Stage-2 VMs. Sizing follows 04-proxmox-lab.md §4; clients use the 2 GiB upper bound."
+  description = "Stage-2 VMs for Gate N1 (P09, owner decision Q1 2026-11-25): the DERP/STUN relay and four Tailscale clients, A and B on separate underlays. Clusters, PostgreSQL and bootstrap stay on the stage-1/2a/2b VMs on vmbr0."
   type = map(object({
     vm_id     = number
     role      = string
@@ -119,10 +110,6 @@ variable "stage2_vms" {
     disk_gb   = number
   }))
   default = {
-    mc-placement = { vm_id = 7710, role = "placement", net = "services", ipv4 = "10.77.40.11", mac = "BC:24:11:77:40:11", cores = 2, memory_mb = 4096, disk_gb = 30 }
-    mc-edge      = { vm_id = 7711, role = "edge", net = "services", ipv4 = "10.77.40.12", mac = "BC:24:11:77:40:12", cores = 2, memory_mb = 2048, disk_gb = 20 }
-    mc-shard-01  = { vm_id = 7712, role = "shard", net = "services", ipv4 = "10.77.40.21", mac = "BC:24:11:77:40:21", cores = 8, memory_mb = 24576, disk_gb = 50 }
-    mc-shard-02  = { vm_id = 7713, role = "shard", net = "services", ipv4 = "10.77.40.22", mac = "BC:24:11:77:40:22", cores = 8, memory_mb = 24576, disk_gb = 50 }
     mc-relay     = { vm_id = 7714, role = "relay", net = "services", ipv4 = "10.77.40.30", mac = "BC:24:11:77:40:30", cores = 2, memory_mb = 2048, disk_gb = 20 }
     mc-client-a1 = { vm_id = 7715, role = "client", net = "client_a", ipv4 = "10.77.20.11", mac = "BC:24:11:77:20:11", cores = 1, memory_mb = 2048, disk_gb = 12 }
     mc-client-a2 = { vm_id = 7716, role = "client", net = "client_a", ipv4 = "10.77.20.12", mac = "BC:24:11:77:20:12", cores = 1, memory_mb = 2048, disk_gb = 12 }
@@ -152,13 +139,19 @@ variable "stage2_vms" {
 }
 
 variable "stage2_memory_budget_mb" {
-  description = "Upper bound on the sum of stage2_vms[*].memory_mb (guest RAM, excludes mc-ci). Default 64 GiB: shards 2 x 24 GiB (8 vCPU, owner request 2026-11-22) + 16 GiB for the rest."
+  description = "Upper bound on the sum of stage2_vms[*].memory_mb (guest RAM). Default 12 GiB: relay 2 GiB + four 2 GiB clients, with headroom."
   type        = number
-  default     = 65536
+  default     = 12288
 
   validation {
     # Host: 125.7 GiB total; ~84 GiB free with VMs 100-102 and mc-ci (24 GiB) running.
     condition     = var.stage2_memory_budget_mb > 0 && var.stage2_memory_budget_mb <= 81920
     error_message = "stage2_memory_budget_mb must be between 1 and 81920 MiB (keeps host headroom)."
   }
+}
+
+variable "stage2_dns" {
+  description = "Resolvers of the stage-2 VMs. Public, so the host firewall (stage2-host-firewall.nft) can drop every lab -> home LAN packet without a DNS exception."
+  type        = list(string)
+  default     = ["1.1.1.1", "9.9.9.9"]
 }

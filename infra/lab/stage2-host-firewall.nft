@@ -1,0 +1,72 @@
+#!/usr/sbin/nft -f
+# mesh-controlplane lab, stage 2 for Gate N1 (P09): underlay isolation on the
+# PVE host. HUMAN-APPLIED (AGENTS.md rule 3): see infra/lab/stage2-n1.md.
+#
+# Scope: only packets from or to 10.77.0.0/16 (the stage-2 SDN VNets). Every
+# other packet is accepted by these chains, so this table changes nothing for
+# vmbr0, lan10, the existing VMs or the host's own services. It does not touch
+# pve-firewall (disabled on this host on 2026-11-25) or the SDN SNAT rules.
+#
+# Policy (owner decision Q1, 2026-11-25):
+#   - client A (10.77.20.0/24) and client B (10.77.30.0/24) never reach each
+#     other through the host;
+#   - clients reach the relay only on DERP (tcp/443-449) and STUN (udp/3478);
+#   - mc-ci (192.168.1.240) reaches lab VMs on ssh and ping (management, and
+#     the E2E harness);
+#   - lab VMs reach the Internet (cluster public URLs via the VPS, packages,
+#     public DNS), never the home LAN or other private ranges;
+#   - lab VMs reach no host service (22, 8006, ...) on any host address.
+#
+# Apply:   nft -c -f /etc/mclab.nft && nft -f /etc/mclab.nft
+# Remove:  nft delete table inet mclab
+
+define LAB    = 10.77.0.0/16
+define CLA    = 10.77.20.0/24
+define CLB    = 10.77.30.0/24
+define RELAY  = 10.77.40.30
+define MCCI   = 192.168.1.240
+define PRIV   = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 }
+
+table inet mclab
+delete table inet mclab
+table inet mclab {
+  chain forward {
+    # Before any other forward hook; policy accept: only lab traffic is judged.
+    type filter hook forward priority filter - 1; policy accept;
+
+    ip saddr != $LAB ip daddr != $LAB accept
+    ct state established,related accept
+    ct state invalid drop
+
+    # A <-> B: never.
+    ip saddr $CLA ip daddr $CLB counter drop
+    ip saddr $CLB ip daddr $CLA counter drop
+
+    # Management from mc-ci.
+    ip saddr $MCCI ip daddr $LAB tcp dport 22 accept
+    ip saddr $MCCI ip daddr $LAB icmp type echo-request accept
+
+    # Clients -> relay: DERP over TLS and STUN only.
+    ip saddr { $CLA, $CLB } ip daddr $RELAY tcp dport 443-449 accept
+    ip saddr { $CLA, $CLB } ip daddr $RELAY udp dport 3478 accept
+
+    # Lab -> any private range (home LAN, other VNets, CGNAT): drop.
+    ip saddr $LAB ip daddr $PRIV counter drop
+
+    # Lab -> Internet.
+    ip saddr $LAB accept
+
+    # Anything else into the lab: drop.
+    ip daddr $LAB counter drop
+  }
+
+  chain input {
+    # Lab VMs reach no service of the host itself (any host address).
+    type filter hook input priority filter - 1; policy accept;
+
+    ip saddr != $LAB accept
+    ct state established,related accept
+    ip saddr $LAB icmp type echo-request accept
+    ip saddr $LAB counter drop
+  }
+}

@@ -1,18 +1,11 @@
 # Stage-2 VMs (04-proxmox-lab.md §3-4). Disabled unless stage2_enabled = true.
 #
-# NIC decision: every stage-2 VM has exactly ONE NIC, on its lab VNet. Edge and
-# relay do NOT get a vmbr0 NIC:
-#   - Clients reach edge/relay by routing through the host (client VNet ->
-#     services VNet), which is the path the firewall TODO in stage2-network.tf
-#     restricts to tcp/443 and udp/3478.
-#   - A vmbr0 NIC would make edge/relay reachable from the whole home LAN and
-#     give them a path to the client underlays that bypasses that firewall,
-#     i.e. a dual-homed hop around the A<->B isolation.
-#   - Nothing in the current tickets needs the services exposed beyond the lab,
-#     and Internet/LAN exposure needs human approval (AGENTS.md rule 3).
-#   Egress (apt, Tailscale packages) goes out via SNAT on the host instead.
-#   If NAT-traversal tests later need a client on the real home LAN, add that as
-#   a separate, reviewed change with an address from 192.168.1.241-.249.
+# NIC decision: every stage-2 VM has exactly ONE NIC, on its lab VNet. The
+# relay does NOT get a vmbr0 NIC: that would expose it to the home LAN and
+# give a dual-homed path around the A<->B isolation. Clients reach the relay
+# through the host (DERP tcp/443-449, STUN udp/3478 only, see
+# stage2-host-firewall.nft); everything reaches the Internet by SNAT (cluster
+# public URLs via the VPS, packages, public DNS from var.stage2_dns).
 
 locals {
   stage2_vms = var.stage2_enabled ? var.stage2_vms : {}
@@ -89,7 +82,7 @@ resource "proxmox_virtual_environment_vm" "stage2" {
     }
 
     dns {
-      servers = var.network.dns
+      servers = var.stage2_dns
     }
   }
 
