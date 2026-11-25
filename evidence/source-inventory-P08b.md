@@ -167,3 +167,34 @@ Không tìm thấy: `rate.NewLimiter`, `x/time/rate`, `semaphore`, `netutil.Limi
 - **Q4:** Ngân sách mặc định: kết nối DB tối đa mỗi tailnet, rate register/mutation mỗi tailnet, tổng phiên Noise chưa bind, và SLO của B trong S13 (p99 register/map).
 - **Q5:** Label `tailnet` trên metric: chấp nhận với trần số tailnet/cluster (bao nhiêu?) hay chỉ xuất top-N/endpoint riêng?
 - **Q6:** DERP verify: hoãn S15 tới lab giai đoạn 2 (giữ cluster cấm DERP nhúng) hay làm phần unit/servertest trước?
+
+## 9. Cập nhật khi viết code (2026-11-25)
+
+- **Nhánh code:** `feat/P08b-control-plane` từ `master` `b2b5d8d` (sau merge P11b `ee4c637` và LAB-c1b `18d6c47`), merge thêm `feat/P08b-inventory` (`6e1a185`). Mọi trích dẫn mới dưới đây ở commit đó.
+- **Quyết định đã áp dụng:** Q1 (S13/I10 sang P14, trừ giới hạn tần suất của `/api/v2` công khai), pool DB không giới hạn theo tailnet, Q2 hướng A (unix socket), Q3 (`/api/v2` công khai theo key; key do CLI và placement API mTLS cấp; tenant không ghi policy/DNS), Q4 mặc định, Q5 trần 2000 nhãn, Q6 DERP ra ngoài.
+
+### Path và symbol đọc thêm
+
+| Path | Symbol | Ghi chú |
+|---|---|---|
+| `hscontrol/cluster.go` | `Cluster.ready`, `leaseHeld`, `Runtime`, `tenantRuntime`, `HTTPHandler`, `MetricsHandler`, `Serve` | P11b: process standby không có runtime; admin và `/api/v2` phải từ chối khi `!ready || !leaseHeld()` |
+| `hscontrol/app.go:577–776` | `ensureUnixSocketIsAbsent`, socket v1/v2 local trust | mô hình tin cậy unix socket của single-tailnet; cluster chưa từng dùng `unix_socket` |
+| `hscontrol/app.go:1661` | `Headscale.servable` | dùng trước khi chuyển request `/api/v2` vào runtime |
+| `hscontrol/operator_access.go` | `operatorOnly` | chỉ kiểm IP (loopback/CIDR): không đủ cho thao tác ghi, nên kênh quản trị chọn unix socket |
+| `hscontrol/api/v2/api.go`, `keys.go`, `devices.go`, `helpers.go` | `authMiddleware`, `requireDefaultTailnet`, `registerKeys`, `lookupNode`, `parseNodeID`, `bearerOrBasicToken` | 20 operation; khóa admin = all-access trong `State` được truyền; `createKey` không tag cần API key có user |
+| `hscontrol/api/v1/users.go:140–160`, `nodes.go:295–335` | xóa user, expire node | cùng lệnh `State` + `Change` mà API quản trị live dùng lại |
+| `hscontrol/db/api_key.go`, `secret.go`, `preauth_keys.go:245–300` | `CreateAPIKey`, `validateAPIKey`, `generateSecret`, `hashSecret`, `parsePrefixedKey`, `verifySecret` | định dạng `hskey-api-<12>-<64>`; chỉ băm SHA-256 được lưu |
+| `hscontrol/db/schema_postgres.sql:23–69` | `users`, `credentials` (FK tailnet, FK user, trigger khớp tailnet) | API key gắn tailnet ở schema; user của key phải cùng tailnet |
+| `internal/placement/audit.go` | `mutate`, `replay`, `platform_idempotency`, `platform_audit` | kết quả idempotent được lưu nguyên văn → không được chứa key |
+| `internal/placement/placementapi/api.go`, `auth.go` | `op`, `readGuard`, `apiError`, `Authorizer` | thêm 3 operation API key theo cùng mẫu |
+| `internal/bootstrap/http.go:223–300` | `bucket`, `buckets` | mô hình cho `internal/ratelimit` (chép, không sửa bootstrap) |
+| `hscontrol/state/node_store.go:80–160, 529–536, 745–760` | `nodeStoreNodesCount`, `NewNodeStore`, `Stop`, `applyBatch` | lỗi gauge ghi đè (RED: 2+3 node đọc ra 3) |
+| `hscontrol/poll.go:42–63, 172–180, 410–430` | `mapSession`, `serveLongPoll`, `writeMap` | chỗ đếm phiên và frame theo tailnet |
+| `hscontrol/endpoint_inventory_test.go:300–345` | `clusterRoutes`, `unixRoutes` | thêm `cluster-v2`, `cluster-unix` |
+| `hscontrol/servertest/p08a_apiv2_tailnet_scope_test.go` | `p08aTwoTailnets`, `TestP08aAPIv2AdminKeyCannotAddressOtherTailnet` | nay chạy trên cluster (tag `p05cluster`) |
+
+### Giả định còn mở (cập nhật)
+
+- G2 vẫn đúng: sau VPS/WireGuard, `RemoteAddr` là địa chỉ tunnel, nên không có giới hạn theo IP; giới hạn `/api/v2` là toàn process (trước khi tra key), theo key, theo tailnet.
+- G5 đã đóng: ở cluster mode không nhận OAuth access token và không mount `/api/v2/oauth/token`; tenant không tạo được OAuth client.
+- Mới: CLI quản trị live phải chạy trên host của process active (unix socket); standby trả 503. Chưa có cơ chế tìm process active từ xa.

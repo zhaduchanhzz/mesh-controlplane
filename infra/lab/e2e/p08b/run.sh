@@ -235,7 +235,7 @@ setup() {
   [ "$(curl -s -o /dev/null -w '%{http_code}' -m 3 "$URL/ready")" = 200 ] || { log "public /ready not 200"; return 1; }
 
   log "mesh-placement on mc-cp loopback (throwaway CA under $PLDIR)"
-  cp_ "set -e; sudo install -d -o root -g headscale -m 0750 $PLDIR; cd $PLDIR
+  cp_ "set -e; sudo install -d -o root -g headscale -m 0751 $PLDIR; cd $PLDIR
     sudo openssl ecparam -name prime256v1 -genkey -noout -out ca.key 2>/dev/null
     sudo openssl req -x509 -new -key ca.key -subj /CN=p08b-e2e-ca -days 1 -out ca.crt 2>/dev/null
     sudo openssl ecparam -name prime256v1 -genkey -noout -out srv.key 2>/dev/null
