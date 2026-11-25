@@ -42,15 +42,11 @@ func handOver(t *testing.T, gdb *gorm.DB, id string) {
 func movingTo(t *testing.T, gdb *gorm.DB, id string) string {
 	t.Helper()
 
-	var v []*string
-	require.NoError(t, gdb.Raw(`SELECT moving_to_cluster_id FROM tailnets WHERE id = ?`, id).Scan(&v).Error)
+	var v []string
+	require.NoError(t, gdb.Raw(`SELECT COALESCE(moving_to_cluster_id, '') FROM tailnets WHERE id = ?`, id).Scan(&v).Error)
 	require.Len(t, v, 1)
 
-	if v[0] == nil {
-		return ""
-	}
-
-	return *v[0]
+	return v[0]
 }
 
 // Q2: scheduling validates the tailnet, the target and the time, keeps one
