@@ -35,6 +35,10 @@ var rawTenantWriteAllowlist = map[string]string{
 	// Platform operator path (P06, ADR 0008): the tailnet's DNS settings,
 	// validated, under the ownership lock with the config_revision bump.
 	"hscontrol/db/tailnet_settings.go": "SetTailnetDNS under LockOwnership",
+	// Platform operator path (P08b, owner decision Q3): tenant API keys,
+	// minted and revoked by the operator CLI / placement API only, under
+	// LockOwnership; every statement names its tailnet_id.
+	"internal/placement/apikeys.go": "CreateAPIKey/RevokeAPIKey under LockOwnership",
 }
 
 func TestNoRawTenantWritesOutsideFence(t *testing.T) {

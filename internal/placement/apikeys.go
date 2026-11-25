@@ -6,6 +6,7 @@ import (
 	"time"
 
 	hsdb "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"gorm.io/gorm"
 )
@@ -50,6 +51,13 @@ func (r *Registry) CreateAPIKey(ctx context.Context, op Op, id string, lifetime 
 
 	info, err := mutate(ctx, r, op, "CreateAPIKey", id, detail, func(tx *gorm.DB) (APIKeyInfo, string, error) {
 		tn, err := loadTailnet(tx, id)
+		if err != nil {
+			return APIKeyInfo{}, "", err
+		}
+
+		// Operator write of a tenant table: under the tailnet's ownership
+		// lock, like SetTailnetDNS (reviewed raw write, raw_write_guard_test).
+		err = tenantscope.LockOwnership(tx, tn.ID)
 		if err != nil {
 			return APIKeyInfo{}, "", err
 		}
@@ -154,6 +162,11 @@ func (r *Registry) RevokeAPIKey(ctx context.Context, op Op, id string, keyID uin
 
 	return mutate(ctx, r, op, "RevokeAPIKey", target, nil, func(tx *gorm.DB) (APIKeyInfo, string, error) {
 		tn, err := loadTailnet(tx, id)
+		if err != nil {
+			return APIKeyInfo{}, "", err
+		}
+
+		err = tenantscope.LockOwnership(tx, tn.ID)
 		if err != nil {
 			return APIKeyInfo{}, "", err
 		}
