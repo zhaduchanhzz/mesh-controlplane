@@ -266,3 +266,5 @@ Hệ quả đo được từ code (không cần chạy):
 - **Q9 — Mức nghiệm thu "failover trên cả hai".** F01 (kill -9 active) trên mỗi cluster có đủ không, hay cần F01–F04 trên cả c1 và c2 khi hai cluster cùng chạy?
 - **Q10 — FK registry.** Thêm FK `tailnets.owner_cluster_id → clusters(id)` (và/hoặc `cluster_leases.cluster_id`) bằng migration cuối, hay giữ không FK và chỉ báo cáo R1? **[Đề xuất]** giữ không FK trong P12 (DB lab có cluster chưa đăng ký), báo cáo R1; cập nhật PLAN/`05-data-api-contract.md` cho khớp `ACTIVE/DRAINING/DISABLED`.
 - **Q11 — Thứ tự với P08b.** P12 bắt đầu code sau khi P08b merge (tránh xung đột `placementapi/api.go`, `cluster.go`), hay song song rồi rebase?
+
+> **2026-11-25:** chủ dự án trả lời "theo đề xuất hết", Q7 đo trong P12. Bản ghi quyết định: `tickets/P12.md` §Quyết định.
