@@ -4,6 +4,7 @@ package servertest_test
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,19 @@ func TestScheduledMoveNotifiesOnlyItsClients(t *testing.T) {
 
 	assert.Never(t, func() bool { return hasMoveNotice(b) }, 3*time.Second, 100*time.Millisecond,
 		"B's client is not told about A's move")
+
+	// Owner Q3: A's own API shows it read-only (time, reason); B's does not.
+	keyA, keyB := c1.MintAPIKey(t, tenantA), c1.MintAPIKey(t, tenantB)
+	r := apiCall(t, c1.URL, http.MethodGet, "/api/v2/tailnet/-/scheduled-move", keyA, "")
+	require.Equal(t, http.StatusOK, r.code, r.body)
+	assert.Contains(t, r.body, `"scheduled":true`)
+	assert.Contains(t, r.body, "rebalance")
+	assert.NotContains(t, r.body, c2.ClusterID, "the target cluster is never named")
+
+	r = apiCall(t, c1.URL, http.MethodGet, "/api/v2/tailnet/-/scheduled-move", keyB, "")
+	require.Equal(t, http.StatusOK, r.code, r.body)
+	assert.Contains(t, r.body, `"scheduled":false`)
+	assert.NotContains(t, r.body, "rebalance")
 
 	_, err = reg.CancelScheduledMove(context.Background(), servertest.TestOperator, m.ID)
 	require.NoError(t, err)
