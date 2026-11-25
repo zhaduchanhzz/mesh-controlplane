@@ -136,7 +136,7 @@ const (
 )
 
 func (s Source) String() string {
-	switch s {
+	switch s { //nolint:exhaustive // SourceUnknown and out-of-range values print as unknown(n)
 	case SourceClientSession:
 		return "client-session"
 	case SourceInternalService:
@@ -199,7 +199,8 @@ func WithScope(ctx context.Context, s Scope) (context.Context, error) {
 		return ctx, fmt.Errorf("%w: refusing to bind", ErrInvalidScope)
 	}
 
-	if prev, err := FromContext(ctx); err == nil {
+	prev, err := FromContext(ctx)
+	if err == nil {
 		if prev.id != s.id {
 			return ctx, fmt.Errorf("%w: bound to %s, refusing %s", ErrScopeConflict, prev.id, s.id)
 		}

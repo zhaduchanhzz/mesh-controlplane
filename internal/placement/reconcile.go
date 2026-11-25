@@ -8,9 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"gorm.io/gorm"
 )
 
 // FindingCode names one anomaly of the cross-cluster reconcile report (P12,
@@ -66,11 +65,11 @@ const DefaultMoveMaxAge = 5 * time.Minute
 // Finding is one anomaly. It carries identifiers and counts only: no slug,
 // endpoint, key or tenant data (I15).
 type Finding struct {
-	Code      FindingCode `json:"code" enum:"R1_OWNER_UNREGISTERED,R2_OWNER_DISABLED,R3_OWNER_DRAINING,R4_OWNER_NO_LIVE_LEASE,R5_CLUSTER_ACTIVE_NO_LIVE_LEASE,R6_CLUSTER_NO_NOISE_KEY,R7_CLUSTER_OVER_CAPACITY,R8_DEDICATED_MULTIPLE_TAILNETS,R9_TAILNET_PENDING_TOO_LONG,R10_MOVE_PENDING_TOO_LONG" doc:"anomaly; see evidence/source-inventory-P12.md §3.2"`
-	ClusterID string      `json:"cluster_id,omitempty" doc:"cluster concerned (owner of the tailnet for R1-R4, R9, R10)"`
-	TailnetID string      `json:"tailnet_id,omitempty" doc:"tailnet concerned (R1-R4, R9, R10)"`
-	Count     int64       `json:"count,omitempty" doc:"R7 devices, R8 live tailnets, R9 seconds PENDING, R10 seconds since the move was requested"`
-	Limit     int64       `json:"limit,omitempty" doc:"R7 max_devices, R8 1, R9 and R10 seconds allowed"`
+	Code      FindingCode `doc:"anomaly; see evidence/source-inventory-P12.md §3.2"                                         enum:"R1_OWNER_UNREGISTERED,R2_OWNER_DISABLED,R3_OWNER_DRAINING,R4_OWNER_NO_LIVE_LEASE,R5_CLUSTER_ACTIVE_NO_LIVE_LEASE,R6_CLUSTER_NO_NOISE_KEY,R7_CLUSTER_OVER_CAPACITY,R8_DEDICATED_MULTIPLE_TAILNETS,R9_TAILNET_PENDING_TOO_LONG,R10_MOVE_PENDING_TOO_LONG" json:"code"`
+	ClusterID string      `doc:"cluster concerned (owner of the tailnet for R1-R4, R9, R10)"                                json:"cluster_id,omitempty"`
+	TailnetID string      `doc:"tailnet concerned (R1-R4, R9, R10)"                                                         json:"tailnet_id,omitempty"`
+	Count     int64       `doc:"R7 devices, R8 live tailnets, R9 seconds PENDING, R10 seconds since the move was requested" json:"count,omitempty"`
+	Limit     int64       `doc:"R7 max_devices, R8 1, R9 and R10 seconds allowed"                                           json:"limit,omitempty"`
 }
 
 // Report is the cross-cluster reconcile report.

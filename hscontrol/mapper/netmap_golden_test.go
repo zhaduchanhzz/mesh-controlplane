@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -170,11 +171,11 @@ func (g *netmapGolden) connect(id types.NodeID) {
 	g.step(fmt.Sprintf("connect %d", id), cs)
 }
 
-func (g *netmapGolden) join(user, host string, tags ...string) types.NodeID {
+func (g *netmapGolden) join(user, host string) {
 	g.t.Helper()
 
 	uid := types.UserID(g.users[user].ID)
-	pak, err := g.st.CreatePreAuthKey(&uid, false, false, nil, tags)
+	pak, err := g.st.CreatePreAuthKey(&uid, false, false, nil, nil)
 	require.NoError(g.t, err)
 
 	nv, c, err := g.st.HandleNodeFromPreAuthKey(tailcfg.RegisterRequest{
@@ -187,8 +188,6 @@ func (g *netmapGolden) join(user, host string, tags ...string) types.NodeID {
 
 	g.step(fmt.Sprintf("join %s/%s -> %d", user, host, nv.ID()), []change.Change{c})
 	g.connect(nv.ID())
-
-	return nv.ID()
 }
 
 func (g *netmapGolden) node(host string) types.NodeView {
@@ -342,8 +341,7 @@ func (g *netmapGolden) router(host string, routes ...netip.Prefix) {
 func (g *netmapGolden) waitIdle() {
 	g.t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	require.Eventually(g.t, func() bool {
 		busy := false
 
 		g.b.nodes.Range(func(_ types.NodeID, nc *multiChannelNodeConn) bool {
@@ -354,14 +352,8 @@ func (g *netmapGolden) waitIdle() {
 			return !busy
 		})
 
-		if !busy {
-			return
-		}
-
-		time.Sleep(time.Millisecond)
-	}
-
-	g.t.Fatal("batcher did not drain")
+		return !busy
+	}, 10*time.Second, time.Millisecond, "batcher did not drain")
 }
 
 func pendingLen(nc *multiChannelNodeConn) int {
@@ -404,8 +396,12 @@ func goldenChange(c change.Change) string {
 		on   bool
 		name string
 	}{
-		{c.IncludeSelf, "self"}, {c.IncludeDERPMap, "derp"}, {c.IncludeDNS, "dns"},
-		{c.IncludeDomain, "domain"}, {c.IncludePolicy, "policy"}, {c.SendAllPeers, "allpeers"},
+		{c.IncludeSelf, "self"},
+		{c.IncludeDERPMap, "derp"},
+		{c.IncludeDNS, "dns"},
+		{c.IncludeDomain, "domain"},
+		{c.IncludePolicy, "policy"},
+		{c.SendAllPeers, "allpeers"},
 		{c.RequiresRuntimePeerComputation, "runtime"},
 	} {
 		if f.on {
@@ -480,7 +476,7 @@ func goldenFrame(r *tailcfg.MapResponse) string {
 		for _, p := range r.PeersChangedPatch {
 			on := "-"
 			if p.Online != nil {
-				on = fmt.Sprint(*p.Online)
+				on = strconv.FormatBool(*p.Online)
 			}
 
 			ps = append(ps, fmt.Sprintf("%d:%s", p.NodeID, on))
@@ -491,10 +487,14 @@ func goldenFrame(r *tailcfg.MapResponse) string {
 	}
 
 	if r.PacketFilter != nil || r.PacketFilters != nil {
-		js, _ := json.Marshal(struct {
+		js, err := json.Marshal(struct {
 			F  []tailcfg.FilterRule
 			Fs map[string][]tailcfg.FilterRule
 		}{r.PacketFilter, r.PacketFilters})
+		if err != nil {
+			panic(err)
+		}
+
 		sum := sha256.Sum256(js)
 		parts = append(parts, "filter="+hex.EncodeToString(sum[:])[:12])
 	}
@@ -556,6 +556,7 @@ func runNetmapScenario(g *netmapGolden) string {
 	// HA subnet routers: removing the primary moves the route to the
 	// standby, which every peer must learn; never a local removal.
 	lan := netip.MustParsePrefix("10.9.0.0/24")
+
 	g.join("alice", "r1")
 	g.join("bob", "r2")
 	g.router("r1", lan)

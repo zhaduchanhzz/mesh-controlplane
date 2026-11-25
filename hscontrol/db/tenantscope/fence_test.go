@@ -14,6 +14,7 @@ import (
 
 func setOwner(t *testing.T, db *gorm.DB, id, cluster string, epoch int64) {
 	t.Helper()
+
 	err := db.Model(&tailnetRow{}).Where("id = ?", id).
 		Updates(map[string]any{"owner_cluster_id": cluster, "owner_epoch": epoch}).Error
 	if err != nil {
@@ -23,8 +24,11 @@ func setOwner(t *testing.T, db *gorm.DB, id, cluster string, epoch int64) {
 
 func itemsOfCtx(t *testing.T, db *gorm.DB, ctx context.Context) []item {
 	t.Helper()
+
 	var items []item
-	if err := db.WithContext(ctx).Order("id").Find(&items).Error; err != nil {
+
+	err := db.WithContext(ctx).Order("id").Find(&items).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -61,7 +65,8 @@ func assertAllWritesFenced(t *testing.T, db *gorm.DB, stale, fresh context.Conte
 		}},
 	}
 	for _, c := range checks {
-		if err := c.fn(); !errors.Is(err, ErrFenced) {
+		err := c.fn()
+		if !errors.Is(err, ErrFenced) {
 			t.Errorf("%s: err=%v, want ErrFenced", c.name, err)
 		}
 	}
@@ -70,6 +75,7 @@ func assertAllWritesFenced(t *testing.T, db *gorm.DB, stale, fresh context.Conte
 	if len(after) != len(before) {
 		t.Fatalf("rows changed: %d -> %d", len(before), len(after))
 	}
+
 	for i := range before {
 		if before[i].Name != after[i].Name {
 			t.Fatalf("row %d changed: %q -> %q", before[i].ID, before[i].Name, after[i].Name)
@@ -98,14 +104,18 @@ func TestFenceInactiveTailnetRollsBack(t *testing.T) {
 	for _, st := range []string{"SUSPENDED", "DELETING", "PENDING"} {
 		t.Run(st, func(t *testing.T) {
 			db := openDB(t)
-			if err := db.Model(&tailnetRow{}).Where("id = ?", idA).Update("status", st).Error; err != nil {
+
+			err := db.Model(&tailnetRow{}).Where("id = ?", idA).Update("status", st).Error
+			if err != nil {
 				t.Fatal(err)
 			}
+
 			assertAllWritesFenced(t, db, ctxFor(t, idA), ctxFor(t, idA))
 
 			// B (ACTIVE) is unaffected.
-			if err := db.WithContext(ctxFor(t, idB)).Model(&item{}).Where("name LIKE ?", "i0-%").
-				Update("name", "b-ok").Error; err != nil {
+			err = db.WithContext(ctxFor(t, idB)).Model(&item{}).Where("name LIKE ?", "i0-%").
+				Update("name", "b-ok").Error
+			if err != nil {
 				t.Fatalf("B's write: %v", err)
 			}
 		})
@@ -113,10 +123,14 @@ func TestFenceInactiveTailnetRollsBack(t *testing.T) {
 
 	t.Run("soft-deleted", func(t *testing.T) {
 		db := openDB(t)
+
 		now := time.Now().UTC()
-		if err := db.Model(&tailnetRow{}).Where("id = ?", idA).Update("deleted_at", &now).Error; err != nil {
+
+		err := db.Model(&tailnetRow{}).Where("id = ?", idA).Update("deleted_at", &now).Error
+		if err != nil {
 			t.Fatal(err)
 		}
+
 		assertAllWritesFenced(t, db, ctxFor(t, idA), ctxFor(t, idA))
 	})
 }
@@ -124,27 +138,38 @@ func TestFenceInactiveTailnetRollsBack(t *testing.T) {
 func TestFenceOtherTenantUnaffected(t *testing.T) {
 	db := openDB(t)
 	setOwner(t, db, idA, "c2", testEpoch+1)
-	if err := db.WithContext(ctxFor(t, idB)).Model(&item{}).Where("name LIKE ?", "i0-%").
-		Update("name", "b-ok").Error; err != nil {
+
+	err := db.WithContext(ctxFor(t, idB)).Model(&item{}).Where("name LIKE ?", "i0-%").
+		Update("name", "b-ok").Error
+	if err != nil {
 		t.Fatalf("B's write with B's valid fence: %v", err)
 	}
 }
 
 func TestFenceRequired(t *testing.T) {
 	db := openDB(t)
+
 	tx := db.WithContext(scopeOnlyCtx(t, idA))
-	if err := tx.Create(&item{Name: "x"}).Error; !errors.Is(err, ErrNoFence) {
+
+	err := tx.Create(&item{Name: "x"}).Error
+	if !errors.Is(err, ErrNoFence) {
 		t.Fatalf("Create without fence: err=%v, want ErrNoFence", err)
 	}
-	if err := tx.Model(&item{}).Where("1 = 1").Update("name", "x").Error; !errors.Is(err, ErrNoFence) {
+
+	err = tx.Model(&item{}).Where("1 = 1").Update("name", "x").Error
+	if !errors.Is(err, ErrNoFence) {
 		t.Fatalf("Update without fence: err=%v, want ErrNoFence", err)
 	}
-	if err := tx.Where("1 = 1").Delete(&item{}).Error; !errors.Is(err, ErrNoFence) {
+
+	err = tx.Where("1 = 1").Delete(&item{}).Error
+	if !errors.Is(err, ErrNoFence) {
 		t.Fatalf("Delete without fence: err=%v, want ErrNoFence", err)
 	}
 	// Reads need no fence.
 	var items []item
-	if err := tx.Find(&items).Error; err != nil || len(items) != 2 {
+
+	err = tx.Find(&items).Error
+	if err != nil || len(items) != 2 {
 		t.Fatalf("read without fence: err=%v rows=%d", err, len(items))
 	}
 }
@@ -152,14 +177,21 @@ func TestFenceRequired(t *testing.T) {
 func TestFenceValidWritesPass(t *testing.T) {
 	db := openDB(t)
 	tx := db.WithContext(ctxFor(t, idA))
+
 	items := itemsOfCtx(t, db, ctxFor(t, idA))
-	if err := tx.Create(&item{Name: "new", OwnerID: items[0].OwnerID}).Error; err != nil {
+
+	err := tx.Create(&item{Name: "new", OwnerID: items[0].OwnerID}).Error
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Model(&item{}).Where("id = ?", items[0].ID).Update("name", "upd").Error; err != nil {
+
+	err = tx.Model(&item{}).Where("id = ?", items[0].ID).Update("name", "upd").Error
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Delete(&item{}, items[1].ID).Error; err != nil {
+
+	err = tx.Delete(&item{}, items[1].ID).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -171,10 +203,14 @@ func TestFenceBlocksConcurrentMove(t *testing.T) {
 	if os.Getenv("MESH_TEST_POSTGRES_DSN") == "" {
 		t.Skip("PostgreSQL only (SQLite serialises writers)")
 	}
+
 	db := openDB(t)
+
 	tx := db.WithContext(ctxFor(t, idA)).Begin()
 	defer tx.Rollback()
-	if err := tx.Model(&item{}).Where("name LIKE ?", "i0-%").Update("name", "held").Error; err != nil {
+
+	err := tx.Model(&item{}).Where("name LIKE ?", "i0-%").Update("name", "held").Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,26 +219,35 @@ func TestFenceBlocksConcurrentMove(t *testing.T) {
 		movedAt time.Time
 		moveErr error
 	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+
+	wg.Go(func() {
 		moveErr = db.Model(&tailnetRow{}).Where("id = ?", idA).Update("owner_epoch", testEpoch+1).Error
 		movedAt = time.Now()
-	}()
+	})
 
-	time.Sleep(500 * time.Millisecond)
+	// The move must stay blocked behind the open transaction; holding it
+	// open for a while is the test.
+	time.Sleep(500 * time.Millisecond) //nolint:forbidigo // holds the transaction open: elapsed time is the subject
+
 	committedAt := time.Now()
-	if err := tx.Commit().Error; err != nil {
+
+	err = tx.Commit().Error
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	wg.Wait()
+
 	if moveErr != nil {
 		t.Fatal(moveErr)
 	}
+
 	if movedAt.Before(committedAt) {
 		t.Fatalf("ownership moved at %v, before the fenced writer committed at %v", movedAt, committedAt)
 	}
-	if err := db.WithContext(ctxFor(t, idA)).Model(&item{}).Where("1 = 1").Update("name", "late").Error; !errors.Is(err, ErrFenced) {
+
+	err = db.WithContext(ctxFor(t, idA)).Model(&item{}).Where("1 = 1").Update("name", "late").Error
+	if !errors.Is(err, ErrFenced) {
 		t.Fatalf("write after move: err=%v, want ErrFenced", err)
 	}
 }
@@ -214,41 +259,55 @@ func TestFenceBlocksConcurrentMove(t *testing.T) {
 // (26-136 s per move with 8 writers). Writers keep committing afterwards.
 func TestOwnershipChangeNotStarvedByWriters(t *testing.T) {
 	db := openDB(t)
-	if db.Dialector.Name() != "postgres" {
+	if db.Name() != "postgres" {
 		t.Skip("PostgreSQL only (MESH_TEST_POSTGRES_DSN)")
 	}
-	if sqlDB, err := db.DB(); err == nil {
+
+	sqlDB, err := db.DB()
+	if err == nil {
 		sqlDB.SetMaxOpenConns(64)
 	}
+
 	var it item
-	if err := db.WithContext(ctxFor(t, idA)).Order("id").First(&it).Error; err != nil {
+
+	err = db.WithContext(ctxFor(t, idA)).Order("id").First(&it).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	var epoch atomic.Int64
+	var epoch atomic.Uint64
 	epoch.Store(testEpoch)
 	stop := writeLoad(t, db, it.OwnerID, 16, &epoch)
-	time.Sleep(300 * time.Millisecond)
+
+	time.Sleep(300 * time.Millisecond) //nolint:forbidigo // lets the writers reach steady load before the moves
 
 	var worst time.Duration
+
 	for range 20 {
 		next := epoch.Load() + 1
 		start := time.Now()
-		if err := moveEpoch(db, next); err != nil {
+
+		err := moveEpoch(db, next)
+		if err != nil {
 			stop()
 			t.Fatalf("ownership change under load: %v", err)
 		}
+
 		worst = max(worst, time.Since(start))
+
 		epoch.Store(next)
 	}
+
 	before := stop()
 
 	if worst > 2*time.Second {
 		t.Fatalf("slowest ownership change took %s under write load, want < 2s", worst)
 	}
+
 	if before == 0 {
 		t.Fatal("no write committed under the fence")
 	}
+
 	t.Logf("20 changes, slowest %s; %d writes committed", worst, before)
 }
 
@@ -257,49 +316,63 @@ func TestOwnershipChangeNotStarvedByWriters(t *testing.T) {
 // OwnershipLockTimeout and changes nothing.
 func TestOwnershipChangeBoundedByLockTimeout(t *testing.T) {
 	db := openDB(t)
-	if db.Dialector.Name() != "postgres" {
+	if db.Name() != "postgres" {
 		t.Skip("PostgreSQL only (MESH_TEST_POSTGRES_DSN)")
 	}
+
 	saved := OwnershipLockTimeout
 	OwnershipLockTimeout = 300 * time.Millisecond
+
 	t.Cleanup(func() { OwnershipLockTimeout = saved })
 
 	held := make(chan struct{})
 	release := make(chan struct{})
+
 	writer := make(chan error, 1)
 	go func() {
 		writer <- db.WithContext(ctxFor(t, idA)).Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(&item{}).Where("name LIKE ?", "i0-%").Update("name", "held").Error; err != nil {
+			err := tx.Model(&item{}).Where("name LIKE ?", "i0-%").Update("name", "held").Error
+			if err != nil {
 				close(held)
 
 				return err
 			}
+
 			close(held)
 			<-release
 
 			return nil
 		})
 	}()
+
 	<-held
 
 	start := time.Now()
 	err := moveEpoch(db, testEpoch+1)
 	took := time.Since(start)
+
 	close(release)
-	if werr := <-writer; werr != nil {
+
+	werr := <-writer
+	if werr != nil {
 		t.Fatalf("held writer: %v", werr)
 	}
 
 	if err == nil {
 		t.Fatal("ownership change succeeded while a writer held the tailnet")
 	}
+
 	if took > 3*time.Second {
 		t.Fatalf("ownership change waited %s, want about OwnershipLockTimeout", took)
 	}
+
 	var row tailnetRow
-	if err := db.First(&row, "id = ?", idA).Error; err != nil {
+
+	err = db.First(&row, "id = ?", idA).Error
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	if row.OwnerEpoch != testEpoch {
 		t.Fatalf("epoch moved to %d despite the failed change", row.OwnerEpoch)
 	}

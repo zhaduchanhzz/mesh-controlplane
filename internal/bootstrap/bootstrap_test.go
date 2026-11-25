@@ -41,7 +41,10 @@ func (f *fakeStore) LookupAuthKey(_ context.Context, keyID string) (Record, bool
 	return r, ok, nil
 }
 
-func ptr[T any](v T) *T { return &v }
+var (
+	errDBDown          = errors.New("db down")
+	errMustNotBeCalled = errors.New("must not be called")
+)
 
 func storedHash(secret string) []byte { return []byte(hashPrefixSHA256 + ProofOf(secret)) }
 
@@ -51,7 +54,7 @@ func rec(secret string) Record {
 	return Record{
 		TailnetID: "tn-acme", Hash: storedHash(secret), Reusable: true,
 		TailnetSlug: "acme", TailnetState: "ACTIVE",
-		ClusterEndpoint: ptr(urlA), ClusterState: ptr("ACTIVE"),
+		ClusterEndpoint: new(urlA), ClusterState: new("ACTIVE"),
 	}
 }
 
@@ -73,14 +76,14 @@ func fixture() *fakeStore {
 	add("a00000000006", func(r *Record) { r.TailnetState = "PENDING" })
 	add("a00000000007", func(r *Record) { r.TailnetState = "DELETING" })
 	add("a00000000008", func(r *Record) { r.Deleted = true })
-	add("a00000000009", func(r *Record) { r.MovingTo = ptr("c2") })
-	add("a0000000000a", func(r *Record) { r.ClusterState = ptr("DISABLED") })
+	add("a00000000009", func(r *Record) { r.MovingTo = new("c2") })
+	add("a0000000000a", func(r *Record) { r.ClusterState = new("DISABLED") })
 	add("a0000000000b", func(r *Record) { r.ClusterEndpoint, r.ClusterState = nil, nil })
-	add("a0000000000c", func(r *Record) { r.Expiration = &future; r.ClusterState = ptr("DRAINING") })
+	add("a0000000000c", func(r *Record) { r.Expiration = &future; r.ClusterState = new("DRAINING") })
 	add("a0000000000d", func(r *Record) { r.Hash = []byte("$2a$10$legacybcrypthashvalue") })
 
 	b := rec(secretB)
-	b.TailnetID, b.TailnetSlug, b.ClusterEndpoint = "tn-beta", "beta", ptr(urlB)
+	b.TailnetID, b.TailnetSlug, b.ClusterEndpoint = "tn-beta", "beta", new(urlB)
 	m["b00000000001"] = b
 
 	return &fakeStore{recs: m}
@@ -95,10 +98,13 @@ func newTestHandler(store Store, cfg HandlerConfig) *Handler {
 }
 
 func body(keyID, secret, tenant string) string {
-	b, _ := json.Marshal(Request{
+	b, err := json.Marshal(Request{
 		Credential: Credential{Kind: CredentialKindAuthKeyProof, KeyID: keyID, Proof: ProofOf(secret)},
 		Tenant:     tenant,
 	})
+	if err != nil {
+		panic(err)
+	}
 
 	return string(b)
 }
@@ -110,7 +116,7 @@ type response struct {
 }
 
 func do(h http.Handler, method, path, payload string) response {
-	req := httptest.NewRequest(method, "https://"+testHost+path, strings.NewReader(payload))
+	req := httptest.NewRequestWithContext(context.Background(), method, "https://"+testHost+path, strings.NewReader(payload))
 	req.Host = testHost
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -213,7 +219,7 @@ func TestBootstrapMovingAndUnavailableOnlyForCredentialed(t *testing.T) {
 // TestBootstrapStoreFailureIsUnavailable: a store error is a 503, never an
 // answer, and never the refusal (the client retries).
 func TestBootstrapStoreFailureIsUnavailable(t *testing.T) {
-	h := newTestHandler(&fakeStore{err: errors.New("db down")}, DefaultHandlerConfig(""))
+	h := newTestHandler(&fakeStore{err: errDBDown}, DefaultHandlerConfig(""))
 	r := do(h, http.MethodPost, PathBootstrap, body(keyActive, secretA, ""))
 	assert.Equal(t, http.StatusServiceUnavailable, r.status)
 	assert.Equal(t, string(bodyUnavailable), r.body)
@@ -222,7 +228,7 @@ func TestBootstrapStoreFailureIsUnavailable(t *testing.T) {
 // TestBootstrapMalformedNeverReachesStore: malformed requests are a uniform
 // 400 decided without the store.
 func TestBootstrapMalformedNeverReachesStore(t *testing.T) {
-	h := newTestHandler(&fakeStore{err: errors.New("must not be called")}, DefaultHandlerConfig(""))
+	h := newTestHandler(&fakeStore{err: errMustNotBeCalled}, DefaultHandlerConfig(""))
 
 	for name, payload := range map[string]string{
 		"not json":        "{",
@@ -259,12 +265,14 @@ func TestBootstrapNoDebugOrMetrics(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, do(h, http.MethodPost, PathHealth, "").status, "POST health")
 	assert.Equal(t, http.StatusOK, do(h, http.MethodGet, PathHealth, "").status)
 
-	req := httptest.NewRequest(http.MethodPost, "https://c1.cp.example.test"+PathBootstrap, strings.NewReader(body(keyActive, secretA, "")))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://c1.cp.example.test"+PathBootstrap,
+		strings.NewReader(body(keyActive, secretA, "")))
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusMisdirectedRequest, rr.Code, "another host")
 
-	req = httptest.NewRequest(http.MethodPost, "https://"+testHost+PathBootstrap, strings.NewReader(body(keyActive, secretA, "")))
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+testHost+PathBootstrap,
+		strings.NewReader(body(keyActive, secretA, "")))
 	req.Host = testHost
 	req.TLS.ServerName = "c1.cp.example.test"
 	rr = httptest.NewRecorder()
@@ -306,10 +314,12 @@ func TestBootstrapNoSecretsInLogs(t *testing.T) {
 
 	saved, savedLevel := log.Logger, zerolog.GlobalLevel()
 	log.Logger = zerolog.New(&buf)
+
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 
 	t.Cleanup(func() {
 		log.Logger = saved
+
 		zerolog.SetGlobalLevel(savedLevel)
 	})
 

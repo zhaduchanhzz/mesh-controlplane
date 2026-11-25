@@ -58,13 +58,13 @@ func (s ClusterState) Valid() bool {
 // Cluster is a row of the clusters table. Revision grows by one on every
 // change and never decreases (a database trigger refuses it).
 type Cluster struct {
-	ID             string       `gorm:"primaryKey" json:"id"`
+	ID             string       `gorm:"primaryKey"                   json:"id"`
 	EndpointURL    string       `gorm:"column:endpoint_url;not null" json:"endpoint_url"`
-	Class          Class        `gorm:"not null" json:"class"`
-	State          ClusterState `gorm:"not null" json:"state"`
-	NoisePublicKey string       `gorm:"column:noise_public_key" json:"noise_public_key,omitempty"`
-	MaxDevices     int64        `gorm:"column:max_devices;not null" json:"max_devices"`
-	Revision       uint64       `gorm:"not null" json:"revision"`
+	Class          Class        `gorm:"not null"                     json:"class"`
+	State          ClusterState `gorm:"not null"                     json:"state"`
+	NoisePublicKey string       `gorm:"column:noise_public_key"      json:"noise_public_key,omitempty"`
+	MaxDevices     int64        `gorm:"column:max_devices;not null"  json:"max_devices"`
+	Revision       uint64       `gorm:"not null"                     json:"revision"`
 	CreatedAt      time.Time    `json:"created_at"`
 	UpdatedAt      time.Time    `json:"updated_at"`
 }

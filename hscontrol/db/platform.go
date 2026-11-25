@@ -8,13 +8,12 @@ import (
 	"sync"
 
 	"github.com/go-gormigrate/gormigrate/v2"
-	"gorm.io/gorm"
-	"tailscale.com/types/key"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
+	"tailscale.com/types/key"
 )
 
 var (
@@ -133,7 +132,8 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 	// database); otherwise it leaks and, on Windows, keeps the file locked.
 	defer func() {
 		if retErr != nil {
-			if sqlDB, err := dbConn.DB(); err == nil {
+			sqlDB, err := dbConn.DB()
+			if err == nil {
 				_ = sqlDB.Close()
 			}
 		}

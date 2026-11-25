@@ -40,6 +40,7 @@ func TestP10bRetireWaitsForInFlightRequest(t *testing.T) {
 	require.NoError(t, err, "a bound session admits a request")
 
 	start := time.Now()
+
 	c.retire(rt, "test")
 	assert.Less(t, time.Since(start), time.Second, "retire must not wait for the runtime's requests")
 
@@ -49,7 +50,8 @@ func TestP10bRetireWaitsForInFlightRequest(t *testing.T) {
 	_, err = ns.enter()
 	require.ErrorIs(t, err, errRuntimeRetired, "a retired runtime admits no new request")
 
-	time.Sleep(500 * time.Millisecond)
+	// A negative check: give a wrong close time to happen; nothing to poll.
+	time.Sleep(500 * time.Millisecond) //nolint:forbidigo // waits for an event that must not happen
 	require.False(t, st.Closed(), "State closed under a request still in flight")
 
 	release()

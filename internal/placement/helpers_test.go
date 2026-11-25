@@ -12,11 +12,10 @@ import (
 	"uuid"
 
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-	"zombiezen.com/go/postgrestest"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"gorm.io/gorm"
+	"zombiezen.com/go/postgrestest"
 )
 
 type backend struct {

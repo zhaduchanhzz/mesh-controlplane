@@ -131,7 +131,7 @@ func registryMigration() *gormigrate.Migration {
 		Migrate: func(db *gorm.DB) error {
 			return db.Transaction(func(tx *gorm.DB) error {
 				ddl := registrySQLiteDDL
-				if tx.Name() == "postgres" {
+				if tx.Name() == dialectPostgres {
 					ddl = registryPostgresDDL
 				}
 
@@ -144,7 +144,7 @@ func registryMigration() *gormigrate.Migration {
 					`DROP TRIGGER IF EXISTS trg_tailnets_owner_epoch_monotonic`,
 					`DROP TRIGGER IF EXISTS trg_clusters_revision_monotonic`,
 				}
-				if tx.Name() == "postgres" {
+				if tx.Name() == dialectPostgres {
 					stmts = []string{
 						`DROP TRIGGER IF EXISTS trg_tailnets_owner_epoch_monotonic ON tailnets`,
 						`DROP FUNCTION IF EXISTS tailnets_owner_epoch_monotonic()`,
@@ -156,7 +156,7 @@ func registryMigration() *gormigrate.Migration {
 					`DROP TABLE IF EXISTS platform_audit`,
 					`DROP TABLE IF EXISTS clusters`,
 				)
-				if tx.Name() == "postgres" {
+				if tx.Name() == dialectPostgres {
 					stmts = append(stmts, `DROP FUNCTION IF EXISTS clusters_revision_monotonic()`)
 				}
 

@@ -9,9 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
 )
 
 // TestQuotaSharedClusterBudget (P10d): the tailnets of a shared cluster
@@ -47,6 +46,7 @@ func TestQuotaSharedClusterBudget(t *testing.T) {
 			assert.True(t, q.ClusterWarn, "the 8th device reaches 80%% of the cluster")
 
 			addNodes(t, gdb, a.ID, 3) // 10 on the cluster
+
 			for _, id := range []string{a.ID, bt.ID} {
 				q, err = r.EnrollmentAllowed(ctx, tailnet.MustParseID(id))
 				require.ErrorIs(t, err, ErrClusterFull)
@@ -69,7 +69,7 @@ func TestQuotaSharedClusterBudget(t *testing.T) {
 			addNodes(t, gdb, ded.ID, 1)
 			_, err = r.EnrollmentAllowed(ctx, tailnet.MustParseID(ded.ID))
 			require.ErrorIs(t, err, ErrQuotaExceeded)
-			require.False(t, errors.Is(err, ErrClusterFull))
+			require.NotErrorIs(t, err, ErrClusterFull)
 		})
 	}
 }
@@ -97,11 +97,7 @@ func TestQuotaSharedClusterBudgetConcurrent(t *testing.T) {
 			)
 
 			for i := range attempts {
-				wg.Add(1)
-
-				go func() {
-					defer wg.Done()
-
+				wg.Go(func() {
 					id := ids[i%2]
 					err := gdb.Transaction(func(tx *gorm.DB) error {
 						_, err := r.EnrollmentAllowedTx(tx, tailnet.MustParseID(id))
@@ -126,7 +122,7 @@ func TestQuotaSharedClusterBudgetConcurrent(t *testing.T) {
 					default:
 						other = append(other, err)
 					}
-				}()
+				})
 			}
 
 			wg.Wait()

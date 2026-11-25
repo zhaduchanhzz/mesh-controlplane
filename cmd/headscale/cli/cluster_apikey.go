@@ -58,7 +58,7 @@ func withRegistry(fn func(ctx context.Context, reg *placement.Registry, id strin
 }
 
 var tailnetAPIKeyCreateCmd = &cobra.Command{
-	Use:   "create",
+	Use:   useCreate,
 	Short: "Mint an API key for tailnet --slug; the key is printed once",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return withRegistry(func(ctx context.Context, reg *placement.Registry, id string) error {

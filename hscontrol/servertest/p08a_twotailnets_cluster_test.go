@@ -10,13 +10,16 @@ import (
 )
 
 // p08aTwoTailnets: one cluster process serving A and B, an API key minted
-// by the platform for each, one device each.
-func p08aTwoTailnets(t *testing.T) (url string, a, b p08aTailnet, ok bool) {
+// by the platform for each, one device each. It returns the server URL,
+// tailnets A and B, and whether the harness is available.
+func p08aTwoTailnets(t *testing.T) (string, p08aTailnet, p08aTailnet, bool) {
 	t.Helper()
 
 	tc := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
 	tc.SetPolicy(t, tenantA, allowAllWithSSH)
 	tc.SetPolicy(t, tenantB, allowAllWithSSH)
+
+	var a, b p08aTailnet
 
 	out := map[string]*p08aTailnet{tenantA: &a, tenantB: &b}
 	for slug, tn := range out {

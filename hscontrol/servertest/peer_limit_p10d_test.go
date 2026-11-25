@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 )

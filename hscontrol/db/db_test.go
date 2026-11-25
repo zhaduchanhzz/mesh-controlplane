@@ -19,12 +19,6 @@ import (
 	"tailscale.com/types/key"
 )
 
-// legacyPlaintextKey is the pre-0.28 plaintext pre-auth key (id 5) seeded in
-// both 0.29.3 fixtures.
-//
-// TODO(kradalby): remove in 0.31 with the credentials migration.
-const legacyPlaintextKey = "plaintextlegacykey0000000000000000000000000000"
-
 func TestSQLiteSameQueryInAndOutsideTransaction(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte(`
@@ -390,12 +384,12 @@ func TestRevokedKeysBackingNodesSurviveCollection(t *testing.T) {
 	user, err := hsdb.CreateUser(types.User{Name: "backing"})
 	require.NoError(t, err)
 
-	var (
-		revoked []uint64
-		nodeIDs []types.NodeID
-	)
+	const keys = 2
 
-	for i := range 2 {
+	revoked := make([]uint64, 0, keys)
+	nodeIDs := make([]types.NodeID, 0, keys)
+
+	for i := range keys {
 		pak, err := hsdb.CreatePreAuthKey(user.TypedID(), false, true, nil, nil)
 		require.NoError(t, err)
 

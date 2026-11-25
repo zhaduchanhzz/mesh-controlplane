@@ -101,7 +101,7 @@ var listPreAuthKeys = &cobra.Command{
 }
 
 var createPreAuthKeyCmd = &cobra.Command{
-	Use:     "create",
+	Use:     useCreate,
 	Short:   "Creates a new preauthkey",
 	Aliases: []string{"c", cmdNew},
 	RunE: clientRunE(func(ctx context.Context, client *clientv1.ClientWithResponses, cmd *cobra.Command, args []string) error {

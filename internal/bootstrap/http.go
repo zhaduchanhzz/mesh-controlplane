@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/frontdoor"
 )
 
@@ -37,6 +36,8 @@ var (
 	bodyLimited     = []byte(`{"error":"too many requests"}` + "\n")
 	bodyMisdirected = []byte(`{"error":"misdirected request"}` + "\n")
 )
+
+var errTrailingData = errors.New("trailing data")
 
 // HandlerConfig configures the public handler.
 type HandlerConfig struct {
@@ -77,7 +78,8 @@ type Handler struct {
 
 // NewHandler returns the public handler.
 func NewHandler(svc *Service, cfg HandlerConfig) *Handler {
-	if host, err := frontdoor.NormalizeHost(cfg.Hostname); err == nil {
+	host, err := frontdoor.NormalizeHost(cfg.Hostname)
+	if err == nil {
 		cfg.Hostname = host
 	}
 
@@ -146,7 +148,7 @@ func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
 
 	err := dec.Decode(&req)
 	if err == nil && dec.Decode(&struct{}{}) != io.EOF {
-		err = errors.New("trailing data")
+		err = errTrailingData
 	}
 
 	if err != nil {
@@ -170,12 +172,18 @@ func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
 
 	h.log(res.Outcome.String(), req.Credential.KeyID)
 
-	switch res.Outcome {
+	switch res.Outcome { //nolint:exhaustive // default refuses: OutcomeRefused and any outcome added later
 	case OutcomeOK:
-		body, _ := json.Marshal(struct {
+		body, err := json.Marshal(struct {
 			ControlURL string    `json:"control_url"`
 			IssuedAt   time.Time `json:"issued_at"`
 		}{res.ControlURL, now.UTC().Truncate(time.Second)})
+		if err != nil {
+			write(w, http.StatusServiceUnavailable, bodyUnavailable, 10)
+
+			break
+		}
+
 		write(w, http.StatusOK, append(body, '\n'), 0)
 	case OutcomeInvalid:
 		write(w, http.StatusBadRequest, bodyInvalid, 0)

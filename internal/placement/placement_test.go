@@ -8,13 +8,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
+	"gorm.io/gorm"
 )
 
 var ctx = context.Background()
+
+var errInjected = errors.New("injected failure")
 
 // TestCreateTailnetPendingDenyOwner: a new tailnet is PENDING, owned by the
 // chosen cluster at epoch 1, with the deny-all policy, in one transaction
@@ -67,7 +68,7 @@ func TestCreateTailnetFailureLeavesNothing(t *testing.T) {
 			r := newRegistry(t, gdb, Config{})
 			addCluster(t, r, "c1", ClassShared, ClusterActive, 100)
 
-			injected := errors.New("injected failure")
+			injected := errInjected
 
 			for i, s := range steps {
 				r.failAt = func(step string) error {
@@ -148,6 +149,7 @@ func TestPlacement(t *testing.T) {
 			assert.Equal(t, "s1", c.ID)
 
 			addNodes(t, gdb, a.ID, 4) // s1 full
+
 			_, err = r.CreateTailnet(ctx, testOp, "c", ClassShared)
 			require.ErrorIs(t, err, ErrNoCapacity, "draining/disabled clusters are never chosen")
 
