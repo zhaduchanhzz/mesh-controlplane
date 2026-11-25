@@ -10,8 +10,9 @@ live() { local c=$1 a; shift; a=$(active_of "$c"); [ "$a" = none ] && return 1
   if [ "$c" = c1 ]; then on "$a" "$CLI1 tailnet $*"; else on "$a" "$CLI2 tailnet $*"; fi; }
 node_id() { # CLUSTER SLUG HOSTNAME
   live "$1" node list --slug "$2" 2>/dev/null | py 'import json
-for n in json.load(sys.stdin):
-    if n.get("hostname")==sys.argv[1] or n.get("given_name")==sys.argv[1] or n.get("name")==sys.argv[1]: print(n["id"]); break' "$3" | strip_cr
+d = json.load(sys.stdin)
+for n in (d.get("nodes") if isinstance(d, dict) else d) or []:
+    if n.get("hostname")==sys.argv[1] or n.get("name")==sys.argv[1]: print(n["id"]); break' "$3" | strip_cr
 }
 netmap() { TS "$1" "debug netmap" 2>/dev/null; }
 set_dns() { # SLUG JSON  (c1 tailnets only here)
@@ -27,7 +28,7 @@ t_s07() {
   na=$(netmap $A1)
   grep -q b.corp.example <<<"$nb" || p="$p; b1 did not get B's search domain"
   grep -qE 'b\.corp\.example|9\.9\.9\.9' <<<"$na" && p="$p; A's netmap carries B's DNS"
-  set_dns b '{"extra_records":[{"name":"n1-a1.a.tailnet.internal","type":"A","value":"100.64.0.9"}]}' && p="$p; a record under A's domain stored for B"
+  set_dns b '{"extra_records":[{"name":"n1-a1.a.c1.tailnet.internal","type":"A","value":"100.64.0.9"}]}' && p="$p; a record under A's domain stored for B"
   set_dns b '{}' >/dev/null 2>&1 || true
   [ -z "$p" ] && record S07 PASS "B's DNS (nameserver, search domain) reaches b1 only; a record under A's domain refused for B" || record S07 FAIL "${p#; }"
 }
@@ -69,7 +70,7 @@ t_s10() {
   r=0; ts_up $B2 "$URL1" "$TMPD/key-c" n1-x2 || r=$?; [ $r != 0 ] || p="$p; key of c accepted at c1"
   [ -z "$(node_id c1 a n1-x1)$(node_id c1 b n1-x2)" ] || p="$p; a node was created"
   ts_start $B2 >/dev/null 2>&1; r=0; ts_up $B2 "$URL1" "$TMPD/key-b" n1-b2 || r=$?; [ $r = 0 ] || p="$p; b2 back rc=$r"
-  wait_peers $B1 n1-b2 40 || p="$p; b1 peers [$(peers $B1)]"
+  wait_peers $B1 n1-b2 40 || p="$p; b1 online peers [$(peers $B1)]"
   [ -z "$p" ] && record S10 PASS "key of a at c2 and key of c at c1 refused, no node; b2 re-enrolled" || record S10 FAIL "${p#; }"
 }
 
@@ -81,7 +82,7 @@ tailnet_updates() { # ACTIVE_NODE TAILNET_ID
 }
 t_s12() {
   local p="" act tb u0 u1 i
-  act=$(active_of c1); tb=$(cli c1 "tailnet status --slug b" 2>/dev/null | py 'import json; print(json.load(sys.stdin).get("id",""))' | strip_cr)
+  act=$(active_of c1); tb=$(cat "$TMPD/id-b" 2>/dev/null)
   u0=$(tailnet_updates "$act" "$tb")
   for i in 1 2 3; do
     TS $A2 "set --advertise-routes=10.98.$i.0/24" >/dev/null 2>&1; sleep 1
@@ -105,7 +106,7 @@ t_s14() {
     c=$(curl -s -o /dev/null -w '%{http_code}' -m 6 -X POST "$u/verify"); [ "$c" = 403 ] || p="$p; POST $u/verify without secret=$c"
   done
   # gRPC admin is not served on the public listener: an HTTP/2 gRPC call gets no service.
-  c=$(curl -s -o /dev/null -w '%{http_code}' -m 6 --http2 -X POST -H 'content-type: application/grpc' "$URL1/headscale.v1.HeadscaleService/ListNodes")
+  c=$(ssh_ $CI_SSH "curl -s -o /dev/null -w '%{http_code}' -m 6 --http2 -X POST -H 'content-type: application/grpc' '$URL1/headscale.v1.HeadscaleService/ListNodes'" 2>/dev/null)
   case "$c" in 404|403|415|421) ;; *) p="$p; gRPC path=$c";; esac
   [ -z "$p" ] && record S14 PASS "public listeners of c1 and c2: no metrics, debug, swagger, /api/v1, gRPC admin; /api/v2 needs a key; /verify needs the secret" || record S14 FAIL "${p#; }"
 }
