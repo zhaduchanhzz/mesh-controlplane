@@ -19,7 +19,7 @@
 | Q1 thông báo | MapResponse `DisplayMessages` (capver ≥ 117) hoặc `Health` (cũ hơn) cho client của tailnet sắp chuyển; xóa khi hủy | `4840114` → `8904c97` |
 | Q3 API tenant | `GET /api/v2/tailnet/{tailnet}/scheduled-move` chỉ đọc; client v2 sinh lại | `289ec8d` → `adeaf2f` |
 | Q5 re-bootstrap | `internal/rebootstrap`, `cmd/mesh-rebootstrap` (công cụ vận hành; test viết cùng code, không có commit RED riêng) | `996ce77` |
-| Q6 B3 | `bench-db b3 -designs …,registry`: đo đường `MoveOwner` + `HandOver` thật | `3749ec8`; sửa harness + số đo: commit "P12b: B3 measured on the real move path" (sau `15525e7`) |
+| Q6 B3 | `bench-db b3 -designs …,registry`: đo đường `MoveOwner` + `HandOver` thật | `3749ec8`; sửa harness + số đo: `5bf2a71` |
 | Q7 E2E | `infra/lab/e2e/p12b/run.sh` (`bash -n` sạch; shellcheck không có trên máy; chưa chạy) | `c0667d2` |
 | Merge master | `44e523a` (feat/CI-green) vào nhánh; xung đột duy nhất `placementapi/api.go` (định dạng route của master + 4 route move) | `4088df8` |
 | Lint | golangci-lint 2.15.0 từ flake.lock (như `ci.yml`): 46 → **0 issues**; hai `//nolint:gosec` có lý do (G204, G703) trong `cmd/mesh-rebootstrap` | `464aac3` |
@@ -112,7 +112,7 @@ B3/L11 trên đường code thật (Q6). "Before" = số đo 2026-11-22 (`ticket
 | PostgreSQL | `postgres:17.6-bookworm`, digest `sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3` (cùng image với P14). PostgreSQL 17.6. Container `--cpuset-cpus 0-3 --memory 8g`; `shared_buffers=2GB`, `effective_cache_size=6GB`, `max_connections=400`, `synchronous_commit=on`, `wal_level=replica`, `max_wal_size=4GB`, `fsync=on`, `full_page_writes=on`, `pg_stat_statements`. Chỉ `127.0.0.1:55432`, kết nối trực tiếp (không PgBouncer). DB mới `bench_b3_p12b` (tạo bằng tay sau khi PG sẵn sàng) |
 | Mật khẩu | Sinh trên VM (`openssl rand -hex 24`) vào `~/benchdb-p12b/pgpass` (thư mục 700), không in ra; harness đọc bằng `-passfile`. Xóa khi dọn. Đã grep giá trị mật khẩu trong mọi file kết quả: không có |
 | Script | `stack.sh` của P14 không còn (không được commit, đã xóa khỏi VM), nên dựng lại theo §1 của P14: `b3-stack.sh`, `b3-run.sh`, `b3-summarize.py`, `b3-explain.sh` |
-| Harness | `cmd/bench-db` từ cây `git archive` của nhánh (`15525e7` + sửa b3.go của commit này), build trên mc-ci (Go 1.27.4, `CGO_ENABLED=0 GOFLAGS=-buildvcs=false`), binary sha256 `8ad386e7114d5b851ca093f035638692bad6677db399d23d3d7368eedf6d6c3b`. Ghim CPU 5–7 |
+| Harness | `cmd/bench-db` từ cây `git archive` của nhánh (`15525e7` + sửa b3.go của `5bf2a71`; `da93abc`, commit vào nhánh trong lúc đo, chỉ đổi `ScheduleMove` trong `internal/placement/moves.go`, không nằm trên đường được đo), build trên mc-ci (Go 1.27.4, `CGO_ENABLED=0 GOFLAGS=-buildvcs=false`), binary sha256 `8ad386e7114d5b851ca093f035638692bad6677db399d23d3d7368eedf6d6c3b`. Ghim CPU 5–7 |
 | Artifact | `artifacts/P12b-b3/` trong main checkout (gitignored, như mọi artifact E2E): `b3-p12b.json`, `b3-p12b.log`, `b3-p12b-attempt1.log`, `b3-p12b-summary.txt`, `b3-p12b-explain.txt`, các script, `tofu-plan-start.txt`, `tofu-plan-stop.txt` |
 
 Lệnh và exit code:
