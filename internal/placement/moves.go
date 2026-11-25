@@ -154,7 +154,7 @@ func (r *Registry) ScheduleMove(ctx context.Context, op Op, id, to string, at ti
 			return Move{}, "", fmt.Errorf("%w: tailnet %s is already owned by %s", ErrInvalid, id, to)
 		}
 
-		target, err := lockClusters(tx, "SHARE", "id = ?", to)
+		target, err := lockClusters(tx, "id = ?", to)
 		if err != nil {
 			return Move{}, "", err
 		}
