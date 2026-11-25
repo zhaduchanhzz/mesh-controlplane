@@ -25,6 +25,7 @@ cluster GET /ts2021 noise-handshake
 cluster GET /version none
 cluster HEAD /machine/ping-response ping-id-secret
 cluster POST /ts2021 noise-handshake
+cluster POST /verify verify-secret
 cluster-unix DELETE /cluster/v1/tailnet/{tailnet}/node/{node} local-trust
 cluster-unix DELETE /cluster/v1/tailnet/{tailnet}/user/{user} local-trust
 cluster-unix GET /cluster/v1/tailnet/{tailnet}/nodes local-trust
