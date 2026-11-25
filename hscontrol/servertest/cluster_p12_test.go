@@ -105,9 +105,9 @@ func TestTwoClustersServeOnlyOwnedTailnets(t *testing.T) {
 
 // MoveOwner c1 → c2 and back, several times: the source retires, the
 // target loads; a write through the source's runtime after the move is
-// fenced in the database (no dual owner of data). The in-memory overlap
-// (both clusters hold a runtime of the tailnet: R11, owner decision Q7) is
-// measured and logged; it is bounded by the reconcile interval.
+// fenced in the database (no dual owner of data). Owner decision Q7
+// (2026-11-25): no in-memory overlap either (R11) — at no sample may both
+// clusters hold a runtime of the tailnet (ADR 0010, serving claim).
 func TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11(t *testing.T) {
 	c1 := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: "p12-mv"})
 	c2 := c1.AddCluster(t)
@@ -134,15 +134,22 @@ func TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11(t *testing.T) {
 
 		var srcGone, dstUp time.Duration
 
+		both := 0
+
 		deadline := start.Add(clusterWait)
 		for time.Now().Before(deadline) && (srcGone == 0 || dstUp == 0) {
 			now := time.Since(start)
 
-			if srcGone == 0 && !from.HasRuntime(t, slug) {
+			srcHas, dstHas := from.HasRuntime(t, slug), to.HasRuntime(t, slug)
+			if srcHas && dstHas {
+				both++
+			}
+
+			if srcGone == 0 && !srcHas {
 				srcGone = now
 			}
 
-			if dstUp == 0 && to.HasRuntime(t, slug) {
+			if dstUp == 0 && dstHas {
 				dstUp = now
 			}
 
@@ -154,6 +161,7 @@ func TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11(t *testing.T) {
 		assert.Equal(t, epoch, c1.TailnetRow(t, slug).OwnerEpoch)
 
 		overlap := max(srcGone-dstUp, 0)
+		assert.Zero(t, both, "move %d: samples where both clusters held a runtime", i)
 		overlaps = append(overlaps, overlap)
 		loads = append(loads, dstUp)
 		retires = append(retires, srcGone)
@@ -174,9 +182,10 @@ func TestTwoClustersMoveOwnerFencesSourceAndMeasuresR11(t *testing.T) {
 	t.Logf("R11 summary n=%d overlap min=%s median=%s max=%s; target_loaded max=%s; source_retired max=%s",
 		len(overlaps), overlaps[0], overlaps[len(overlaps)/2], overlaps[len(overlaps)-1], loads[len(loads)-1], retires[len(retires)-1])
 
-	// Each side reconciles every 2 s on its own ticker: the overlap cannot
-	// exceed one interval plus scheduling slack.
-	assert.LessOrEqual(t, overlaps[len(overlaps)-1], 3*time.Second, "R11 window bounded by the reconcile interval")
+	assert.Zero(t, overlaps[len(overlaps)-1], "R11: the target loads only after the source released")
+	// The cost of the claim: source notices (<= 2 s) and drains, target
+	// loads on its next tick (<= 2 s).
+	assert.LessOrEqual(t, loads[len(loads)-1], 6*time.Second, "move completes")
 }
 
 // A failover inside c1 (active stopped, standby takes the lease) does not
