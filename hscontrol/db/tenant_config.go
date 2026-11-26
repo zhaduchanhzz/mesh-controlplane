@@ -203,11 +203,18 @@ func tenantDNSRow(tx *gorm.DB) (*types.TenantDNS, bool, error) {
 
 	d, err := types.ParseTenantDNS([]byte(rows[0].DNSConfig.String))
 	if err != nil {
-		return nil, true, fmt.Errorf("stored DNS settings: %w", err)
+		// Not types.ErrInvalidTenantDNS, which refuses a caller's input
+		// (400): this is stored data only the operator can fix.
+		return nil, true, fmt.Errorf("%w: %s", ErrStoredTenantDNS, err.Error())
 	}
 
 	return d, true, nil
 }
+
+// ErrStoredTenantDNS is returned for stored DNS settings that do not parse
+// (a hand edit of the database): never the defaults, never a refusal of
+// the caller's input.
+var ErrStoredTenantDNS = errors.New("stored DNS settings do not parse")
 
 // TenantDNS returns the stored DNS settings of the handle's tailnet, nil
 // for the defaults.

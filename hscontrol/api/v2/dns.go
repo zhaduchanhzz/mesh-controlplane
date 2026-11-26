@@ -341,7 +341,7 @@ func readDNS(b Backend, tn string) (*types.TenantDNS, error) {
 
 	d, err := b.State.TenantDNS()
 	if err != nil {
-		return nil, huma.Error500InternalServerError("loading DNS settings", err)
+		return nil, internalError("loading DNS settings", err)
 	}
 
 	if d == nil {
@@ -387,14 +387,14 @@ func writeDNS(ctx context.Context, b Backend, tn, op string, edit func(*types.Te
 		return next, nil
 	})
 	if err != nil {
-		return nil, mapError("setting DNS", err)
+		return nil, mapTenantError("setting DNS", err)
 	}
 
 	b.Change(c)
 
 	raw, err := json.Marshal(stored)
 	if err != nil {
-		return nil, huma.Error500InternalServerError("encoding DNS settings", err)
+		return nil, internalError("encoding DNS settings", err)
 	}
 
 	auditTenantWrite(ctx, b, TenantWrite{Op: op, Revision: rev}, raw)

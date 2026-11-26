@@ -197,7 +197,7 @@ func registerACL(api huma.API, b Backend) {
 		}
 
 		if err != nil {
-			return nil, mapError("setting policy", err)
+			return nil, mapTenantError("setting policy", err)
 		}
 
 		if b.Tailnet != "" {
@@ -258,7 +258,7 @@ func registerValidateACL(api huma.API, b Backend, aclTags []string) {
 		}
 
 		if err != nil {
-			return nil, huma.Error500InternalServerError("validating policy", err)
+			return nil, internalError("validating policy", err)
 		}
 
 		return out, nil
@@ -283,7 +283,7 @@ func currentPolicy(b Backend) ([]byte, error) {
 				return []byte(def), nil
 			}
 
-			return nil, huma.Error500InternalServerError("loading policy", err)
+			return nil, internalError("loading policy", err)
 		}
 
 		if p.Data == "" {
@@ -300,7 +300,7 @@ func currentPolicy(b Backend) ([]byte, error) {
 
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("reading policy file", err)
+			return nil, internalError("reading policy file", err)
 		}
 
 		return data, nil
