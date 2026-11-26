@@ -81,6 +81,14 @@ Route mới trên listener của cluster:
 - **Mỗi lần client kết nối DERP sẽ gọi verify một lần** qua đường công khai. `derper` có cache cục bộ, nhưng tải verify khi storm kết nối lại thuộc phạm vi P14.
 - **Secret nằm trong tham số dòng lệnh** của `derper` (`--verify-client-url` chỉ nhận URL), nên user cục bộ trên `mc-relay` thấy được qua `ps`. `mc-relay` là VM lab chỉ có user `mesh`. Muốn tránh thì cần một proxy verify cục bộ; ghi nhận cho P13.
 - **Mất kết nối tới cluster thì từ chối** (`fail-open=false`): khi cluster không trả lời verify, client mới không vào được relay. Kết nối đang có vẫn giữ.
+- **Client cũ khi đổi sang cluster khác** (phát hiện ở N1 S05, ngày 2026-11-26):
+  - DERP map của các cluster không có region chung. Khi client đổi profile sang cluster kia, client Tailscale **1.84.3** vẫn giữ home DERP của profile cũ: log `[unexpected] magicsock: derpMap.Regions[901] is nil`. Nó kẹt ở `Starting` cho tới khi netcheck chạy lại.
+  - Client 1.104.7 không bị. Server gửi map đúng.
+  - Cùng tình huống xảy ra khi client đăng nhập lại ở cluster đích sau một lần chuyển tenant (P12b).
+  - **Quyết định của chủ dự án (2026-11-26): phương án (a).** Ghi cách gỡ vào tài liệu vận hành, không đổi thiết kế (không thêm region STUN chung):
+    - chạy `tailscale debug restun` (netcheck lại, chọn home DERP trong map mới);
+    - hoặc khởi động lại `tailscaled`.
+  - Harness N1 (S05) và E2E P12b chạy bước này khi cần và ghi lại là đã chạy.
 
 ## Phương án đã loại
 
