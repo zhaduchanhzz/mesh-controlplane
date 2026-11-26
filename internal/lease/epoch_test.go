@@ -142,10 +142,6 @@ func TestManagerRefusesEpochRegression(t *testing.T) {
 	cancel()
 	<-done
 
-	if hwm := m.HighWaterMark(); hwm != 2 {
-		t.Fatalf("high-water mark %d after holding epoch 2", hwm)
-	}
-
 	// Restore: the database is back at epoch 1, expired.
 	rewriteLease(t, s, "a", 1, true)
 
@@ -164,6 +160,10 @@ func TestManagerRefusesEpochRegression(t *testing.T) {
 
 	if _, ok := m.Current(); ok {
 		t.Fatal("Current reports a lease after the restore")
+	}
+
+	if hwm := m.HighWaterMark(); hwm != 2 {
+		t.Fatalf("high-water mark %d after holding epoch 2", hwm)
 	}
 
 	if m.Regressions() == 0 {
