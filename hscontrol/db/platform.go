@@ -193,7 +193,7 @@ func openPlatformChain(cfg *types.Config, ch chain, migrate bool) (_ *Platform, 
 	// connection is released before the pool is used: SQLite allows a
 	// single open connection.
 	if exact && cfg.Database.IsSQLite() {
-		err = validateSQLiteSchema(dbConn)
+		err = validateSQLiteSchema(dbConn, ch.sqliteSchema)
 		if err != nil {
 			return nil, err
 		}

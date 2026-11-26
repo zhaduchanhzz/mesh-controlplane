@@ -48,10 +48,13 @@ type chain struct {
 	// compat maps each migration from SchemaCompatMigrationID on to its
 	// min_reader_id.
 	compat map[string]string
+	// sqliteSchema is the SQLite schema a database with exactly these
+	// migrations has (squibble): schema.sql for the production chain.
+	sqliteSchema string
 }
 
 func currentChain() chain {
-	return chain{migrations: v01Migrations(), compat: migrationCompat}
+	return chain{migrations: v01Migrations(), compat: migrationCompat, sqliteSchema: dbSchema}
 }
 
 func (ch chain) latest() string { return ch.migrations[len(ch.migrations)-1].ID }
@@ -106,7 +109,7 @@ func migrateChain(ctx context.Context, cfg *types.Config, ch chain) (MigrateResu
 	}
 
 	if exact && cfg.Database.IsSQLite() {
-		err = validateSQLiteSchema(conn)
+		err = validateSQLiteSchema(conn, ch.sqliteSchema)
 		if err != nil {
 			return res, err
 		}

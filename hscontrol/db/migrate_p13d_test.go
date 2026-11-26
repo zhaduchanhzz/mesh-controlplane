@@ -33,6 +33,12 @@ const (
 	p13dHelperDelay = time.Second
 )
 
+// The schema.sql lines of the test migrations.
+const (
+	p13dExpandDDL   = `CREATE TABLE p13d_canary(id integer PRIMARY KEY, note text);`
+	p13dContractDDL = `CREATE TABLE p13d_canary(id integer PRIMARY KEY, note text, contracted integer);`
+)
+
 // p13dExpand creates a table no binary of the current chain uses; with
 // delay it sleeps inside its transaction, after the DDL, so concurrent runs
 // overlap.
@@ -41,7 +47,7 @@ func p13dExpand(delay time.Duration) *gormigrate.Migration {
 		ID: p13dExpandID,
 		Migrate: func(db *gorm.DB) error {
 			return db.Transaction(func(tx *gorm.DB) error {
-				err := tx.Exec(`CREATE TABLE p13d_canary(id integer PRIMARY KEY, note text)`).Error
+				err := tx.Exec(p13dExpandDDL).Error
 				if err == nil && delay > 0 {
 					time.Sleep(delay)
 				}
@@ -65,10 +71,13 @@ func p13dContract() *gormigrate.Migration {
 }
 
 // p13dChain is the chain of binary "N+1": the current chain plus extra,
-// each declared with its min_reader_id.
-func p13dChain(extra []*gormigrate.Migration, minReader map[string]string) chain {
+// each declared with its min_reader_id; sqliteDDL is what extra adds to its
+// schema.sql.
+func p13dChain(extra []*gormigrate.Migration, minReader map[string]string, sqliteDDL string) chain {
 	ch := currentChain()
 	ch.migrations = append(ch.migrations, extra...)
+	ch.sqliteSchema += "
+" + sqliteDDL
 
 	compat := map[string]string{}
 	for k, v := range ch.compat {
@@ -90,12 +99,12 @@ func p13dHelperChain(mode string) chain {
 
 	switch mode {
 	case "expand":
-		return p13dChain([]*gormigrate.Migration{p13dExpand(0)}, map[string]string{p13dExpandID: n})
+		return p13dChain([]*gormigrate.Migration{p13dExpand(0)}, map[string]string{p13dExpandID: n}, p13dExpandDDL)
 	case "expand-slow":
-		return p13dChain([]*gormigrate.Migration{p13dExpand(p13dHelperDelay)}, map[string]string{p13dExpandID: n})
+		return p13dChain([]*gormigrate.Migration{p13dExpand(p13dHelperDelay)}, map[string]string{p13dExpandID: n}, p13dExpandDDL)
 	case "contract":
 		return p13dChain([]*gormigrate.Migration{p13dExpand(0), p13dContract()},
-			map[string]string{p13dExpandID: n, p13dContractID: p13dContractID})
+			map[string]string{p13dExpandID: n, p13dContractID: p13dContractID}, p13dContractDDL)
 	default:
 		return currentChain()
 	}

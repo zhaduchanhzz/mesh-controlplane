@@ -343,7 +343,7 @@ func Write[T any](db *gorm.DB, fn func(tx *gorm.DB) (T, error)) (T, error) {
 }
 
 // validateSQLiteSchema checks the database against schema.sql with squibble.
-func validateSQLiteSchema(dbConn *gorm.DB) error {
+func validateSQLiteSchema(dbConn *gorm.DB, schema string) error {
 	sqlConn, err := dbConn.DB()
 	if err != nil {
 		return fmt.Errorf("getting DB from gorm: %w", err)
@@ -371,7 +371,7 @@ func validateSQLiteSchema(dbConn *gorm.DB) error {
 		},
 	}
 
-	if err := squibble.Validate(ctx, conn, dbSchema, &opts); err != nil { //nolint:noinlineerr
+	if err := squibble.Validate(ctx, conn, schema, &opts); err != nil { //nolint:noinlineerr
 		return fmt.Errorf("validating schema: %w", err)
 	}
 
