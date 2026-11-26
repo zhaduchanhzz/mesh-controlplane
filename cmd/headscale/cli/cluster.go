@@ -214,30 +214,36 @@ var tailnetPolicyCmd = &cobra.Command{
 		}
 
 		return withPlatform(func(p *db.Platform) error {
-			tn, err := p.TailnetBySlug(clusterSlug)
-			if err != nil {
-				return err
-			}
-
-			id, err := tailnet.ParseID(tn.ID)
-			if err != nil {
-				return err
-			}
-
-			hs, err := p.TenantDB(id)
-			if err != nil {
-				return err
-			}
-
-			_, err = hs.SetPolicy(string(data))
-			if err != nil {
-				return err
-			}
-
-			// A running cluster reloads the policy when the revision moves.
-			return p.BumpPolicyRevision(id)
+			return setTailnetPolicyCLI(p, clusterSlug, data, false)
 		})
 	},
+}
+
+// setTailnetPolicyCLI stores data as the policy of ACTIVE tailnet slug and
+// bumps its policy revision.
+func setTailnetPolicyCLI(p *db.Platform, slug string, data []byte, _ bool) error {
+	tn, err := p.TailnetBySlug(slug)
+	if err != nil {
+		return err
+	}
+
+	id, err := tailnet.ParseID(tn.ID)
+	if err != nil {
+		return err
+	}
+
+	hs, err := p.TenantDB(id)
+	if err != nil {
+		return err
+	}
+
+	_, err = hs.SetPolicy(string(data))
+	if err != nil {
+		return err
+	}
+
+	// A running cluster reloads the policy when the revision moves.
+	return p.BumpPolicyRevision(id)
 }
 
 var (
