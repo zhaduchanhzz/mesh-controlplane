@@ -328,7 +328,10 @@ s08c_diag() {
       echo '--- prefs'; sudo /opt/tailscale/$V/tailscale --socket=$TSS debug prefs 2>&1 | grep -E '\"(RouteAll|CorpDNS|AdvertiseRoutes|NoSNAT|WantRunning)\"'" 2>&1
     echo '--- peers (HostName Online PrimaryRoutes AllowedIPs)'
     ts_json "$2" | py 'import json
-d = json.load(sys.stdin)
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print("(no status: tailscaled not answering)"); sys.exit()
 for q in (d.get("Peer") or {}).values():
     print(q.get("HostName"), q.get("Online"), q.get("PrimaryRoutes"), q.get("AllowedIPs"))' 2>&1
     for h in "$A2:a2" "$B2:b2"; do
