@@ -302,24 +302,29 @@ func createDefaultTailnet(raw *gorm.DB, cluster string) (types.Tailnet, error) {
 // ScopedContext returns parent bound to this handle's tailnet scope. Use it
 // when a statement needs another context (deadline, cancellation):
 // db.WithContext(ctx) with a scope-less ctx fails with tailnet.ErrNoScope.
-func (hsdb *HSDatabase) ScopedContext(parent context.Context) context.Context {
+//
+// It fails closed (P12c A7): a handle without a scope gives
+// tailnet.ErrNoScope, and a parent already bound to another tailnet gives
+// tailnet.ErrScopeConflict; parent is never returned unbound to this
+// handle's tailnet.
+func (hsdb *HSDatabase) ScopedContext(parent context.Context) (context.Context, error) {
 	s, err := tailnet.FromContext(hsdb.DB.Statement.Context)
 	if err != nil {
-		return parent
+		return nil, err
 	}
 
 	ctx, err := tailnet.WithScope(parent, s)
 	if err != nil {
-		return parent
+		return nil, err
 	}
 
 	// Carry the ownership fence too, or writes on ctx fail with ErrNoFence.
 	if f, ok := tailnet.FenceFromContext(hsdb.DB.Statement.Context); ok {
-		fctx, err := tailnet.WithFence(ctx, f)
-		if err == nil {
-			ctx = fctx
+		ctx, err = tailnet.WithFence(ctx, f)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	return ctx
+	return ctx, nil
 }

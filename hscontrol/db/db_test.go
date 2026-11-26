@@ -51,7 +51,10 @@ database:
 	defer cancel()
 
 	// Replacing the context must keep the tailnet scope (fail closed otherwise).
-	hsdb.DB = hsdb.DB.WithContext(hsdb.ScopedContext(ctx))
+	scoped, err := hsdb.ScopedContext(ctx)
+	require.NoError(t, err)
+
+	hsdb.DB = hsdb.DB.WithContext(scoped)
 	poolResult := make(chan error, 1)
 
 	err = hsdb.Read(func(rx *gorm.DB) error {

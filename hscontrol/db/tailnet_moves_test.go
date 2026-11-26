@@ -1,6 +1,7 @@
 package db
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,11 +13,23 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestTailnetMovesDDLInSchemaFilesAndLast(t *testing.T) {
+func TestTailnetMovesDDLInSchemaFilesAndInChain(t *testing.T) {
 	norm := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 	assert.Contains(t, norm(dbSchema), TailnetMovesSQLiteDDL)
 	assert.Contains(t, norm(dbSchemaPostgres), TailnetMovesPostgresDDL)
-	assert.Equal(t, TailnetMovesMigrationID, LatestMigrationID(), "appended at the end of the v0.1 chain")
+
+	// P12c A8 appended 202611261200-tenant-id-immutable after it: committed
+	// migrations keep their place, new ones go after them.
+	chain := v01Migrations()
+
+	ids := make([]string, 0, len(chain))
+	for _, m := range chain {
+		ids = append(ids, m.ID)
+	}
+
+	assert.Contains(t, ids, TailnetMovesMigrationID, "in the v0.1 chain")
+	assert.Less(t, slices.Index(ids, TailnetMovesMigrationID), slices.Index(ids, TenantIDImmutableMigrationID),
+		"appended before the P12c A8 migration")
 }
 
 func insertMove(tx *gorm.DB, id, tailnetID, state string) error {

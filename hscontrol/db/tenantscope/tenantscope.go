@@ -2,12 +2,17 @@
 // tenant table (one with a TailnetID / tailnet_id column) to the tailnet of
 // the verified scope carried by the statement's context
 // (internal/tailnet.WithScope). It is the application-layer tenant isolation
-// chosen in ADR 0005: there is no database-level backstop, so this plugin
-// fails closed.
+// chosen in ADR 0005: the database only backs it up with its constraints
+// and triggers (no row-level security), so this plugin fails closed.
 //
-//   - Query, Count, Row, Update and Delete get "AND <table>.tailnet_id = ?".
+//   - Query, Count, Row, Update and Delete get the WHERE
+//     "<table>.tailnet_id = ? AND (<caller's WHERE>)" (P12c A1).
 //   - Create stamps tailnet_id on every row and rejects rows already carrying
-//     another tailnet.
+//     another tailnet; an UPDATE may not assign another tailnet_id (A3).
+//   - A statement that names a tenant table (TenantTables) where the plugin
+//     cannot confine it (Table, table expressions, string joins, a
+//     destination without TailnetID, subqueries in strings on a tenant
+//     handle) fails with ErrUnscopable (A2).
 //   - Upserts (ON CONFLICT ... DO UPDATE, used by Save when an UPDATE hits no
 //     row) only update rows of the scope's tailnet, so a Save carrying another
 //     tenant's primary key can never rewrite or adopt that tenant's row.
@@ -22,14 +27,18 @@
 //     lease (P11b, internal/lease) also needs the cluster_leases row to name
 //     that holder and epoch and to be live by the database clock.
 //
-// Tables without the column are untouched. Raw SQL (db.Raw / db.Exec) is not
-// parsed and must be reviewed by hand; see evidence/source-inventory-P03b.md.
+// Other tables are untouched. Raw SQL (db.Raw / db.Exec and database/sql
+// calls) is not parsed here: every raw statement that names a tenant table
+// or cannot be resolved statically is reviewed one by one in the allowlist
+// of hscontrol/db/raw_sql_guard_test.go (P12c A4). The database refuses a
+// change of tailnet_id on its own (migration 202611261200, P12c A8).
 package tenantscope
 
 import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
@@ -54,20 +63,26 @@ var (
 	ErrFenced = errors.New("tailnet ownership fence failed: owned by another cluster or epoch")
 	// ErrNoFence reports a write to tenant data without an ownership fence.
 	ErrNoFence = errors.New("tenant write without an ownership fence")
+	// ErrUnscopable reports a statement the plugin cannot confine to the
+	// scope's tailnet; it is refused instead of run unscoped (P12c).
+	ErrUnscopable = errors.New("statement cannot be confined to the tailnet scope")
 
 	errUnsupportedCreate = errors.New("unsupported create value")
 )
 
-// Register installs the plugin's callbacks on db.
-func Register(db *gorm.DB) error {
+// Register installs the plugin's callbacks on db. Statements may name the
+// [TenantTables] and extraTenantTables only through a model carrying
+// TailnetID (P12c A2); tests add the tables of their own models.
+func Register(db *gorm.DB, extraTenantTables ...string) error {
+	p := newPlugin(extraTenantTables)
 	cb := db.Callback()
 
 	steps := []error{
-		cb.Query().Before("gorm:query").Register(name+":query", scopeWhere),
-		cb.Row().Before("gorm:row").Register(name+":row", scopeWhere),
-		cb.Update().Before("gorm:update").Register(name+":update", scopeMutation),
-		cb.Delete().Before("gorm:delete").Register(name+":delete", scopeMutation),
-		cb.Create().Before("gorm:create").Register(name+":create", stampCreate),
+		cb.Query().Before("gorm:query").Register(name+":query", p.scopeWhere),
+		cb.Row().Before("gorm:row").Register(name+":row", p.scopeWhere),
+		cb.Update().Before("gorm:update").Register(name+":update", p.scopeUpdate),
+		cb.Delete().Before("gorm:delete").Register(name+":delete", p.scopeMutation),
+		cb.Create().Before("gorm:create").Register(name+":create", p.stampCreate),
 		// After the scope callbacks, inside the default transaction.
 		cb.Create().After(name+":create").After("gorm:begin_transaction").Before("gorm:create").
 			Register(name+":fence_create", checkFence),
@@ -110,12 +125,20 @@ func whereTailnet(db *gorm.DB, f *schema.Field, id tailnet.ID) clause.Expression
 	}
 }
 
-func scopeWhere(db *gorm.DB) {
+func (p *plugin) scopeWhere(db *gorm.DB) {
 	if db.Error != nil {
 		return
 	}
 
 	f := tenantField(db)
+
+	err := p.checkTables(db, f != nil)
+	if err != nil {
+		_ = db.AddError(err)
+
+		return
+	}
+
 	if f == nil {
 		return
 	}
@@ -125,30 +148,105 @@ func scopeWhere(db *gorm.DB) {
 		return
 	}
 
-	db.Statement.AddClause(clause.Where{Exprs: []clause.Expression{whereTailnet(db, f, s.ID())}})
+	confineWhere(db, whereTailnet(db, f, s.ID()))
+}
+
+// confineWhere makes the statement's WHERE "<tenant> AND (<caller WHERE>)"
+// (P12c A1). Appending the tenant predicate to the caller's expressions, as
+// AddClause does, lets an OR escape it: GORM builds Where("a").Or("b") plus
+// the predicate as "a OR b AND tenant", i.e. "a OR (b AND tenant)". The
+// caller's expressions are built as one parenthesised group, whatever GORM
+// would or would not wrap on its own (it only looks for " AND "/" OR "), and
+// the tenant predicate comes first, so a trailing "--" comment in a caller
+// string can only break the statement, never drop the predicate.
+func confineWhere(db *gorm.DB, tenant clause.Expression) {
+	c, ok := db.Statement.Clauses["WHERE"]
+	if !ok {
+		db.Statement.AddClause(clause.Where{Exprs: []clause.Expression{tenant}})
+
+		return
+	}
+
+	w, ok := c.Expression.(clause.Where)
+	if !ok {
+		// Something other than GORM's own clause.Where: refuse rather than
+		// guess how it would combine with the predicate.
+		_ = db.AddError(fmt.Errorf("%s: %w: WHERE clause of type %T", name, ErrUnscopable, c.Expression))
+
+		return
+	}
+
+	exprs := []clause.Expression{tenant}
+	if len(w.Exprs) > 0 {
+		exprs = append(exprs, callerWhere{exprs: slices.Clone(w.Exprs)})
+	}
+
+	c.Expression = clause.Where{Exprs: exprs}
+	db.Statement.Clauses["WHERE"] = c
+}
+
+// callerWhere is the WHERE the caller built, rendered as GORM would render
+// it on its own and wrapped in parentheses.
+type callerWhere struct{ exprs []clause.Expression }
+
+func (w callerWhere) Build(b clause.Builder) {
+	_ = b.WriteByte('(')
+	// Where.Build reorders its slice in place; build from a copy.
+	clause.Where{Exprs: slices.Clone(w.exprs)}.Build(b)
+	_ = b.WriteByte(')')
 }
 
 // scopeMutation scopes UPDATE/DELETE. Adding a WHERE would otherwise disarm
 // GORM's guard against accidental table-wide writes, so the guard is
 // re-applied here: without a caller condition, a primary key, or
 // AllowGlobalUpdate, the statement is refused.
-func scopeMutation(db *gorm.DB) {
+func (p *plugin) scopeMutation(db *gorm.DB) {
+	p.scopeMutationOf(db)
+}
+
+// scopeUpdate is scopeMutation plus the check that the UPDATE assigns no
+// other tailnet_id (P12c A3).
+func (p *plugin) scopeUpdate(db *gorm.DB) {
+	f, s, ok := p.scopeMutationOf(db)
+	if ok {
+		confineAssignments(db, f, s.ID().String())
+	}
+}
+
+// scopeMutationOf confines an UPDATE/DELETE and returns the tenant field
+// and scope when the statement is on a tenant table and still valid.
+func (p *plugin) scopeMutationOf(db *gorm.DB) (*schema.Field, tailnet.Scope, bool) {
 	if db.Error != nil {
-		return
+		return nil, tailnet.Scope{}, false
 	}
 
 	f := tenantField(db)
+
+	err := p.checkTables(db, f != nil)
+	if err != nil {
+		_ = db.AddError(err)
+
+		return nil, tailnet.Scope{}, false
+	}
+
 	if f == nil {
-		return
+		return nil, tailnet.Scope{}, false
 	}
 
 	if _, hasWhere := db.Statement.Clauses["WHERE"]; !hasWhere && !db.AllowGlobalUpdate && !hasPrimaryKey(db) {
 		_ = db.AddError(gorm.ErrMissingWhereClause)
 
-		return
+		return nil, tailnet.Scope{}, false
 	}
 
-	scopeWhere(db)
+	s, ok := scopeOf(db)
+	if !ok {
+		return nil, tailnet.Scope{}, false
+	}
+
+	confineWhere(db, whereTailnet(db, f, s.ID()))
+
+	return f, s, db.Error == nil
 }
 
 func hasPrimaryKey(db *gorm.DB) bool {
@@ -157,29 +255,59 @@ func hasPrimaryKey(db *gorm.DB) bool {
 		return false
 	}
 
-	rv := reflect.Indirect(db.Statement.ReflectValue)
-	switch rv.Kind() { //nolint:exhaustive // the kinds gorm statements carry; default has no primary key
-	case reflect.Struct:
+	keyed := func(row reflect.Value) bool {
+		row = reflect.Indirect(row)
+		if row.Kind() != reflect.Struct {
+			return false
+		}
+
 		for _, pf := range sch.PrimaryFields {
-			if _, zero := pf.ValueOf(db.Statement.Context, rv); zero {
+			if _, zero := pf.ValueOf(db.Statement.Context, row); zero {
 				return false
 			}
 		}
 
 		return true
+	}
+
+	rv := reflect.Indirect(db.Statement.ReflectValue)
+	switch rv.Kind() { //nolint:exhaustive // the kinds gorm statements carry; default has no primary key
+	case reflect.Struct:
+		return keyed(rv)
 	case reflect.Slice, reflect.Array:
-		return rv.Len() > 0
+		// GORM adds no condition for a row without a key, so one such row
+		// must not count as keyed (P12c L10): Delete(&[]Node{{}}) would hit
+		// every row of the tenant.
+		if rv.Len() == 0 {
+			return false
+		}
+
+		for i := range rv.Len() {
+			if !keyed(rv.Index(i)) {
+				return false
+			}
+		}
+
+		return true
 	default:
 		return false
 	}
 }
 
-func stampCreate(db *gorm.DB) {
+func (p *plugin) stampCreate(db *gorm.DB) {
 	if db.Error != nil {
 		return
 	}
 
 	f := tenantField(db)
+
+	err := p.checkTables(db, f != nil)
+	if err != nil {
+		_ = db.AddError(err)
+
+		return
+	}
+
 	if f == nil {
 		return
 	}
@@ -197,7 +325,25 @@ func stampCreate(db *gorm.DB) {
 		stampOne(db, f, rv, id)
 	case reflect.Slice, reflect.Array:
 		for i := range rv.Len() {
-			stampOne(db, f, reflect.Indirect(rv.Index(i)), id)
+			elem := rv.Index(i)
+			for elem.Kind() == reflect.Interface || elem.Kind() == reflect.Pointer {
+				elem = elem.Elem()
+			}
+
+			// A batch of maps is stamped like one map (P12c L10: stampOne
+			// on a map panicked).
+			switch elem.Kind() { //nolint:exhaustive // rows are structs or maps; anything else fails the create
+			case reflect.Struct:
+				stampOne(db, f, elem, id)
+			case reflect.Map:
+				stampMap(db, f, elem, id)
+			default:
+				_ = db.AddError(fmt.Errorf("%s: %w %s in a batch", name, errUnsupportedCreate, elem.Kind()))
+			}
+
+			if db.Error != nil {
+				return
+			}
 		}
 	case reflect.Map:
 		stampMap(db, f, rv, id)

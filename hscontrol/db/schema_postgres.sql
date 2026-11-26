@@ -251,3 +251,24 @@ CREATE TABLE tailnet_moves(
 );
 CREATE UNIQUE INDEX idx_tailnet_moves_open ON tailnet_moves(tailnet_id) WHERE state IN ('SCHEDULED','REQUESTED');
 CREATE INDEX idx_tailnet_moves_due ON tailnet_moves(state, scheduled_at);
+
+-- tailnet_id of a tenant row never changes (P12c A8): see
+-- hscontrol/db/tenant_immutable.go.
+CREATE FUNCTION tenant_tailnet_id_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.tailnet_id IS DISTINCT FROM OLD.tailnet_id THEN
+    RAISE EXCEPTION 'tailnet_id of a tenant row is immutable' USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_users_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON users
+  FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
+CREATE TRIGGER trg_credentials_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON credentials
+  FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
+CREATE TRIGGER trg_nodes_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON nodes
+  FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
+CREATE TRIGGER trg_policies_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON policies
+  FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
+CREATE TRIGGER trg_tailnet_settings_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON tailnet_settings
+  FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
