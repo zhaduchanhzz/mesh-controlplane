@@ -76,8 +76,7 @@ func p13dContract() *gormigrate.Migration {
 func p13dChain(extra []*gormigrate.Migration, minReader map[string]string, sqliteDDL string) chain {
 	ch := currentChain()
 	ch.migrations = append(ch.migrations, extra...)
-	ch.sqliteSchema += "
-" + sqliteDDL
+	ch.sqliteSchema += "\n" + sqliteDDL
 
 	compat := map[string]string{}
 	for k, v := range ch.compat {
