@@ -93,6 +93,9 @@ RB_BIN=${RB_BIN:?RB_BIN= linux/amd64 mesh-rebootstrap binary}
 KEEP=${KEEP:-0}
 LABEL=mesh-e2e=p12b
 PY=${PY:-python}
+# Windows Python reads stdin as cp1252; tailscale JSON is UTF-8 (run at 843e24a:
+# every snap came back empty).
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 REASON="p12b-e2e rebalance"
 NOTICE="moves to another control cluster"
 
@@ -207,8 +210,10 @@ for name, body in zip(parts[1::2], parts[2::2]):
         d = json.loads(body)
         ips = (d.get("Self") or {}).get("TailscaleIPs") or ["-"]
         print(name, d.get("BackendState") or "-", ips[0], any(sys.argv[1] in h for h in (d.get("Health") or [])), len(d.get("Peer") or {}))
-    except Exception:
-        print(name, "-", "-", "-", "-")' "$NOTICE" | strip_cr >"$TMPD/snap"
+    except Exception as e:
+        sys.stderr.write("snap %s: %s (%d bytes)
+" % (name, type(e).__name__, len(body)))
+        print(name, "-", "-", "-", "-")' "$NOTICE" 2>>"$ART_DIR/logs/snap.err" | strip_cr >"$TMPD/snap"
 }
 sget() { awk -v n="$1" -v c="$2" '$1 == n { print $c }' "$TMPD/snap"; }
 scount() { awk -v c="$1" -v v="$2" '$c == v { k++ } END { print k + 0 }' "$TMPD/snap"; }
@@ -305,7 +310,7 @@ vm_start() {
     for i in \$(seq 1 60); do $VMTS status >/dev/null 2>&1; [ \$? -le 1 ] && exit 0; sleep 0.5; done; exit 1" || return 1
   vm_ "$1" "sudo install -m 0600 /dev/stdin $VMDIR/key" <"$TMPD/key-$2" || return 1
   vm_ "$1" "sudo install -m 0700 /dev/stdin $VMDIR/mesh-rebootstrap" <"$RB_BIN" || return 1
-  tr -d '\r' <"$HERE/jobs.sh" | vm_ "$1" "sudo install -m 0700 /dev/stdin $VMDIR/jobs.sh && bash -n $VMDIR/jobs.sh" || return 1
+  tr -d '\r' <"$HERE/jobs.sh" | vm_ "$1" "sudo install -m 0700 /dev/stdin $VMDIR/jobs.sh && sudo bash -n $VMDIR/jobs.sh" || return 1
   vm_ "$1" "sudo timeout 60 /opt/tailscale/$VMVER/tailscale --socket=$VMSOCK up --login-server=$3 --auth-key=file:$VMDIR/key \
     --hostname=\$(hostname -s)-p12b --accept-dns=false --netfilter-mode=off" 2>&1 | redact >>"$ART_DIR/logs/vm-$1.cli.log"
   return "${PIPESTATUS[0]}"
