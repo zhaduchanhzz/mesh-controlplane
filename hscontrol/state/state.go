@@ -675,9 +675,13 @@ func (s *State) reloadPolicyLocked() (bool, bool, error) {
 		return false, false, fmt.Errorf("loading policy: %w", err)
 	}
 
-	// nil means no policy is configured: nothing to install.
+	// nil means no policy is configured (none stored, or stored empty).
+	// Upstream installs nothing then and keeps the current policy. A tenant
+	// tailnet (PolicyEmptyDenies) installs deny-all at once (P12c A6, AGENTS
+	// rule 8): an operator who empties the policy revokes access now, not
+	// at the next restart. SetPolicy turns the empty input into "{}".
 	var policyChanged bool
-	if pol != nil {
+	if pol != nil || s.cfg.PolicyEmptyDenies {
 		policyChanged, err = s.polMan.SetPolicy(pol)
 		if err != nil {
 			return false, false, fmt.Errorf("setting policy: %w", err)
