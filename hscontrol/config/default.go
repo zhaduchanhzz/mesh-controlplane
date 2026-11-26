@@ -90,7 +90,7 @@ func Default() types.Config {
 			MaxPeerEntries:                 1_000_000,
 			TenantDNS:                      types.DefaultTenantDNSLimits,
 			IncrementalNetmap: types.IncrementalNetmapConfig{
-				Enabled:           false,
+				Enabled:           true,
 				ReconcileInterval: 60 * time.Second,
 				FullMapInterval:   15 * time.Minute,
 			},
