@@ -21,6 +21,10 @@ import (
 const (
 	deltaUsers        = 20
 	deltaNodesPerUser = 10
+
+	// drainQuiet is how long no frame may arrive before a step counts as
+	// delivered.
+	drainQuiet = 300 * time.Millisecond
 )
 
 // deltaFrames is what one node received for one change.
@@ -65,11 +69,15 @@ func (d deltaFrames) profiles() []tailcfg.UserProfile {
 	return p
 }
 
-func (d deltaFrames) bytes() int {
+func (d deltaFrames) bytes(t *testing.T) int {
+	t.Helper()
+
 	n := 0
 
 	for _, f := range d.frames {
-		b, _ := json.Marshal(f)
+		b, err := json.Marshal(f)
+		require.NoError(t, err)
+
 		n += len(b)
 	}
 
@@ -92,14 +100,14 @@ func setupDeltaTailnet(t *testing.T, incremental bool, pol string) (*TestData, f
 		require.NoError(t, td.Batcher.AddNode(n.n.ID, n.ch, tailcfg.CapabilityVersion(100), nil))
 	}
 
-	drainAll(t, td, 300*time.Millisecond)
+	drainAll(t, td)
 
 	return td, cleanup
 }
 
 // drainAll collects what every node receives until no frame arrives for
-// quiet.
-func drainAll(t *testing.T, td *TestData, quiet time.Duration) map[types.NodeID]deltaFrames {
+// drainQuiet.
+func drainAll(t *testing.T, td *TestData) map[types.NodeID]deltaFrames {
 	t.Helper()
 
 	got := make(map[types.NodeID]deltaFrames, len(td.Nodes))
@@ -128,7 +136,7 @@ func drainAll(t *testing.T, td *TestData, quiet time.Duration) map[types.NodeID]
 		}
 
 		if !moved {
-			time.Sleep(quiet)
+			<-time.After(drainQuiet)
 
 			pending := false
 			for i := range td.Nodes {
@@ -192,7 +200,7 @@ func TestDeltaFirstTagChangeSendsOnlyThatPeer(t *testing.T) {
 			require.NoError(t, err)
 			td.Batcher.AddWork(c)
 
-			got := drainAll(t, td, 300*time.Millisecond)
+			got := drainAll(t, td)
 
 			total, maxPer, bytes := 0, 0, 0
 
@@ -201,7 +209,7 @@ func TestDeltaFirstTagChangeSendsOnlyThatPeer(t *testing.T) {
 				d := got[id]
 				total += d.peersChanged()
 				maxPer = max(maxPer, d.peersChanged())
-				bytes += d.bytes()
+				bytes += d.bytes(t)
 
 				if id == tagged || !incremental {
 					continue
@@ -237,7 +245,7 @@ func TestDeltaFirstPolicyEditSendsOnlyWhatChanged(t *testing.T) {
 			require.NoError(t, err)
 			td.Batcher.AddWork(change.PolicyChange())
 
-			got := drainAll(t, td, 300*time.Millisecond)
+			got := drainAll(t, td)
 
 			total, bytes := 0, 0
 
@@ -245,7 +253,7 @@ func TestDeltaFirstPolicyEditSendsOnlyWhatChanged(t *testing.T) {
 				id := td.Nodes[i].n.ID
 				d := got[id]
 				total += d.peersChanged()
-				bytes += d.bytes()
+				bytes += d.bytes(t)
 
 				if !incremental {
 					continue
@@ -270,7 +278,7 @@ func TestDeltaFirstPolicyEditSendsOnlyWhatChanged(t *testing.T) {
 			require.NoError(t, err)
 			td.Batcher.AddWork(change.PolicyChange())
 
-			got = drainAll(t, td, 300*time.Millisecond)
+			got = drainAll(t, td)
 
 			var g1IDs, g2IDs []tailcfg.NodeID
 
@@ -288,7 +296,7 @@ func TestDeltaFirstPolicyEditSendsOnlyWhatChanged(t *testing.T) {
 				id := td.Nodes[i].n.ID
 				d := got[id]
 				total += d.peersChanged()
-				bytes += d.bytes()
+				bytes += d.bytes(t)
 
 				// Removal is required in both modes (isolation).
 				if inGroup1(td, id) {
@@ -330,7 +338,7 @@ func TestDeltaFirstUserProfileChangeNoFullMap(t *testing.T) {
 
 			td.Batcher.AddWork(c)
 
-			got := drainAll(t, td, 300*time.Millisecond)
+			got := drainAll(t, td)
 
 			total, bytes, full := 0, 0, 0
 
@@ -338,7 +346,7 @@ func TestDeltaFirstUserProfileChangeNoFullMap(t *testing.T) {
 				id := td.Nodes[i].n.ID
 				d := got[id]
 				total += d.peersChanged()
-				bytes += d.bytes()
+				bytes += d.bytes(t)
 
 				if d.fullPeers() {
 					full++
