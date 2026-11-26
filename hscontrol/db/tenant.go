@@ -262,6 +262,17 @@ func resolveRuntimeTailnet(raw *gorm.DB, want, cluster string) (types.Tailnet, e
 }
 
 // createDefaultTailnet gives a fresh single-tenant database its one tailnet.
+//
+// P13f L10: only the single-tenant opener (NewHeadscaleDatabase, upstream
+// Headscale mode, and the servertest seeding) reaches it; a cluster process
+// opens tailnets with Platform.TenantDB, never creates one
+// (TestClusterNeverCreatesDefaultTailnet), and a tailnet it serves is
+// created PENDING with {"grants":[]} by Platform.CreateTailnet or the
+// placement registry. The default tailnet gets no policy row on purpose: in
+// single-tenant mode "no policy" keeps the upstream meaning (and the v1/v2
+// policy APIs answer "unset"), while {"grants":[]} would deny all traffic
+// of a fresh server. Were such a database ever served in cluster mode, a
+// tailnet without a policy is denied there (PolicyEmptyDenies, AGENTS rule 8).
 func createDefaultTailnet(raw *gorm.DB, cluster string) (types.Tailnet, error) {
 	now := time.Now().UTC()
 	tn := types.Tailnet{

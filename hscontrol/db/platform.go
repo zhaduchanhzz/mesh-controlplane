@@ -189,7 +189,7 @@ func openPlatformChain(cfg *types.Config, ch chain, migrate bool) (_ *Platform, 
 		return nil, err
 	}
 
-	dbConn, err := openDB(dbCfg, cfg.SQLitePath())
+	dbConn, err := openDB(dbCfg, cfg.SQLitePath(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +266,7 @@ func openPlatformChain(cfg *types.Config, ch chain, migrate bool) (_ *Platform, 
 			}
 		}
 
-		leaseConn, err = openDB(leaseCfg, "")
+		leaseConn, err = openDB(leaseCfg, "", false)
 		if err != nil {
 			return nil, fmt.Errorf("opening the lease pool: %w", err)
 		}

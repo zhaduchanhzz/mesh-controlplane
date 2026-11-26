@@ -112,7 +112,7 @@ func TestMigrationFromV01Init(t *testing.T) {
 			require.ErrorIs(t, err, errDuplicateNodeKeys)
 
 			// Nothing changed: no record, no index, the duplicates remain.
-			conn, err := openDB(cfg.Database, cfg.SQLitePath())
+			conn, err := openDB(cfg.Database, cfg.SQLitePath(), false)
 			require.NoError(t, err)
 			t.Cleanup(func() {
 				sqlDB, err := conn.DB()
@@ -144,7 +144,7 @@ func TestCheckV01DatabaseSurfacesConnectionErrors(t *testing.T) {
 				cfg = sqliteTestConfig(filepath.Join(t.TempDir(), "broken.db"))
 			}
 
-			conn, err := openDB(cfg.Database, cfg.SQLitePath())
+			conn, err := openDB(cfg.Database, cfg.SQLitePath(), false)
 			require.NoError(t, err)
 
 			sqlDB, err := conn.DB()

@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
@@ -27,6 +28,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/dbstats"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
@@ -240,6 +242,16 @@ type tenantRuntime struct {
 	// configRev is the tailnets.config_revision the runtime's DNS matches
 	// (ADR 0008); same rules as policyRev.
 	configRev uint64
+
+	// P13f L9: a revision is recorded in policyRev/configRev only once its
+	// reload succeeded. Until then *Pending is set (read by the metrics
+	// collector) and reconcile retries every tick; *FailedRev is the
+	// revision whose failure was logged at error level, so a failing
+	// revision is logged once, not every tick. Only reconcile writes them.
+	policyPending   atomic.Bool
+	configPending   atomic.Bool
+	policyFailedRev uint64
+	configFailedRev uint64
 
 	cancel context.CancelFunc // stops its scheduled tasks
 	stop   func()             // from startRuntime
@@ -564,6 +576,9 @@ func (c *Cluster) reconcile() {
 		return // standby, or the lease is ending: onLeaseLost retires
 	}
 
+	start := time.Now()
+	defer func() { reconcileDuration.Observe(time.Since(start).Seconds()) }()
+
 	if c.noiseKeyRotated() {
 		return
 	}
@@ -611,20 +626,24 @@ func (c *Cluster) reconcile() {
 
 	c.mu.RUnlock()
 
+	// P13f L9: a revision whose reload fails is not recorded as applied: the
+	// runtime keeps its previous settings (never allow-all, never default
+	// DNS), the failure is counted, and the next tick tries again, so a
+	// transient failure (database read, a fix stored without a new
+	// revision) does not leave the tailnet on stale settings until the next
+	// revision. Each failing revision is logged once at error level.
 	for _, rt := range configChanged {
 		rev := want[rt.id.String()].ConfigRevision
-		// As for policy: recorded even when the new settings do not load,
-		// so the runtime keeps serving its previous DNS and the error is
-		// logged once.
-		rt.configRev = rev
 
 		dns, err := c.tailnetDNS(rt.id, rt.slug)
 		if err != nil {
-			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("config_revision", rev).
-				Msg("reconcile: new DNS settings rejected, keeping the previous ones")
+			c.reloadFailed(rt, reloadDNS, rev, &rt.configFailedRev, &rt.configPending, err)
 
 			continue
 		}
+
+		rt.configRev, rt.configFailedRev = rev, 0
+		rt.configPending.Store(false)
 
 		rt.h.cfg.ReplaceTenantDNS(rt.slug, dns)
 		rt.h.Change(change.DNSConfig())
@@ -633,18 +652,16 @@ func (c *Cluster) reconcile() {
 
 	for _, rt := range policyChanged {
 		rev := want[rt.id.String()].PolicyRevision
-		// The revision is recorded even when the new policy does not load:
-		// the runtime keeps enforcing the previous one (never allow-all) and
-		// the error is logged once, not on every tick.
-		rt.policyRev = rev
 
 		changes, err := rt.h.state.ReloadPolicy()
 		if err != nil {
-			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).
-				Msg("reconcile: new policy rejected, keeping the previous one")
+			c.reloadFailed(rt, reloadPolicy, rev, &rt.policyFailedRev, &rt.policyPending, err)
 
 			continue
 		}
+
+		rt.policyRev, rt.policyFailedRev = rev, 0
+		rt.policyPending.Store(false)
 
 		rt.h.Change(changes...)
 		log.Info().Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).Msg("reconcile: policy reloaded")
@@ -675,6 +692,24 @@ func (c *Cluster) reconcile() {
 	}
 
 	c.applyMoveNotices()
+}
+
+// reloadFailed records a failed reload of kind (policy, dns) at revision
+// rev of rt (P13f L9): counted, logged at error level once per revision,
+// left pending so the next reconcile retries it.
+func (c *Cluster) reloadFailed(rt *tenantRuntime, kind string, rev uint64, failedRev *uint64, pending *atomic.Bool, err error) {
+	tailnetReloadFailures.WithLabelValues(tenantlabel.Label(rt.id.String()), kind).Inc()
+	pending.Store(true)
+
+	level := zerolog.DebugLevel
+
+	if *failedRev != rev {
+		*failedRev = rev
+		level = zerolog.ErrorLevel
+	}
+
+	log.WithLevel(level).Err(err).Str("tailnet", rt.id.String()).Str("kind", kind).Uint64("revision", rev).
+		Msg("reconcile: new tailnet settings rejected, keeping the previous ones; retrying every reconcile")
 }
 
 // applyMoveNotices gives each served tailnet the notice of its planned move,
@@ -1534,6 +1569,14 @@ func (c *Cluster) Serve(ctx context.Context) error {
 	c.serveCtx, c.serveGroup = ctx, errorGroup
 
 	defer c.shutdownRuntimes() //nolint:contextcheck // shutdown runs after ctx is done and bounds itself
+
+	// P13f: runtime counts and the shared pool's statistics on the
+	// operator metrics listener while this process serves.
+	defer registerCluster(c)()
+
+	if sqlDB, err := c.platform.RegistryDB().DB(); err == nil { //nolint:noinlineerr
+		defer dbstats.Register("platform", sqlDB)()
+	}
 
 	tlsBundle, err := c.front.getTLSSettings(ctx)
 	if err != nil {

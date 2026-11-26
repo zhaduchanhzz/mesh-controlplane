@@ -202,6 +202,9 @@ func (m *Manager) deadlineFrom(start time.Time) time.Time {
 // acquire, so a load longer than TTL - SafetyMargin used to self-fence the
 // lease it had just taken, every time.
 func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease) error, onLose func(Lease, string)) {
+	register(m)
+	defer unregister(m)
+
 	for {
 		l, err := m.acquire(ctx)
 		if err != nil {
@@ -222,6 +225,7 @@ func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease
 		if err != nil {
 			stopHold()
 			<-ended
+			countEvent(m.cluster, eventStartFailed)
 
 			log.Error().Err(err).Str("cluster", m.cluster).Uint64("lease_epoch", l.Epoch).
 				Msg("cluster lease taken but serving failed to start; releasing")
@@ -285,12 +289,14 @@ func (m *Manager) acquire(ctx context.Context) (Lease, error) {
 			deadline := m.deadlineFrom(start)
 			if time.Now().Before(deadline) {
 				m.set(l, deadline)
+				countEvent(m.cluster, eventAcquired)
 				log.Info().Str("cluster", m.cluster).Str("holder", m.holder).Uint64("lease_epoch", l.Epoch).
 					Msg("cluster lease acquired: active")
 
 				return l, nil
 			}
 			// The acquire itself took too long to be safe: let it expire.
+			countEvent(m.cluster, eventAcquireLate)
 			log.Warn().Str("cluster", m.cluster).Uint64("lease_epoch", l.Epoch).
 				Msg("cluster lease acquired too late to serve; letting it expire")
 		case errors.As(err, &held):
@@ -307,6 +313,7 @@ func (m *Manager) acquire(ctx context.Context) (Lease, error) {
 			}
 		default:
 			if ctx.Err() == nil {
+				countEvent(m.cluster, eventAcquireError)
 				log.Error().Err(err).Str("cluster", m.cluster).Msg("cluster lease: acquire failed")
 			}
 		}
@@ -343,6 +350,8 @@ func (m *Manager) hold(ctx context.Context, l Lease) holdEnd {
 		case <-ctx.Done():
 			return holdEnd{reason: "shutdown"}
 		case <-fence.C:
+			countEvent(m.cluster, eventSelfFence)
+
 			return holdEnd{reason: "self-fence deadline passed"}
 		case why := <-down:
 			return holdEnd{reason: "stepped down: " + why, steppedDown: true}
@@ -363,6 +372,8 @@ func (m *Manager) hold(ctx context.Context, l Lease) holdEnd {
 		case r := <-done:
 			inFlight = false
 
+			renewDuration.WithLabelValues(m.cluster).Observe(time.Since(r.start).Seconds())
+
 			switch {
 			case r.err == nil:
 				deadline = m.deadlineFrom(r.start)
@@ -377,9 +388,12 @@ func (m *Manager) hold(ctx context.Context, l Lease) holdEnd {
 
 				fence.Reset(time.Until(deadline))
 			case errors.Is(r.err, ErrLost):
+				countEvent(m.cluster, eventLost)
+
 				return holdEnd{reason: "lease lost (expired or taken over)"}
 			default:
 				if ctx.Err() == nil {
+					countEvent(m.cluster, eventRenewError)
 					log.Error().Err(r.err).Str("cluster", m.cluster).Uint64("lease_epoch", l.Epoch).
 						Msg("cluster lease: renew failed; serving until the self-fence deadline")
 				}
@@ -395,7 +409,11 @@ func (m *Manager) release(l Lease) {
 	err := m.store.Release(ctx, l)
 	if err != nil {
 		log.Warn().Err(err).Str("cluster", m.cluster).Msg("cluster lease: release failed; it expires by itself")
+
+		return
 	}
+
+	countEvent(m.cluster, eventReleased)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

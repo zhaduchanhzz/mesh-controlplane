@@ -42,6 +42,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"gorm.io/gorm"
@@ -71,6 +73,38 @@ var (
 	errUnsupportedCreate = errors.New("unsupported create value")
 )
 
+// Reasons a tenant write is refused, the label of
+// headscale_tenant_fence_refusals_total (P13f). Fixed strings: no tailnet,
+// cluster or holder in labels.
+const (
+	refusedNoFence    = "no_fence"    // a write without an ownership fence
+	refusedOwner      = "owner"       // another owner cluster or owner_epoch
+	refusedNotActive  = "not_active"  // the tailnet left ACTIVE or was deleted
+	refusedLease      = "lease"       // the cluster lease names another holder/epoch or expired
+	refusedReadError  = "read_error"  // the tailnets or cluster_leases row could not be read
+	refusedBoundError = "bound_error" // the transaction bound or the lease lock failed
+)
+
+var fenceRefusals = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: "headscale",
+	Name:      "tenant_fence_refusals_total",
+	Help: "Tenant writes refused by the ownership fence, by reason: no_fence, owner (moved or newer epoch), " +
+		"not_active, lease (cluster lease lost or expired), read_error, bound_error.",
+}, []string{"reason"})
+
+func init() {
+	for _, r := range []string{refusedNoFence, refusedOwner, refusedNotActive, refusedLease, refusedReadError, refusedBoundError} {
+		fenceRefusals.WithLabelValues(r)
+	}
+}
+
+// refuse records err on the statement and counts the refusal.
+func refuse(db *gorm.DB, reason string, err error) {
+	fenceRefusals.WithLabelValues(reason).Inc()
+
+	_ = db.AddError(err)
+}
+
 // Register installs the plugin's callbacks on db. Statements may name the
 // [TenantTables] and extraTenantTables only through a model carrying
 // TailnetID (P12c A2); tests add the tables of their own models.
@@ -81,16 +115,17 @@ func Register(db *gorm.DB, extraTenantTables ...string) error {
 	steps := []error{
 		cb.Query().Before("gorm:query").Register(name+":query", p.scopeWhere),
 		cb.Row().Before("gorm:row").Register(name+":row", p.scopeWhere),
-		cb.Update().Before("gorm:update").Register(name+":update", p.scopeUpdate),
-		cb.Delete().Before("gorm:delete").Register(name+":delete", p.scopeMutation),
-		cb.Create().Before("gorm:create").Register(name+":create", p.stampCreate),
-		// After the scope callbacks, inside the default transaction.
-		cb.Create().After(name+":create").After("gorm:begin_transaction").Before("gorm:create").
-			Register(name+":fence_create", checkFence),
-		cb.Update().After(name+":update").After("gorm:begin_transaction").Before("gorm:update").
-			Register(name+":fence_update", checkFence),
-		cb.Delete().After(name+":delete").After("gorm:begin_transaction").Before("gorm:delete").
-			Register(name+":fence_delete", checkFence),
+		// GORM keeps one After and one Before per callback (P13f L10: a
+		// chained .After(a).After(b) kept only b). The order is declared as a
+		// chain instead: gorm:begin_transaction < scope/stamp < fence < the
+		// operation, so each fence runs inside the default transaction and
+		// after its scope callback whatever order callbacks are registered in.
+		cb.Update().After("gorm:begin_transaction").Before("gorm:update").Register(name+":update", p.scopeUpdate),
+		cb.Delete().After("gorm:begin_transaction").Before("gorm:delete").Register(name+":delete", p.scopeMutation),
+		cb.Create().After("gorm:begin_transaction").Before("gorm:create").Register(name+":create", p.stampCreate),
+		cb.Create().After(name+":create").Before("gorm:create").Register(name+":fence_create", checkFence),
+		cb.Update().After(name+":update").Before("gorm:update").Register(name+":fence_update", checkFence),
+		cb.Delete().After(name+":delete").Before("gorm:delete").Register(name+":fence_delete", checkFence),
 	}
 
 	return errors.Join(steps...)
@@ -467,7 +502,7 @@ func checkFence(db *gorm.DB) {
 
 	f, ok := tailnet.FenceFromContext(db.Statement.Context)
 	if !ok {
-		_ = db.AddError(ErrNoFence)
+		refuse(db, refusedNoFence, ErrNoFence)
 
 		return
 	}
@@ -493,20 +528,20 @@ func checkFence(db *gorm.DB) {
 
 	err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, q, s.ID().String()).Scan(&owner, &epoch, &status, &live)
 	if err != nil {
-		_ = db.AddError(fmt.Errorf("%w: reading owner of %s: %w", ErrFenced, s.ID(), err))
+		refuse(db, refusedReadError, fmt.Errorf("%w: reading owner of %s: %w", ErrFenced, s.ID(), err))
 
 		return
 	}
 
 	if owner != f.Cluster() || epoch < 0 || tailnet.Epoch(epoch) != f.Epoch() {
-		_ = db.AddError(fmt.Errorf("%w: tailnet %s is owned by %q at epoch %d, writer holds %q at epoch %d",
+		refuse(db, refusedOwner, fmt.Errorf("%w: tailnet %s is owned by %q at epoch %d, writer holds %q at epoch %d",
 			ErrFenced, s.ID(), owner, epoch, f.Cluster(), f.Epoch()))
 
 		return
 	}
 
 	if status != activeStatus || !live {
-		_ = db.AddError(fmt.Errorf("%w: tailnet %s is %s (deleted=%t), not ACTIVE",
+		refuse(db, refusedNotActive, fmt.Errorf("%w: tailnet %s is %s (deleted=%t), not ACTIVE",
 			ErrFenced, s.ID(), status, !live))
 
 		return
@@ -562,13 +597,13 @@ func checkLease(db *gorm.DB, f tailnet.Fence) {
 
 	err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, q, f.Cluster()).Scan(&gotHolder, &gotEpoch, &live)
 	if err != nil {
-		_ = db.AddError(fmt.Errorf("%w: reading cluster lease of %s: %w", ErrFenced, f.Cluster(), err))
+		refuse(db, refusedReadError, fmt.Errorf("%w: reading cluster lease of %s: %w", ErrFenced, f.Cluster(), err))
 
 		return
 	}
 
 	if gotHolder != holder || gotEpoch < 0 || uint64(gotEpoch) != epoch || !live {
-		_ = db.AddError(fmt.Errorf("%w: cluster %s lease is held by %q at epoch %d (live=%t), writer holds %q at epoch %d",
+		refuse(db, refusedLease, fmt.Errorf("%w: cluster %s lease is held by %q at epoch %d (live=%t), writer holds %q at epoch %d",
 			ErrFenced, f.Cluster(), gotHolder, gotEpoch, live, holder, epoch))
 	}
 }
@@ -622,7 +657,7 @@ func boundTransaction(db *gorm.DB, cluster string) bool {
 	}
 
 	if err != nil {
-		_ = db.AddError(fmt.Errorf("%w: bounding the transaction (cluster lease %q): %w", ErrFenced, cluster, err))
+		refuse(db, refusedBoundError, fmt.Errorf("%w: bounding the transaction (cluster lease %q): %w", ErrFenced, cluster, err))
 
 		return false
 	}

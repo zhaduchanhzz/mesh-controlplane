@@ -7,6 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 var (
@@ -29,6 +32,39 @@ var (
 // The matched identity is the actor recorded in the audit.
 type Authorizer struct {
 	allowed map[string]bool
+
+	// revoked, when set (P13f L5), refuses chains with a revoked
+	// certificate, and everything while its file is unavailable.
+	revoked *Revocations
+}
+
+// WithRevocations makes a check every request against r (P13f L5).
+func (a *Authorizer) WithRevocations(r *Revocations) *Authorizer {
+	a.revoked = r
+
+	return a
+}
+
+// Reasons an operator request is refused (mesh_placement_operator_refused_total).
+const (
+	refusedCredentials = "credentials"
+	refusedNoCert      = "no_certificate"
+	refusedIdentity    = "identity"
+	refusedRevoked     = "revoked"
+	refusedRevocation  = "revocation_unavailable"
+)
+
+var operatorRefused = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: "mesh_placement",
+	Name:      "operator_refused_total",
+	Help: "Operator API requests refused, by reason: credentials (a bearer/API key/cookie), no_certificate, " +
+		"identity (not an allowed operator), revoked, revocation_unavailable (fail closed).",
+}, []string{"reason"})
+
+func init() {
+	for _, r := range []string{refusedCredentials, refusedNoCert, refusedIdentity, refusedRevoked, refusedRevocation} {
+		operatorRefused.WithLabelValues(r)
+	}
 }
 
 // NewAuthorizer returns an Authorizer for the given operator identities
@@ -69,6 +105,7 @@ func (a *Authorizer) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, h := range credentialHeaders {
 			if r.Header.Get(h) != "" {
+				operatorRefused.WithLabelValues(refusedCredentials).Inc()
 				http.Error(w, "forbidden: tenant or bearer credentials are not accepted by the operator API", http.StatusForbidden)
 
 				return
@@ -76,6 +113,7 @@ func (a *Authorizer) Wrap(next http.Handler) http.Handler {
 		}
 
 		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+			operatorRefused.WithLabelValues(refusedNoCert).Inc()
 			http.Error(w, "unauthorized: operator client certificate required", http.StatusUnauthorized)
 
 			return
@@ -83,9 +121,36 @@ func (a *Authorizer) Wrap(next http.Handler) http.Handler {
 
 		actor, ok := a.identity(r.TLS.VerifiedChains[0][0])
 		if !ok {
+			operatorRefused.WithLabelValues(refusedIdentity).Inc()
 			http.Error(w, "forbidden: certificate identity is not an allowed operator", http.StatusForbidden)
 
 			return
+		}
+
+		if a.revoked != nil {
+			var err error
+
+			// Every chain the handshake verified: a revoked intermediate in
+			// any of them refuses the request.
+			for _, chain := range r.TLS.VerifiedChains {
+				err = a.revoked.Check(chain)
+				if err != nil {
+					break
+				}
+			}
+
+			switch {
+			case errors.Is(err, ErrRevoked):
+				operatorRefused.WithLabelValues(refusedRevoked).Inc()
+				http.Error(w, "forbidden: operator certificate is revoked", http.StatusForbidden)
+
+				return
+			case err != nil:
+				operatorRefused.WithLabelValues(refusedRevocation).Inc()
+				http.Error(w, "operator certificate revocation list unavailable", http.StatusServiceUnavailable)
+
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), actorKey{}, actor)))

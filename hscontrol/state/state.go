@@ -41,6 +41,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tenantlabel"
 	"gorm.io/gorm"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -220,6 +221,10 @@ type State struct {
 	// is set once one was ever announced.
 	moveNotice     atomic.Pointer[types.MoveNotice]
 	moveNoticeSeen atomic.Bool
+
+	// metricLabel is the tailnet label this State acquired for its
+	// per-tailnet metrics (P13f L4), released by Close.
+	metricLabel string
 
 	// cfg holds the current Headscale configuration
 	cfg *types.Config
@@ -465,14 +470,18 @@ func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 	}
 
 	polMan.SetRouterSession(nodeStore.RouterSession)
-	nodeStore.SetMetricsTailnet(db.Tailnet().ID)
+	// P13f L4: this runtime serves its tailnet from here on; the label is
+	// released by Close.
+	metricLabel := tenantlabel.Acquire(db.Tailnet().ID)
+	nodeStore.SetMetricsTailnet(metricLabel)
 	nodeStore.reservedLabel = func(label string) bool {
 		return cfg.DNSConfig.BaseDomain != "" && cfg.HasExtraRecord(label+"."+cfg.DNSConfig.BaseDomain)
 	}
 	nodeStore.Start()
 
 	s := &State{
-		cfg: cfg,
+		cfg:         cfg,
+		metricLabel: metricLabel,
 
 		db:                  db,
 		ipAlloc:             ipAlloc,
@@ -598,6 +607,11 @@ func (s *State) Close() error {
 
 	s.pings.drain()
 	s.nodeStore.Stop()
+
+	if s.metricLabel == s.db.Tailnet().ID {
+		tenantlabel.Release(s.metricLabel)
+		s.metricLabel = tenantlabel.Other
+	}
 	// Purge before Close: Close stops the sweeper, so anything still cached
 	// would never expire and its WaitForAuth caller would hang.
 	s.authCache.Purge()

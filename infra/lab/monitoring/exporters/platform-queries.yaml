@@ -1,0 +1,58 @@
+# P13f: platform queries of pg-exporter-platform (read-only role with
+# SELECT on tailnets, clusters, nodes only; README.md "Roles"). NOT APPLIED.
+#
+# The series carry tailnet and cluster IDs: tenant identifiers, so they stay
+# on the operator-only monitoring stack on mc-db (AGENTS rule 9). No slug,
+# no node data.
+#
+# Device quota (P10, ADR 0003): a tailnet on a shared cluster may enroll
+# placement.DefaultSharedTenantLimit (5000) devices; a tailnet on a dedicated
+# cluster the cluster's max_devices. Keep 5000 in step with
+# mesh-placement -shared-tenant-limit.
+mesh_tailnet_quota:
+  query: |
+    SELECT t.id AS tailnet,
+           c.id AS cluster,
+           count(n.id)::float8 AS devices,
+           (CASE WHEN c.class = 'dedicated' THEN c.max_devices ELSE 5000 END)::float8 AS limit_devices
+    FROM tailnets t
+    JOIN clusters c ON c.id = t.owner_cluster_id
+    LEFT JOIN nodes n ON n.tailnet_id = t.id AND n.deleted_at IS NULL
+    WHERE t.deleted_at IS NULL AND t.status = 'ACTIVE'
+    GROUP BY t.id, c.id, c.class, c.max_devices
+  metrics:
+    - tailnet:
+        usage: LABEL
+        description: Tailnet ID
+    - cluster:
+        usage: LABEL
+        description: Owner cluster ID
+    - devices:
+        usage: GAUGE
+        description: Devices enrolled in the tailnet
+    - limit_devices:
+        usage: GAUGE
+        description: Device limit of the tailnet
+
+# Lease rows as the database sees them (complements the process metrics:
+# a cluster whose processes are all down has no process to report).
+mesh_cluster_lease:
+  query: |
+    SELECT cluster_id AS cluster,
+           epoch::float8 AS epoch,
+           (CASE WHEN expires_at > now() THEN 1 ELSE 0 END)::float8 AS live,
+           EXTRACT(EPOCH FROM (now() - updated_at))::float8 AS since_update_seconds
+    FROM cluster_leases
+  metrics:
+    - cluster:
+        usage: LABEL
+        description: Cluster ID
+    - epoch:
+        usage: GAUGE
+        description: Lease epoch in cluster_leases
+    - live:
+        usage: GAUGE
+        description: 1 while the lease has not expired by the database clock
+    - since_update_seconds:
+        usage: GAUGE
+        description: Seconds since the lease row was last acquired or renewed

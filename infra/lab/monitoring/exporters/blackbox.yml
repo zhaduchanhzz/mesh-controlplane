@@ -1,0 +1,23 @@
+# P13f: blackbox_exporter modules. NOT APPLIED.
+modules:
+  # GET /health of a public endpoint over TLS, verified against the system
+  # roots (Let's Encrypt): a probe fails on an expired or wrong certificate.
+  https_health:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      fail_if_not_ssl: true
+      preferred_ip_protocol: ip4
+      tls_config:
+        insecure_skip_verify: false
+  # TLS handshake only (certificate expiry of the DERP relay).
+  tls_connect:
+    prober: tcp
+    timeout: 10s
+    tcp:
+      tls: true
+      preferred_ip_protocol: ip4
+      tls_config:
+        insecure_skip_verify: false

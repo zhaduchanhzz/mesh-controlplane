@@ -190,7 +190,7 @@ func TestMigrationNodeIPUnique(t *testing.T) {
 			require.ErrorIs(t, err, errDuplicateNodeIPs)
 			assert.Contains(t, err.Error(), "1 addresses")
 
-			conn, err := openDB(cfg.Database, cfg.SQLitePath())
+			conn, err := openDB(cfg.Database, cfg.SQLitePath(), false)
 			require.NoError(t, err)
 			t.Cleanup(func() {
 				sqlDB, err := conn.DB()

@@ -28,8 +28,9 @@ func LatestMigrationID() string {
 // missing SQLite file and a database this binary cannot run with (the rule
 // of [OpenPlatform], ADR 0013 §4: every migration it knows present, every
 // newer one marked compatible); the version check is not applied, as
-// before P13d. On SQLite the connection is put in query_only mode;
-// on PostgreSQL callers read in READ ONLY transactions.
+// before P13d. On SQLite every connection of the handle is in query_only
+// mode (set in the DSN, P13f L3); on PostgreSQL callers read in READ ONLY
+// transactions.
 func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 	return openReadOnly(cfg, currentChain())
 }
@@ -49,7 +50,7 @@ func openReadOnly(cfg *types.Config, ch chain) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	conn, err := openDB(cfg.Database, cfg.SQLitePath())
+	conn, err := openDB(cfg.Database, cfg.SQLitePath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -69,15 +70,6 @@ func openReadOnly(cfg *types.Config, ch chain) (*gorm.DB, error) {
 		closeConn()
 
 		return nil, fmt.Errorf("%w: %w", ErrSchemaNotCurrent, err)
-	}
-
-	if cfg.Database.IsSQLite() {
-		err = conn.Exec(`PRAGMA query_only = ON`).Error
-		if err != nil {
-			closeConn()
-
-			return nil, fmt.Errorf("setting query_only: %w", err)
-		}
 	}
 
 	return conn, nil

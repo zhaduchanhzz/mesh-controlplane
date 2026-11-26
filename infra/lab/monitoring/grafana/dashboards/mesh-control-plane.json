@@ -1,0 +1,184 @@
+{
+  "uid": "mesh-control-plane",
+  "title": "Mesh control plane (P13f)",
+  "description": "Cluster lease, fence, pools, reconcile, bootstrap/placement, PgBouncer, Patroni, backups. Operator-only (mc-db). Tailnet IDs appear only in per-tailnet panels.",
+  "tags": ["mesh", "p13f"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "cluster",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+        "query": { "query": "label_values(headscale_cluster_lease_held, cluster)", "refId": "cluster" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    { "type": "row", "title": "Cluster lease", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false, "panels": [] },
+    {
+      "type": "timeseries", "title": "Lease held (1 = serving)", "gridPos": { "h": 7, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "min": 0, "max": 1, "custom": { "lineInterpolation": "stepAfter" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "headscale_cluster_lease_held{cluster=~\"$cluster\"}", "legendFormat": "{{cluster}} {{host}} {{holder}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Lease epoch (last acquired)", "gridPos": { "h": 7, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0, "custom": { "lineInterpolation": "stepAfter" } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max by (cluster) (headscale_cluster_lease_epoch{cluster=~\"$cluster\"})", "legendFormat": "{{cluster}} (processes)" },
+        { "refId": "B", "expr": "mesh_cluster_lease_epoch{cluster=~\"$cluster\"}", "legendFormat": "{{cluster}} (database)" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Seconds left before self-fence (active)", "gridPos": { "h": 7, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 3 }, { "color": "green", "value": 5 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "headscale_cluster_lease_deadline_seconds{cluster=~\"$cluster\"} and on (cluster, holder) headscale_cluster_lease_held == 1", "legendFormat": "{{cluster}} {{holder}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Lease renew latency p50 / p99", "gridPos": { "h": 7, "w": 8, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.5, sum by (cluster, le) (rate(headscale_cluster_lease_renew_duration_seconds_bucket{cluster=~\"$cluster\"}[5m])))", "legendFormat": "{{cluster}} p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.99, sum by (cluster, le) (rate(headscale_cluster_lease_renew_duration_seconds_bucket{cluster=~\"$cluster\"}[5m])))", "legendFormat": "{{cluster}} p99" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Lease events / 5 min", "gridPos": { "h": 7, "w": 8, "x": 8, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by (cluster, event) (increase(headscale_cluster_lease_events_total{cluster=~\"$cluster\"}[5m])) > 0", "legendFormat": "{{cluster}} {{event}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Fence refusals by reason (/s)", "gridPos": { "h": 7, "w": 8, "x": 16, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by (host, reason) (rate(headscale_tenant_fence_refusals_total[1m])) > 0", "legendFormat": "{{host}} {{reason}}" } ]
+    },
+    { "type": "row", "title": "Cluster process", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }, "collapsed": false, "panels": [] },
+    {
+      "type": "timeseries", "title": "DB pool: in use / open / max", "gridPos": { "h": 7, "w": 8, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "headscale_db_pool_in_use_connections", "legendFormat": "{{host}} {{pool}} in use" },
+        { "refId": "B", "expr": "headscale_db_pool_open_connections", "legendFormat": "{{host}} {{pool}} open" },
+        { "refId": "C", "expr": "headscale_db_pool_max_open_connections", "legendFormat": "{{host}} {{pool}} max" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "DB pool waits (/s) and wait time (s/s)", "gridPos": { "h": 7, "w": 8, "x": 8, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(headscale_db_pool_wait_count_total[1m])", "legendFormat": "{{host}} {{pool}} waits" },
+        { "refId": "B", "expr": "rate(headscale_db_pool_wait_duration_seconds_total[1m])", "legendFormat": "{{host}} {{pool}} wait s/s" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Reconcile duration p99", "gridPos": { "h": 7, "w": 8, "x": 16, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.99, sum by (host, le) (rate(headscale_cluster_reconcile_duration_seconds_bucket[5m])))", "legendFormat": "{{host}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Tailnet runtimes by state", "gridPos": { "h": 7, "w": 8, "x": 0, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0, "custom": { "lineInterpolation": "stepAfter" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "headscale_cluster_tailnet_runtimes{cluster=~\"$cluster\"} > 0", "legendFormat": "{{cluster}} {{holder}} {{state}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Policy / DNS reload failures (/5 min)", "gridPos": { "h": 7, "w": 8, "x": 8, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [ { "refId": "A", "expr": "sum by (host, kind) (increase(headscale_tailnet_reload_failures_total[5m])) > 0", "legendFormat": "{{host}} {{kind}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Per-tailnet labels in use / overflow", "gridPos": { "h": 7, "w": 8, "x": 16, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "headscale_tailnet_metric_labels", "legendFormat": "{{host}} labels" },
+        { "refId": "B", "expr": "increase(headscale_tailnet_metric_label_overflow_total[1h])", "legendFormat": "{{host}} overflow /h" }
+      ]
+    },
+    { "type": "row", "title": "Edge: bootstrap and placement", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 }, "collapsed": false, "panels": [] },
+    {
+      "type": "timeseries", "title": "Bootstrap requests by outcome (/s)", "gridPos": { "h": 7, "w": 8, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by (outcome) (rate(mesh_bootstrap_requests_total[1m])) > 0", "legendFormat": "{{outcome}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Bootstrap PROXY v2 refusals (/5 min)", "gridPos": { "h": 7, "w": 8, "x": 8, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [ { "refId": "A", "expr": "sum by (reason) (increase(mesh_bootstrap_proxy_refused_total[5m])) > 0", "legendFormat": "{{reason}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Placement API by code; operator refusals", "gridPos": { "h": 7, "w": 8, "x": 16, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (code) (rate(mesh_placement_http_requests_total[5m])) > 0", "legendFormat": "{{code}}" },
+        { "refId": "B", "expr": "sum by (reason) (increase(mesh_placement_operator_refused_total[5m])) > 0", "legendFormat": "refused {{reason}}" },
+        { "refId": "C", "expr": "mesh_placement_revocation_list_ok", "legendFormat": "revocation list ok" }
+      ]
+    },
+    { "type": "row", "title": "Database", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 }, "collapsed": false, "panels": [] },
+    {
+      "type": "timeseries", "title": "PgBouncer clients waiting / max wait", "gridPos": { "h": 7, "w": 8, "x": 0, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (host, database) (pgbouncer_pools_client_waiting_connections) > 0", "legendFormat": "{{host}} {{database}} waiting" },
+        { "refId": "B", "expr": "max by (host, database) (pgbouncer_pools_client_maxwait_seconds) > 0", "legendFormat": "{{host}} {{database}} maxwait s" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "PgBouncer server connections by alias", "gridPos": { "h": 7, "w": 8, "x": 8, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (host, database) (pgbouncer_pools_server_active_connections)", "legendFormat": "{{host}} {{database}} active" },
+        { "refId": "B", "expr": "sum by (host, database) (pgbouncer_pools_server_idle_connections)", "legendFormat": "{{host}} {{database}} idle" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Patroni primary / sync standby / replication lag", "gridPos": { "h": 7, "w": 8, "x": 16, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "patroni_primary", "legendFormat": "{{host}} primary" },
+        { "refId": "B", "expr": "patroni_sync_standby", "legendFormat": "{{host}} sync standby" },
+        { "refId": "C", "expr": "max by (scope) (patroni_xlog_location) - on (scope) group_right max by (scope, host) (patroni_xlog_replayed_location and on (instance) (patroni_replica == 1))", "legendFormat": "{{host}} lag bytes" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Backup age / WAL archive age", "gridPos": { "h": 7, "w": 8, "x": 0, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "time() - pgbackrest_backup_last_completed_timestamp_seconds", "legendFormat": "{{stanza}} {{type}} backup age" },
+        { "refId": "B", "expr": "time() - pgbackrest_archive_last_wal_timestamp_seconds", "legendFormat": "{{stanza}} last WAL archived" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Clock offset (PG nodes, mc-db)", "gridPos": { "h": 7, "w": 8, "x": 8, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "node_timex_offset_seconds{host=~\"mc-pg-.*|mc-db\"}", "legendFormat": "{{host}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Disk used / TLS days left", "gridPos": { "h": 7, "w": 8, "x": 16, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "mc-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\"}", "legendFormat": "{{host}} {{mountpoint}} used" },
+        { "refId": "B", "expr": "(probe_ssl_earliest_cert_expiry - time()) / 86400", "legendFormat": "{{instance}} TLS days" }
+      ]
+    }
+  ]
+}
