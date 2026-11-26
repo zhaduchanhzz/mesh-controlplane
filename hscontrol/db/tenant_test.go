@@ -274,3 +274,26 @@ func TestScopedContextKeepsTailnet(t *testing.T) {
 	require.NoError(t, hsdb.DB.WithContext(hsdb.ScopedContext(t.Context())).Model(&types.User{}).Count(&n).Error)
 	assert.EqualValues(t, 1, n)
 }
+
+// P12c A7: ScopedContext on A's handle with a context already bound to B
+// must not hand back B's context: a read on A's handle with it would see
+// B's rows.
+func TestScopedContextRefusesOtherTailnet(t *testing.T) {
+	p := openPlatform(t, sqliteTestConfig(filepath.Join(t.TempDir(), "conflict.db")))
+	a := tenantDB(t, p, platformTailnet(t, p, "local", types.TailnetActive, false))
+	b := tenantDB(t, p, platformTailnet(t, p, "local", types.TailnetActive, false))
+
+	_, err := b.CreateUser(types.User{Name: "bob"})
+	require.NoError(t, err)
+
+	ctxB := b.DB.Statement.Context
+
+	var users []types.User
+
+	err = a.DB.WithContext(a.ScopedContext(ctxB)).Find(&users).Error
+	for _, u := range users {
+		assert.NotEqual(t, b.Tailnet().ID, u.TailnetID, "A's handle read B's user %q through ScopedContext", u.Name)
+	}
+
+	require.Error(t, err, "ScopedContext must refuse a context bound to another tailnet")
+}
