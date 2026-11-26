@@ -39,10 +39,6 @@ func TestGrantPolicies(t *testing.T) { //nolint:gocyclo
 		c1.WaitForPeers(t, 1, 10*time.Second)
 		c2.WaitForPeers(t, 1, 10*time.Second)
 
-		// Record update counts before policy change.
-		countC1 := c1.UpdateCount()
-		countC2 := c2.UpdateCount()
-
 		// Set a grant-only policy with no ACLs.
 		changed, err := srv.State().SetPolicy([]byte(`{
 			"grants": [{
@@ -59,17 +55,18 @@ func TestGrantPolicies(t *testing.T) { //nolint:gocyclo
 			srv.App.Change(changes...)
 		}
 
-		// Wait for both clients to receive an update after the policy change.
-		c1.WaitForCondition(t, "update after grant-only policy",
-			10*time.Second,
-			func(nm *netmap.NetworkMap) bool {
-				return c1.UpdateCount() > countC1
-			})
-		c2.WaitForCondition(t, "update after grant-only policy",
-			10*time.Second,
-			func(nm *netmap.NetworkMap) bool {
-				return c2.UpdateCount() > countC2
-			})
+		// The grant compiles to what the default allow-all already gave the
+		// clients, so with delta-first (ADR 0015 D2) they may get no frame:
+		// wait for the server to have handed out the change, then check what
+		// the clients hold.
+		srv.WaitMapsDelivered(t, 10*time.Second)
+
+		for _, c := range []*servertest.TestClient{c1, c2} {
+			c.WaitForCondition(t, "grant-only policy in force", 10*time.Second,
+				func(nm *netmap.NetworkMap) bool {
+					return len(nm.PacketFilter) > 0 && len(nm.Peers) == 1
+				})
+		}
 
 		// Verify [netmap.NetworkMap.PacketFilter] is populated with real rules from the grant.
 		nm1 := c1.Netmap()

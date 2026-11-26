@@ -79,19 +79,21 @@ func TestTenantDefaultDeny(t *testing.T) {
 	assertDenied(t, "no policy")
 
 	// Barrier: an explicit empty grant list changes the policy (nil to
-	// {"grants":[]}), so every client gets a map after all three nodes
-	// exist. It must still deny everything.
-	counts := updatePolicy(t, `{"grants":[]}`)
-	for i, c := range clients {
-		c.WaitForCondition(t, "map after {\"grants\":[]}", timeout, func(nm *netmap.NetworkMap) bool {
-			return c.UpdateCount() > counts[i] && denied(nm)
-		})
+	// {"grants":[]}) after all three nodes exist. It must still deny
+	// everything. Deny to deny changes nothing a client holds, so with delta-first
+	// (ADR 0015 D2) no client gets a frame: wait for the server to have
+	// handed out the change instead, then for every client to be denied.
+	updatePolicy(t, `{"grants":[]}`)
+	srv.WaitMapsDelivered(t, timeout)
+
+	for _, c := range clients {
+		c.WaitForCondition(t, "denied after {\"grants\":[]}", timeout, denied)
 	}
 
 	assertDenied(t, `{"grants":[]}`)
 
 	// Phase 2: an explicit allow policy; everyone sees everyone.
-	counts = updatePolicy(t, `{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}`)
+	counts := updatePolicy(t, `{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}`)
 	for i, c := range clients {
 		c.WaitForCondition(t, "peers and filter after allow", timeout, func(nm *netmap.NetworkMap) bool {
 			return c.UpdateCount() > counts[i] && len(nm.Peers) == 2 && len(nm.PacketFilter) > 0

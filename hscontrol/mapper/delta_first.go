@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"hash/maphash"
 	"sync"
+	"time"
 
 	"tailscale.com/tailcfg"
 )
@@ -24,13 +25,16 @@ import (
 //     gets everything: unknown means send.
 //   - A full peer list (Peers) is never stripped: it is the safety net of
 //     ADR 0015 D3 and resets the baseline.
-//   - A peer's hash leaves out Online and LastSeen: presence moves by
-//     patches (NodeOnline/NodeOffline), and a lost patch means a full map
-//     anyway (no connection, or a backlog collapsed to full). Every other
-//     field, keys, endpoints, expiry and capabilities included, is hashed.
+//   - A peer entry is dropped only when both its hash, which covers every
+//     field but presence (keys, endpoints, expiry, capabilities, routes…),
+//     and its presence (Online, LastSeen) equal what the client holds.
+//     Presence is tracked apart because patches move it: an entry sent
+//     whole sets it, presence patches (OnlineChange, PeersChangedPatch with
+//     Online/LastSeen only) update it.
 //   - A patch touching any other field (PeersChangedPatch with endpoints,
-//     key, DERP region, capabilities, expiry) and a removal drop the peer's
-//     hash, so the next PeersChanged for it is sent whole.
+//     key, DERP region, capabilities, expiry), a PeerSeenChange and a
+//     removal drop what is known of the peer, so its next PeersChanged is
+//     sent whole.
 //   - Removals are not decided here: computePeerDiff and removalsFromSent
 //     (per node, from what was sent) still produce them.
 
@@ -42,7 +46,7 @@ var deltaHashSeed = maphash.MakeSeed()
 // delta-first compares, computed once per response and shared by every
 // connection of the node.
 type responseHashes struct {
-	peers     map[tailcfg.NodeID]uint64
+	peers     map[tailcfg.NodeID]peerSent
 	profiles  map[tailcfg.UserID]uint64
 	filter    uint64
 	hasFilter bool
@@ -60,14 +64,55 @@ func hashJSON(v any) (uint64, bool) {
 	return maphash.Bytes(deltaHashSeed, b), true
 }
 
-// hashPeer hashes a peer entry without its presence fields (Online,
-// LastSeen), see the safety rules above.
-func hashPeer(p *tailcfg.Node) (uint64, bool) {
+// peerSent is what a client holds of one peer: the hash of the entry
+// without presence, and the presence itself.
+type peerSent struct {
+	hash     uint64
+	online   int8  // -1: nil, 0: false, 1: true
+	lastSeen int64 // UnixNano; 0: nil
+}
+
+func onlineOf(b *bool) int8 {
+	switch {
+	case b == nil:
+		return -1
+	case *b:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func seenOf(t *time.Time) int64 {
+	if t == nil {
+		return 0
+	}
+
+	return t.UnixNano()
+}
+
+// hashPeer returns what a client holding p holds of it, see the safety
+// rules above. A shared entry's value is computed once, when it is stored
+// (P14f F4); entries are never modified, so the memo includes presence.
+func hashPeer(p *tailcfg.Node) (peerSent, bool) {
+	if v, ok := sharedPeerHashes.Load(p); ok {
+		ps, _ := v.(peerSent)
+
+		return ps, true
+	}
+
+	return hashPeerUncached(p)
+}
+
+// hashPeerUncached is [hashPeer] without the shared-entry memo.
+func hashPeerUncached(p *tailcfg.Node) (peerSent, bool) {
 	c := *p
 	c.Online = nil
 	c.LastSeen = nil
 
-	return hashJSON(&c)
+	v, ok := hashJSON(&c)
+
+	return peerSent{hash: v, online: onlineOf(p.Online), lastSeen: seenOf(p.LastSeen)}, ok
 }
 
 // patchKeepsHash reports whether pc changes nothing a peer hash covers:
@@ -105,7 +150,7 @@ func hashResponse(data *tailcfg.MapResponse) *responseHashes {
 	h := &responseHashes{}
 
 	if n := len(data.Peers) + len(data.PeersChanged); n > 0 {
-		h.peers = make(map[tailcfg.NodeID]uint64, n)
+		h.peers = make(map[tailcfg.NodeID]peerSent, n)
 
 		for _, list := range [][]*tailcfg.Node{data.Peers, data.PeersChanged} {
 			for _, p := range list {
@@ -143,7 +188,7 @@ type sentState struct {
 	mu sync.Mutex
 
 	// peers is nil until a full peer list (the initial map) was delivered.
-	peers    map[tailcfg.NodeID]uint64
+	peers    map[tailcfg.NodeID]peerSent
 	profiles map[tailcfg.UserID]uint64
 
 	filter      uint64
@@ -235,7 +280,7 @@ func (s *sentState) record(data *tailcfg.MapResponse, h *responseHashes, initial
 	defer s.mu.Unlock()
 
 	if initial || data.Peers != nil {
-		s.peers = make(map[tailcfg.NodeID]uint64, len(data.Peers))
+		s.peers = make(map[tailcfg.NodeID]peerSent, len(data.Peers))
 
 		for _, p := range data.Peers {
 			if p == nil {
@@ -266,13 +311,43 @@ func (s *sentState) record(data *tailcfg.MapResponse, h *responseHashes, initial
 		}
 
 		for _, pc := range data.PeersChangedPatch {
-			if pc != nil && !patchKeepsHash(pc) {
+			if pc == nil {
+				continue
+			}
+
+			cur, ok := s.peers[pc.NodeID]
+			if !ok {
+				continue
+			}
+
+			if !patchKeepsHash(pc) {
 				delete(s.peers, pc.NodeID)
+				continue
+			}
+
+			if pc.Online != nil {
+				cur.online = onlineOf(pc.Online)
+			}
+
+			if pc.LastSeen != nil {
+				cur.lastSeen = seenOf(pc.LastSeen)
+			}
+
+			s.peers[pc.NodeID] = cur
+		}
+
+		for id, online := range data.OnlineChange {
+			if cur, ok := s.peers[id]; ok {
+				cur.online = onlineOf(&online)
+				s.peers[id] = cur
 			}
 		}
 
-		// OnlineChange and PeerSeenChange carry presence only, which the
-		// hash leaves out.
+		// PeerSeenChange moves LastSeen by rules of the client's own
+		// (true: now); forget the peer rather than guess.
+		for id := range data.PeerSeenChange {
+			delete(s.peers, id)
+		}
 	}
 
 	if initial && s.profiles == nil {

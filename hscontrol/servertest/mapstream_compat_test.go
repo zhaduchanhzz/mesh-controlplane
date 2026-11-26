@@ -43,46 +43,19 @@ import (
 // mapStreamSkipReasons lists checks where headscale differs from SaaS, keyed
 // <test_id>/<step>/<node>/<check>. A listed check that matches fails, so a
 // fix must delete its entry.
+//
+// POLICY_RESPONSE_TO_EVERY_NODE (every connected node got a policy response
+// when the policy, a node's tags or approved routes, or the set of nodes
+// changed; SaaS sends only the nodes whose peers or filter change) is gone
+// with delta-first (P14f F3, ADR 0015 D2), on by default: its 29 entries
+// now match SaaS and were deleted.
 var mapStreamSkipReasons = map[string]string{
-	"map-delivery/S1.1/appc/frames":   policyResponseToEveryNode,
-	"map-delivery/S1.1/router/frames": policyResponseToEveryNode,
-	"map-delivery/S1.1/sshd/frames":   policyResponseToEveryNode,
-	"map-delivery/S1.2/appc/frames":   policyResponseToEveryNode,
-	"map-delivery/S1.2/router/frames": policyResponseToEveryNode,
-	"map-delivery/S1.2/sshd/frames":   policyResponseToEveryNode,
-	"map-delivery/S1.3/appc/frames":   policyResponseToEveryNode,
-	"map-delivery/S1.3/router/frames": policyResponseToEveryNode,
-	"map-delivery/S1.3/sshd/frames":   policyResponseToEveryNode,
-	"map-delivery/S1.4/appc/frames":   policyResponseToEveryNode,
-	"map-delivery/S1.4/router/frames": policyResponseToEveryNode,
-	"map-delivery/S1.4/sshd/frames":   policyResponseToEveryNode,
-
-	"map-delivery/S3.5-remove/db1/frames":  policyResponseToEveryNode,
-	"map-delivery/S3.5-restore/db1/frames": policyResponseToEveryNode,
-
 	"map-delivery/S2.5/laptop/endpoints-gap-bystander": restartEndpointsKept,
 	"map-delivery/S2.5/laptop/endpoints-gap-svc":       restartEndpointsKept,
-
-	"hidden-peers/S2/witness/presence":   policyResponseToEveryNode,
-	"hidden-peers/S8/observer/presence":  policyResponseToEveryNode,
-	"hidden-peers/S9/observer/presence":  policyResponseToEveryNode,
-	"hidden-peers/S10/observer/presence": policyResponseToEveryNode,
-	"hidden-peers/S13/observer/presence": policyResponseToEveryNode,
-	"route-announce/RA3/srv/presence":    policyResponseToEveryNode,
-	"route-announce/RA3/wit/presence":    policyResponseToEveryNode,
-	"route-announce/RA4/srv/presence":    policyResponseToEveryNode,
-	"route-announce/RA4/wit/presence":    policyResponseToEveryNode,
-	"route-announce/RA6/rtr/presence":    policyResponseToEveryNode,
-	"route-announce/RA6/srv/presence":    policyResponseToEveryNode,
-	"route-announce/RA6/wit/presence":    policyResponseToEveryNode,
-	"route-announce/RA9/rtr/presence":    policyResponseToEveryNode,
-	"route-announce/RA9/srv/presence":    policyResponseToEveryNode,
-	"route-announce/RA9/wit/presence":    policyResponseToEveryNode,
 }
 
 const (
-	policyResponseToEveryNode = "POLICY_RESPONSE_TO_EVERY_NODE: headscale sends every connected node a policy response when the policy, a node's tags or approved routes, or the set of nodes change; SaaS sends only the nodes whose peers or filter change"
-	restartEndpointsKept      = "RESTART_ENDPOINTS_KEPT: headscale keeps a restarted node's last endpoints at its peers until it reports new ones; SaaS sends peers the node without endpoints until then"
+	restartEndpointsKept = "RESTART_ENDPOINTS_KEPT: headscale keeps a restarted node's last endpoints at its peers until it reports new ones; SaaS sends peers the node without endpoints until then"
 )
 
 // mapStreamNotCompared lists, by key prefix, checks left out: SaaS's answer

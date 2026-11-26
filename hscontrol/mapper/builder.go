@@ -310,10 +310,30 @@ func (b *MapResponseBuilder) buildTailPeers(peers views.Slice[types.NodeView]) (
 
 	_, ipv4Disabled := b.mapper.state.NodeCapMap(node.ID())[types.NodeAttrDisableIPv4]
 
+	// Entries that are the same for every viewer come from, and go to, the
+	// tailnet's shared cache (P14f F4). A disable-ipv4 viewer rewrites its
+	// entries, so it renders its own.
+	var shared *sharedPeers
+	if !ipv4Disabled {
+		shared = b.mapper.sharedPeerCache()
+	}
+
+	baseDomain := b.mapper.cfg.DNSConfig.BaseDomain
+
 	// Build tail nodes with per-peer via-aware route function.
 	tailPeers := make([]*tailcfg.Node, 0, peers.Len())
 
 	for _, peer := range peers.All() {
+		_, peerIPv4Off := peerCapMaps[peer.ID()][types.NodeAttrDisableIPv4]
+
+		if shared != nil {
+			if tn := shared.get(peer, peerIPv4Off, baseDomain); tn != nil {
+				tailPeers = append(tailPeers, tn)
+
+				continue
+			}
+		}
+
 		// Pass the peer's policy CapMap as selfPolicyCaps so per-peer
 		// address-shape rules (today: disable-ipv4) apply consistently
 		// in the viewer's netmap. The CapMap merge into tn.CapMap is
@@ -374,6 +394,10 @@ func (b *MapResponseBuilder) buildTailPeers(peers views.Slice[types.NodeView]) (
 			}
 
 			tn.Endpoints, tn.HomeDERP = nil, 0
+		}
+
+		if shared != nil && peerShareable(peer, b.mapper.state.GetNodePrimaryRoutes(peer.ID())) {
+			shared.put(peer, peerIPv4Off, baseDomain, tn, peers.Len()+1, b.mapper.nodeExists)
 		}
 
 		tailPeers = append(tailPeers, tn)

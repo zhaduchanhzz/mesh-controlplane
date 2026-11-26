@@ -231,6 +231,36 @@ func NewServer(tb testing.TB, opts ...ServerOption) *TestServer {
 	return start(tb, cfg, sc.ephemeralTimeout, sc.realListener)
 }
 
+// WaitMapsDelivered waits until the server's map batcher has rendered and
+// handed out every change queued so far ([mapper.Batcher.Idle]), for at
+// least two consecutive checks so a bundle between ticks is not missed.
+// A server-side barrier: with delta-first (ADR 0015 D2) a change that
+// alters nothing a client holds sends it no frame, so a client's update
+// count is no barrier for such a change.
+func (s *TestServer) WaitMapsDelivered(tb testing.TB, timeout time.Duration) {
+	tb.Helper()
+
+	idle := 0
+	deadline := time.Now().Add(timeout)
+
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+
+	for idle < 2 {
+		if time.Now().After(deadline) {
+			tb.Fatalf("servertest: map batcher not idle after %s", timeout)
+		}
+
+		<-tick.C
+
+		if s.App.MapBatcher().Idle() {
+			idle++
+		} else {
+			idle = 0
+		}
+	}
+}
+
 // NewServerFromConfig starts cfg, as loaded, as a test server. Only the
 // server URL, set to the in-memory listener, and the DERP map, set
 // in-process, differ from serving cfg; the DERP map is never fetched.

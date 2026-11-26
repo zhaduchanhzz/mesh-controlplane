@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -48,6 +49,11 @@ type mapper struct {
 	cfg     *types.Config
 	batcher *Batcher
 
+	// shared holds the peer entries shared by every map of this tailnet
+	// (P14f F4); nil until first used, unused while the incremental netmap
+	// is off.
+	shared atomic.Pointer[sharedPeers]
+
 	created time.Time
 }
 
@@ -62,6 +68,13 @@ func newMapper(
 
 		created: time.Now(),
 	}
+}
+
+// nodeExists reports whether id is a node of the mapper's tailnet.
+func (m *mapper) nodeExists(id types.NodeID) bool {
+	_, ok := m.state.GetNodeByID(id)
+
+	return ok
 }
 
 // generateUserProfiles creates user profiles for [tailcfg.MapResponse].
@@ -409,6 +422,15 @@ func (m *mapper) buildFromChange(
 			if peers := m.state.ListPeers(nodeID, resp.PeersChanged...); peers.Len() > 0 {
 				builder.WithUserProfiles(peers)
 				builder.WithPeerChanges(peers)
+
+				// Delta-first (P14f F3): a peer goes out with the
+				// recipient's current filter, so a client never holds a
+				// peer ahead of the filter that lets it in (S04). The
+				// connection drops the filter again when it already
+				// holds an equal one.
+				if !resp.IncludePolicy && m.deltaFirst() {
+					builder.WithPacketFilters()
+				}
 			}
 		}
 

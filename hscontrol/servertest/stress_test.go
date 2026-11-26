@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -234,11 +235,28 @@ func TestStressStateMutations(t *testing.T) {
 		assert.Len(t, finalRoutes, 1,
 			"should have exactly 1 approved route (the last one set)")
 
-		// c2 should eventually see the update.
-		c2.WaitForCondition(t, "final route update received",
-			10*time.Second,
+		// c2 must end up with node1 as the server renders it: none of the
+		// replaced routes. node1 does not advertise them, so they never
+		// become primary and with delta-first (ADR 0015 D2) c2 may get no
+		// frame at all; wait for the server to have handed out the changes.
+		srv.WaitMapsDelivered(t, 10*time.Second)
+		c2.WaitForCondition(t, "node1 without stale routes", 10*time.Second,
 			func(nm *netmap.NetworkMap) bool {
-				return c2.UpdateCount() > 2
+				for _, p := range nm.Peers {
+					if p.Name() == "" || !strings.HasPrefix(p.Name(), "rapidrt-node1") {
+						continue
+					}
+
+					for _, pfx := range p.AllowedIPs().All() {
+						if pfx.Addr().Is4() && pfx.Bits() == 24 && pfx != expected {
+							return false
+						}
+					}
+
+					return true
+				}
+
+				return false
 			})
 	})
 
@@ -300,8 +318,6 @@ func TestStressStateMutations(t *testing.T) {
 			servertest.WithUser(user))
 		c1.WaitForUpdate(t, 10*time.Second)
 
-		countBefore := c1.UpdateCount()
-
 		// Change policy 5 times rapidly.
 		for range 5 {
 			changed, err := srv.State().SetPolicy([]byte(`{
@@ -318,11 +334,14 @@ func TestStressStateMutations(t *testing.T) {
 			}
 		}
 
-		// Client should have received at least some updates.
-		c1.WaitForCondition(t, "updates after policy changes",
-			10*time.Second,
+		// The allow-all policy may equal what the client holds, so with
+		// delta-first (ADR 0015 D2) it may get no frame: wait for the
+		// server to have handed out the changes, then the final policy must
+		// be in force at the client.
+		srv.WaitMapsDelivered(t, 10*time.Second)
+		c1.WaitForCondition(t, "final policy in force", 10*time.Second,
 			func(nm *netmap.NetworkMap) bool {
-				return c1.UpdateCount() > countBefore
+				return len(nm.PacketFilter) > 0
 			})
 	})
 }
