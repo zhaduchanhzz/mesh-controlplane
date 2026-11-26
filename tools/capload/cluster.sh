@@ -6,6 +6,8 @@
 # as `server.sh cluster-<sub> …`.
 #
 #   cluster.sh config   RUNDIR HOST:PORT LISTEN   write RUNDIR/config.yaml
+#   cluster.sh migrate  RUNDIR                    create or migrate the schema (P13d: serve, register and
+#                                                 capseed never do; run it once on a fresh database)
 #   cluster.sh register RUNDIR                    register CLUSTER_ID (CLASS, MAX_DEVICES); exists = ok
 #   cluster.sh start    RUNDIR [active|standby]   start serve + samplers; wait /ready 200 (active) or 503 (standby)
 #   cluster.sh restart  RUNDIR                    stop, start active (reload users after capseed)
@@ -18,7 +20,9 @@
 #   PG_HOST PG_PORT PG_DB PG_USER  PostgreSQL via PgBouncer (default 127.0.0.1 6432 headscale headscale)
 #   PG_PASSFILE   file holding the password (0600; referenced as pass: file:…, never copied)
 #   METRICS       loopback metrics listener (default 127.0.0.1:9090; a standby on the same host needs another)
-#   NOISE_KEY     Noise private key path, shared by active and standby (default RUNDIR/../noise_private.key)
+#   NOISE_KEY     Noise private key path, shared by active and standby (default RUNDIR/../noise_private.key);
+#                 missing: the active creates it with --init-noise-key (P13e: only while the
+#                 registry names no key for the cluster), a standby refuses to start
 #   MAX_PEER_ENTRIES (default 1000000), INCREMENTAL=1 (+RECONCILE_INTERVAL, FULL_MAP_INTERVAL)
 #   PG_MAX_OPEN   database.postgres.max_open_conns (default 10, as production)
 #   GOMAXPROCS    default: all CPUs of the host
@@ -123,6 +127,10 @@ EOF
 	fi
 	echo "config $cfg (server_url http://$hostport, listen $listen, metrics ${METRICS:-127.0.0.1:9090})"
 	;;
+migrate)
+	# P13d (ADR 0013): the explicit schema step; JSON of what it applied.
+	hsc migrate
+	;;
 register)
 	# The registry wants an https endpoint (metadata for bootstrap); the
 	# benchmark listener is plain HTTP on the lab LAN.
@@ -138,9 +146,18 @@ start)
 		echo "a server of $dir is already running" >&2
 		exit 1
 	fi
+	# P13e (ADR 0014 §3): a cluster process never creates its Noise key
+	# unless asked; the first active of a new bench cluster does.
+	init=()
+	keyfile=$(awk '/private_key_path:/{print $2}' "$cfg")
+	if [ ! -s "$keyfile" ]; then
+		[ "$role" = active ] || { echo "no Noise key at $keyfile: start the active first" >&2; exit 1; }
+		init=(--init-noise-key)
+		echo "no Noise key yet: the active creates $keyfile (--init-noise-key)"
+	fi
 	ulimit -n 200000 2>/dev/null || ulimit -n "$(ulimit -Hn)"
 	log=$dir/server-$(date -u +%Y%m%dT%H%M%SZ).log
-	GOMAXPROCS=${GOMAXPROCS:-$(nproc)} nohup "$HS" -c "$cfg" cluster --cluster-id "$CLUSTER_ID" serve >"$log" 2>&1 &
+	GOMAXPROCS=${GOMAXPROCS:-$(nproc)} nohup "$HS" -c "$cfg" cluster --cluster-id "$CLUSTER_ID" serve ${init[@]+"${init[@]}"} >"$log" 2>&1 &
 	pid=$!
 	echo $pid >"$dir/server.pid"
 	ln -sf "$(basename "$log")" "$dir/server.log"
@@ -234,7 +251,7 @@ print(f"manifest {out}")
 PY
 	;;
 *)
-	echo "usage: $0 config|register|start|restart|stop|manifest RUNDIR ..." >&2
+	echo "usage: $0 config|migrate|register|start|restart|stop|manifest RUNDIR ..." >&2
 	exit 2
 	;;
 esac
