@@ -130,7 +130,7 @@
   9 <- self dns derp ssh profiles=2 peers=[1 2 3] filter=a9fa17513dc9
 == rename a1
   change type=peers target=0 origin=1 changed=[1]
-  1 <- self
+  1 <- self profiles=1
   2 <- profiles=1 changed=[1]
   3 <- profiles=2 changed=[1]
   6 <- profiles=3 changed=[1]
@@ -159,17 +159,17 @@
   2 <- profiles=1 changed=[1] filter=8af82e480a39
   5 <- profiles=1 changed=[7 8] filter=b02b7b804204
   6 <- removed=[1 2]
-  6 <- filter=8758cc9fe10b
+  6 <- profiles=2 filter=8758cc9fe10b
   7 <- profiles=1 changed=[5 8] filter=b10c61c63a31
   8 <- profiles=1 changed=[5 7] filter=e60eedb6991a
   9 <- removed=[1 2]
-  9 <- filter=7dc3fc937de0
+  9 <- profiles=1 filter=7dc3fc937de0
 == join bob/b4 -> 10
   change type=policy target=0 origin=0 policy runtime
   1 <- profiles=1 changed=[2] filter=c483d82ec612
   2 <- profiles=1 changed=[1] filter=8af82e480a39
   5 <- profiles=1 changed=[7 8] filter=b02b7b804204
-  6 <- filter=8758cc9fe10b
+  6 <- profiles=2 filter=8758cc9fe10b
   7 <- profiles=1 changed=[5 8] filter=b10c61c63a31
   8 <- profiles=1 changed=[5 7] filter=e60eedb6991a
   9 <- profiles=1 changed=[10] filter=f2e826c65b4f
@@ -184,7 +184,7 @@
   change type=policy target=0 origin=0 policy runtime
   1 <- profiles=1 changed=[2] filter=c483d82ec612
   2 <- profiles=1 changed=[1] filter=8af82e480a39
-  6 <- filter=8758cc9fe10b
+  6 <- profiles=2 filter=8758cc9fe10b
   7 <- removed=[5]
   7 <- profiles=1 changed=[8] filter=cdcdbfe3fde3
   8 <- removed=[5]
@@ -197,9 +197,9 @@
   change type=policy target=0 origin=0 policy runtime
   1 <- profiles=1 changed=[2] filter=c483d82ec612
   2 <- profiles=1 changed=[1] filter=8af82e480a39
-  6 <- filter=8758cc9fe10b
+  6 <- profiles=2 filter=8758cc9fe10b
   8 <- removed=[7]
-  8 <- filter=b52694e35a79
+  8 <- profiles=1 filter=b52694e35a79
   9 <- profiles=1 changed=[10] filter=f2e826c65b4f
   10 <- profiles=1 changed=[9] filter=aee2e6de998a
 == delete c3
@@ -207,14 +207,14 @@
   change type=policy target=0 origin=0 policy runtime
   1 <- profiles=1 changed=[2] filter=c483d82ec612
   2 <- profiles=1 changed=[1] filter=8af82e480a39
-  6 <- filter=8758cc9fe10b
+  6 <- profiles=2 filter=8758cc9fe10b
   9 <- profiles=1 changed=[10] filter=f2e826c65b4f
   10 <- profiles=1 changed=[9] filter=aee2e6de998a
 == delete user carol
   change type=policy target=0 origin=0 policy runtime
   1 <- profiles=1 changed=[2] filter=c483d82ec612
   2 <- profiles=1 changed=[1] filter=8af82e480a39
-  6 <- filter=8758cc9fe10b
+  6 <- profiles=2 filter=8758cc9fe10b
   9 <- profiles=1 changed=[10] filter=f2e826c65b4f
   10 <- profiles=1 changed=[9] filter=aee2e6de998a
 == policy allow_all
@@ -283,7 +283,7 @@
   9 <- profiles=2 changed=[12]
   10 <- profiles=2 changed=[12]
   11 <- profiles=1 changed=[12]
-  12 <- self
+  12 <- self profiles=1
   13 <- profiles=2 changed=[12]
 == approve r1
   change type=policy target=0 origin=0 policy runtime
@@ -304,7 +304,7 @@
   10 <- profiles=1 changed=[13]
   11 <- profiles=2 changed=[13]
   12 <- profiles=2 changed=[13]
-  13 <- self
+  13 <- self profiles=1
 == approve r2
   change type=policy target=0 origin=0 policy runtime
   1 <- profiles=3 changed=[2 6 9 10 11 12 13] filter=e91b6663a1e1
