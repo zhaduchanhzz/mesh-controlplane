@@ -130,7 +130,7 @@ const migrateLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended('mesh/sche
 // for the first and then finds nothing to do. A failure rolls everything
 // back: the schema, the migrations rows, schema_compat and the version.
 func migrateConn(ctx context.Context, conn *gorm.DB, cfg *types.Config, ch chain) (MigrateResult, error) {
-	res := MigrateResult{Latest: ch.latest()}
+	res := MigrateResult{Latest: ch.latest(), Applied: []string{}}
 
 	err := conn.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if tx.Name() == dialectPostgres {
