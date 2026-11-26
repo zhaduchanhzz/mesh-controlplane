@@ -57,7 +57,13 @@ const (
 func benchDB(b *testing.B, mode string) (*gorm.DB, context.Context, uint64) {
 	b.Helper()
 
-	db := openDB(b)
+	return benchDBOn(b, openDB(b), mode)
+}
+
+// benchDBOn prepares db (from openDB or openDBWith) for fence mode.
+func benchDBOn(b *testing.B, db *gorm.DB, mode string) (*gorm.DB, context.Context, uint64) {
+	b.Helper()
+
 	if mode == modeNoFence {
 		withoutFence(b, db)
 	}
