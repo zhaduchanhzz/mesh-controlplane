@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"runtime"
 	"testing"
-	"time"
 	"weak"
 
 	"github.com/stretchr/testify/assert"
@@ -182,6 +181,7 @@ func TestReviewR6TwoConnectionsUnderBackpressure(t *testing.T) {
 	chBlocked := make(chan *tailcfg.MapResponse, 1)
 	free := makeConnectionEntry("free", chFree)
 	blocked := makeConnectionEntry("blocked", chBlocked)
+
 	mc.addConnection(free)
 	mc.addConnection(blocked)
 
@@ -223,7 +223,6 @@ func TestReviewR6TwoConnectionsUnderBackpressure(t *testing.T) {
 
 	// The blocked stream drains (its filler frame only), then B -> A.
 	<-chBlocked
-	time.Sleep(10 * time.Millisecond)
 	require.NoError(t, mc.send(&tailcfg.MapResponse{PacketFilters: filter("A")}))
 	drain(free, chFree)
 	drain(blocked, chBlocked)

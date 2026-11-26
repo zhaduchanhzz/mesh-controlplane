@@ -28,7 +28,7 @@ func TestReviewR2PolicyOverPeerBoundRefused(t *testing.T) {
 	// 4 nodes, full mesh: 12 peer entries > 6.
 	_, _, err = srv.State().UpdatePolicy([]byte(`{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}`))
 	require.ErrorIs(t, err, state.ErrInvalidPolicy, "a policy past the peer bound is refused")
-	assert.ErrorContains(t, err, "peer")
+	require.ErrorContains(t, err, "peer")
 
 	p, err := srv.State().GetPolicy()
 	require.NoError(t, err)

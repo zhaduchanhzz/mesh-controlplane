@@ -36,6 +36,7 @@ func TestPolicyChanges(t *testing.T) {
 }
 
 func testPolicyChanges(t *testing.T, mode servertest.HarnessOption) {
+	t.Helper()
 
 	t.Run("default_allow_all", func(t *testing.T) {
 		t.Parallel()

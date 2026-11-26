@@ -37,6 +37,7 @@ func TestCountPeerEntriesMatchesBuild(t *testing.T) {
 		if want > 0 {
 			stopped = pm.countPeerEntriesLocked(nodes.ViewSlice(), want-1)
 		}
+
 		pm.mu.RUnlock()
 
 		require.Equal(t, want, got, "count with room")

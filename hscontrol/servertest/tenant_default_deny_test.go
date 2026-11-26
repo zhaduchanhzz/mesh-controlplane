@@ -27,6 +27,8 @@ func TestTenantDefaultDeny(t *testing.T) {
 }
 
 func testTenantDefaultDeny(t *testing.T, incremental bool) {
+	t.Helper()
+
 	const timeout = 15 * time.Second
 
 	srv := servertest.NewServer(t, servertest.WithPolicyEmptyDenies(), servertest.WithIncrementalNetmap(incremental))
