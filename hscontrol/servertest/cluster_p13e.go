@@ -13,13 +13,13 @@ import (
 // TryNewCluster builds, without starting it, one more process of tc's
 // cluster whose Noise key file is keyPath, and returns NewCluster's error.
 // A process that was built is not started (its pool stays open).
-func (tc *TestCluster) TryNewCluster(tb testing.TB, keyPath string) error {
+func (tc *TestCluster) TryNewCluster(tb testing.TB, keyPath string, opts ...hscontrol.ClusterOption) error {
 	tb.Helper()
 
 	cfg := *tc.cfg
 	cfg.Noise.PrivateKeyPath = keyPath
 
-	_, err := hscontrol.NewCluster(&cfg)
+	_, err := hscontrol.NewCluster(&cfg, opts...)
 
 	return err
 }

@@ -54,6 +54,9 @@ var (
 
 	// clusterPolicyEmpty is `tailnet policy --empty`.
 	clusterPolicyEmpty bool
+
+	// clusterInitNoiseKey is `serve --init-noise-key` (P13e).
+	clusterInitNoiseKey bool
 )
 
 func init() {
@@ -76,6 +79,8 @@ func init() {
 	clusterRegisterCmd.Flags().StringVar(&clusterRegClass, "class", "shared", "shard class: shared or dedicated")
 	clusterRegisterCmd.Flags().Int64Var(&clusterRegMax, "max-devices", 5000, "device budget of the cluster")
 	clusterRegisterCmd.Flags().StringVar(&clusterRegEndpoint, "endpoint", "", "endpoint URL (default: server_url)")
+	clusterServeCmd.Flags().BoolVar(&clusterInitNoiseKey, "init-noise-key", false,
+		"create the cluster's Noise key if noise.private_key_path is missing and the registry names no key yet (first process of a new cluster)")
 
 	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetDNSCmd, tailnetAuthKeyCmd, tailnetAuthKeyRevokeCmd, tailnetNodesCmd, tailnetReassignCmd)
 	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, tailnetCmd)
@@ -109,7 +114,12 @@ var clusterServeCmd = &cobra.Command{
 			return err
 		}
 
-		c, err := hscontrol.NewCluster(cfg)
+		var opts []hscontrol.ClusterOption
+		if clusterInitNoiseKey {
+			opts = append(opts, hscontrol.WithNoiseKeyInit())
+		}
+
+		c, err := hscontrol.NewCluster(cfg, opts...)
 		if err != nil {
 			return fmt.Errorf("initializing cluster: %w", err)
 		}

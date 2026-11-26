@@ -4,12 +4,14 @@ package servertest_test
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
 	"tailscale.com/types/key"
 )
@@ -66,4 +68,24 @@ func TestP13eMissingNoiseKeyRefused(t *testing.T) {
 	err := tc.TryNewCluster(t, missing)
 	require.Error(t, err, "a cluster process must not start without its Noise key file")
 	assert.NoFileExists(t, missing, "no key is created")
+	require.ErrorIs(t, err, hscontrol.ErrNoiseKeyMissing)
+	t.Logf("refused: %v", err)
+
+	// --init-noise-key creates a key only for a cluster whose registry
+	// names none: this one has its key recorded.
+	err = tc.TryNewCluster(t, missing, hscontrol.WithNoiseKeyInit())
+	require.ErrorIs(t, err, hscontrol.ErrNoiseKeyMissing)
+	assert.Contains(t, err.Error(), tc.RegisteredNoiseKey(t), "the error names the registered key")
+	assert.NoFileExists(t, missing)
+
+	// A key file that does not parse is an error, never replaced.
+	bad := filepath.Join(t.TempDir(), "noise_private.key")
+	require.NoError(t, os.WriteFile(bad, []byte("not a key\n"), 0o600))
+
+	err = tc.TryNewCluster(t, bad, hscontrol.WithNoiseKeyInit())
+	require.Error(t, err)
+
+	b, err := os.ReadFile(bad)
+	require.NoError(t, err)
+	assert.Equal(t, "not a key\n", string(b))
 }

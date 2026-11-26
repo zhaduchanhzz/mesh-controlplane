@@ -182,7 +182,16 @@ type tenantRuntime struct {
 // ACTIVE tailnet owned by cfg.ClusterID. cfg is shared by the runtimes:
 // per-tailnet DNS and IP settings come with the tailnet config revision
 // (later ticket); policy, users, nodes and keys are per tailnet already.
-func NewCluster(cfg *types.Config) (*Cluster, error) {
+//
+// The cluster's Noise key file must exist (P13e, ADR 0014 §3): only
+// [WithNoiseKeyInit] creates a missing one, and only for a cluster whose
+// registry entry names no key yet.
+func NewCluster(cfg *types.Config, opts ...ClusterOption) (*Cluster, error) {
+	var o clusterOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	err := config.Validate(cfg)
 	if err != nil {
 		return nil, err
@@ -196,14 +205,25 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 	// A tenant without access rules is denied, not allow-all (AGENTS rule 8).
 	cfg.PolicyEmptyDenies = true
 
-	noiseKey, err := readOrCreatePrivateKey(cfg.AbsPath(cfg.Noise.PrivateKeyPath))
+	keyPath := cfg.AbsPath(cfg.Noise.PrivateKeyPath)
+
+	noiseKey, err := readClusterNoiseKey(keyPath, o.initNoiseKey)
 	if err != nil {
-		return nil, fmt.Errorf("reading or creating Noise protocol private key: %w", err)
+		return nil, err
 	}
 
 	platform, err := db.OpenPlatform(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("opening platform database: %w", err)
+	}
+
+	if noiseKey == nil {
+		noiseKey, err = initClusterNoiseKey(platform, keyPath)
+		if err != nil {
+			_ = platform.Close()
+
+			return nil, err
+		}
 	}
 
 	registry, err := placement.New(platform.RegistryDB(), placement.Config{})
