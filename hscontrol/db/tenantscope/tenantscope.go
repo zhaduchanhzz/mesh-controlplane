@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
@@ -54,6 +55,9 @@ var (
 	ErrFenced = errors.New("tailnet ownership fence failed: owned by another cluster or epoch")
 	// ErrNoFence reports a write to tenant data without an ownership fence.
 	ErrNoFence = errors.New("tenant write without an ownership fence")
+	// ErrUnscopable reports a statement the plugin cannot confine to the
+	// scope's tailnet; it is refused instead of run unscoped (P12c).
+	ErrUnscopable = errors.New("statement cannot be confined to the tailnet scope")
 
 	errUnsupportedCreate = errors.New("unsupported create value")
 )
@@ -125,7 +129,52 @@ func scopeWhere(db *gorm.DB) {
 		return
 	}
 
-	db.Statement.AddClause(clause.Where{Exprs: []clause.Expression{whereTailnet(db, f, s.ID())}})
+	confineWhere(db, whereTailnet(db, f, s.ID()))
+}
+
+// confineWhere makes the statement's WHERE "<tenant> AND (<caller WHERE>)"
+// (P12c A1). Appending the tenant predicate to the caller's expressions, as
+// AddClause does, lets an OR escape it: GORM builds Where("a").Or("b") plus
+// the predicate as "a OR b AND tenant", i.e. "a OR (b AND tenant)". The
+// caller's expressions are built as one parenthesised group, whatever GORM
+// would or would not wrap on its own (it only looks for " AND "/" OR "), and
+// the tenant predicate comes first, so a trailing "--" comment in a caller
+// string can only break the statement, never drop the predicate.
+func confineWhere(db *gorm.DB, tenant clause.Expression) {
+	c, ok := db.Statement.Clauses["WHERE"]
+	if !ok {
+		db.Statement.AddClause(clause.Where{Exprs: []clause.Expression{tenant}})
+
+		return
+	}
+
+	w, ok := c.Expression.(clause.Where)
+	if !ok {
+		// Something other than GORM's own clause.Where: refuse rather than
+		// guess how it would combine with the predicate.
+		_ = db.AddError(fmt.Errorf("%s: %w: WHERE clause of type %T", name, ErrUnscopable, c.Expression))
+
+		return
+	}
+
+	exprs := []clause.Expression{tenant}
+	if len(w.Exprs) > 0 {
+		exprs = append(exprs, callerWhere{exprs: slices.Clone(w.Exprs)})
+	}
+
+	c.Expression = clause.Where{Exprs: exprs}
+	db.Statement.Clauses["WHERE"] = c
+}
+
+// callerWhere is the WHERE the caller built, rendered as GORM would render
+// it on its own and wrapped in parentheses.
+type callerWhere struct{ exprs []clause.Expression }
+
+func (w callerWhere) Build(b clause.Builder) {
+	_ = b.WriteByte('(')
+	// Where.Build reorders its slice in place; build from a copy.
+	clause.Where{Exprs: slices.Clone(w.exprs)}.Build(b)
+	_ = b.WriteByte(')')
 }
 
 // scopeMutation scopes UPDATE/DELETE. Adding a WHERE would otherwise disarm
