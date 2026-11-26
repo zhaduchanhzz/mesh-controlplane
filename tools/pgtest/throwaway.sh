@@ -49,7 +49,7 @@ start_pg() { # name port extra-conf
     echo "max_connections = 200"
     [ -n "${4:-}" ] && echo "$4"
   } >>"$dir/data/postgresql.conf"
-  "$pgbin/pg_ctl" -D "$dir/data" -l "$dir/log" -w start >/dev/null
+  "$pgbin/pg_ctl" -D "$dir/data" -l "$dir/log" -w start </dev/null >/dev/null 2>&1
 }
 
 start_pgb() { # dir name port backend-port maxprep [extra]
@@ -76,7 +76,8 @@ logfile = $dir/log
 pidfile = $dir/pid
 ${6:-}
 EOF
-  pgbouncer -d "$dir/pgbouncer.ini"
+  # Detached from our stdout: a caller reading it ($(...)) would wait forever.
+  pgbouncer -d "$dir/pgbouncer.ini" </dev/null >/dev/null 2>&1
   for _ in $(seq 50); do
     [ -s "$dir/pid" ] && return 0
     sleep 0.1
