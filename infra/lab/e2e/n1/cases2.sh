@@ -105,7 +105,8 @@ s12_diag_start() { # ATTEMPT ACTIVE_NODE TAILNET_ID
   local ip
   for ip in $B1 $B2; do
     vm $ip "cat >/tmp/n1-s12w.sh" <<EOF
-/opt/tailscale/$V/tailscale --socket=$TSS debug watch-ipn --netmap 2>&1 | while IFS= read -r l; do printf '%s %s\n' "\$(date -u +%T.%3N)" "\$l"; done > /tmp/n1-s12w.log
+T=/opt/tailscale/$V/tailscale; f=; \$T debug watch-ipn --help 2>&1 | grep -q -- '-netmap' && f=--netmap
+\$T --socket=$TSS debug watch-ipn \$f 2>&1 | while IFS= read -r l; do printf '%s %s\n' "\$(date -u +%T.%3N)" "\$l"; done > /tmp/n1-s12w.log
 EOF
     vm $ip "sudo systemctl stop n1-s12w 2>/dev/null; sudo systemctl reset-failed n1-s12w 2>/dev/null; sudo rm -f /tmp/n1-s12w.log; sudo systemd-run --quiet --collect --unit=n1-s12w -p RuntimeMaxSec=240 bash /tmp/n1-s12w.sh" || true
   done
@@ -122,44 +123,43 @@ s12_diag_stop() { # ATTEMPT
 }
 s12_mark() { printf '%s %s\n' "$(date -u +%T.%3N)" "$*" >>"$ART_DIR/logs/S12-marks.log"; }
 t_s12() {
-  local p="" act tb u0 u1 i
+  local p="" act tb u0 u1 c0 c1 i prev same=0 t0 ta dt=70 allowed
   act=$(active_of c1); tb=$(cat "$TMPD/id-b" 2>/dev/null)
-  # B's own late events (b2 back online after S10, endpoint/DERP updates) must
-  # not be counted against A (runs at 3ad5743 and e9e10fc: b2 reconnected
-  # 5-20 s before the baseline). Per attempt:
-  #   1. quiet: 3 equal reads 5 s apart;
-  #   2. control window: no A activity for as long as A's activity takes;
-  #      a frame for B here is B's own noise -> new attempt;
-  #   3. A's activity; a frame for B here, after a clean control window, is
-  #      a FAIL (A's activity reached B).
-  local prev c0 c1 t0 dt=25 attempt verdict="" ok_attempt=0
-  for attempt in 1 2 3; do
-    local same=0; prev=-1; u0=$(tailnet_updates "$act" "$tb")
-    for i in $(seq 1 12); do
-      if [ "$u0" = "$prev" ]; then same=$((same + 1)); else same=0; fi
-      [ "$same" -ge 2 ] && break
-      prev=$u0; sleep 5; u0=$(tailnet_updates "$act" "$tb")
-    done
-    s12_diag_start "$attempt" "$act" "$tb"; s12_mark "attempt $attempt control window start (B at $u0)"
-    c0=$u0; sleep $dt; c1=$(tailnet_updates "$act" "$tb"); s12_mark "attempt $attempt control window end (B at $c1)"
-    printf 'S12 attempt %d: B quiet at %s after %d reads; control window %ds: %s -> %s\n' "$attempt" "$u0" "$i" "$dt" "$c0" "$c1" >>"$ART_DIR/timings.txt"
-    [ "$c0" = "$c1" ] || { verdict="B not quiet in the control window ($c0 -> $c1)"; s12_diag_stop "$attempt"; continue; }
-    t0=$(date +%s); u0=$c1
-    for i in 1 2 3; do
-      s12_mark "A: a2 advertise 10.98.$i.0/24"; TS $A2 "set --advertise-routes=10.98.$i.0/24" >/dev/null 2>&1; sleep 1
-      s12_mark "A: a2 down"; TS $A2 down >/dev/null 2>&1; sleep 1; s12_mark "A: a2 up"; TS $A2 up >/dev/null 2>&1; sleep 2
-    done
-    s12_mark "A: a2 advertise none"; TS $A2 "set --advertise-routes=" >/dev/null 2>&1; sleep 3
-    u1=$(tailnet_updates "$act" "$tb"); s12_mark "attempt $attempt A activity end (B at $u1)"; s12_diag_stop "$attempt"
-    printf 'S12 attempt %d: A activity %ds: B %s -> %s\n' "$attempt" "$(( $(date +%s) - t0 ))" "$u0" "$u1" >>"$ART_DIR/timings.txt"
-    ok_attempt=$attempt; verdict=""
-    break
+  # B's own clients send periodic updates (on 1.104.7 a frame for B about
+  # every 60 s, with the incremental netmap reconcile and full-map refresh
+  # set to 1 h in N1: runs e9e10fc, b43d6c7, f4ea6d4), so "no frame for B
+  # while A is busy" depends on timing. Instead:
+  #   1. B quiet: 3 equal reads 5 s apart (b2 reconnected in S10);
+  #   2. control window of 70 s (longer than B's own period) without any A
+  #      activity: B's own frame rate;
+  #   3. A's activity (3 rounds: route change, down, up): B may get at most
+  #      the frames its own rate explains, ceil(control * activity / 70);
+  #      a leak of A's changes adds at least one frame per round;
+  #   4. B never names an A node; every notification b1/b2 receive in both
+  #      windows is kept (tailscale debug watch-ipn) as evidence.
+  prev=-1; u0=$(tailnet_updates "$act" "$tb")
+  for i in $(seq 1 12); do
+    if [ "$u0" = "$prev" ]; then same=$((same + 1)); else same=0; fi
+    [ "$same" -ge 2 ] && break
+    prev=$u0; sleep 5; u0=$(tailnet_updates "$act" "$tb")
   done
-  [ "$ok_attempt" -gt 0 ] || p="$p; $verdict in 3 attempts (inconclusive, see timings.txt)"
-  grep -qE 'n1-a[12]' <<<"$(ts_json $B1)$(netmap $B1)" && p="$p; B saw an A node"
-  [ "$ok_attempt" = 0 ] || { [ -n "$tb" ] && [ "$u0" = "$u1" ]; } || p="$p; B update frames $u0 -> $u1 during A's activity after a clean ${dt}s control window (tailnet id [$tb])"
+  s12_diag_start 1 "$act" "$tb"; s12_mark "control window start (B at $u0)"
+  c0=$u0; sleep $dt; c1=$(tailnet_updates "$act" "$tb"); s12_mark "control window end (B at $c1)"
+  t0=$(date +%s); u0=$c1
+  for i in 1 2 3; do
+    s12_mark "A: a2 advertise 10.98.$i.0/24"; TS $A2 "set --advertise-routes=10.98.$i.0/24" >/dev/null 2>&1; sleep 1
+    s12_mark "A: a2 down"; TS $A2 down >/dev/null 2>&1; sleep 1; s12_mark "A: a2 up"; TS $A2 up >/dev/null 2>&1; sleep 2
+  done
+  s12_mark "A: a2 advertise none"; TS $A2 "set --advertise-routes=" >/dev/null 2>&1; sleep 3
+  u1=$(tailnet_updates "$act" "$tb"); ta=$(( $(date +%s) - t0 )); s12_mark "A activity end (B at $u1)"; s12_diag_stop 1
+  allowed=$(( ((c1 - c0) * ta + dt - 1) / dt ))
+  printf 'S12: B quiet at %s after %d reads; control %ds: %s -> %s (%d frames); A activity %ds: %s -> %s (%d frames, allowed %d)\n' \
+    "$c0" "$i" "$dt" "$c0" "$c1" $((c1 - c0)) "$ta" "$u0" "$u1" $((u1 - u0)) "$allowed" >>"$ART_DIR/timings.txt"
+  [ -n "$tb" ] || p="$p; no tailnet id for B"
+  grep -qE 'n1-a[12]' <<<"$(ts_json $B1)$(netmap $B1)$(cat "$ART_DIR"/logs/S12-1-watch-*.log 2>/dev/null)" && p="$p; B saw an A node"
+  [ $((u1 - u0)) -le "$allowed" ] || p="$p; B got $((u1 - u0)) frames during ${ta}s of A activity, its own rate allows $allowed ($((c1 - c0)) in ${dt}s; tailnet id [$tb])"
   wait_peers $A1 n1-a2 30 || p="$p; a1 lost a2"
-  [ -z "$p" ] && record S12 PASS "3 rounds of A activity: B's update frames unchanged ($u0) after a clean ${dt}s control window (attempt $ok_attempt), B never named an A node" || record S12 FAIL "${p#; }"
+  [ -z "$p" ] && record S12 PASS "3 rounds of A activity: B got $((u1 - u0)) frames in ${ta}s, within its own rate ($((c1 - c0)) in a ${dt}s control window); B never named an A node (watch-ipn logs kept)" || record S12 FAIL "${p#; }"
 }
 
 t_s14() {
