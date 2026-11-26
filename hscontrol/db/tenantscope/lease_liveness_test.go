@@ -115,6 +115,7 @@ func TestLeaseRenewNotStarvedByFencedWriters(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	loadStart := time.Now()
 	stop := leaseWriteLoad(t, db, l, 16)
 
 	time.Sleep(300 * time.Millisecond) //nolint:forbidigo // lets the writers reach steady load before timing
@@ -125,8 +126,6 @@ func TestLeaseRenewNotStarvedByFencedWriters(t *testing.T) {
 		took   []time.Duration
 		failed []error
 	)
-
-	start := time.Now()
 
 	for range renewals {
 		ctx, cancel := context.WithTimeout(context.Background(), selfFenceDeadline)
@@ -142,12 +141,12 @@ func TestLeaseRenewNotStarvedByFencedWriters(t *testing.T) {
 		}
 	}
 
-	elapsed := time.Since(start)
 	wrote := stop()
+	loaded := time.Since(loadStart)
 	worst := slices.Max(took)
 
 	t.Logf("%d renewals under 16 fenced writers: latencies %v, worst %s (self-fence deadline %s); %d write transactions committed (%.0f/s)",
-		renewals, took, worst, selfFenceDeadline, wrote, float64(wrote)/elapsed.Seconds())
+		renewals, took, worst, selfFenceDeadline, wrote, float64(wrote)/loaded.Seconds())
 
 	if len(failed) > 0 {
 		t.Fatalf("%d/%d renewals failed within the self-fence deadline: %v", len(failed), renewals, failed[0])
