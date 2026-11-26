@@ -83,7 +83,7 @@ host=192.168.1.247,192.168.1.248 port=6432 ... target_session_attrs=read-write
 ```
 
 - One PgBouncer (ADR 0006 settings; mc-db runs 1.24.1, PGDG now ships 1.26.x) runs on each PG node and sends to a local HAProxy `127.0.0.1:5000`, which picks the node whose `GET :8008/primary` returns 200 (`on-marked-down shutdown-sessions`). Both PgBouncers therefore always reach the current primary.
-- A pool alias `mesh_lease` serves the lease store (ADR 0006 §3.6).
+- Lease pools (ADR 0006 §3.6): one alias per cluster, `mesh_c1_lease`, `mesh_c2_lease`, … (`infra/lab/pgbouncer/pgbouncer-clusters.ini`, P13f D9b); each cluster's config sets `database.postgres.lease_name` to its own alias (P13b).
 - The code change is P13b: `PostgresConfig` must take a host list.
 
 **Fallback (if the multi-host DSN does not work through PgBouncer with pgx):**

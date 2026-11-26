@@ -47,6 +47,7 @@ Không có mật khẩu trong thông báo (DSN trong log `Opening database` vẫ
 ## 3. Cấu hình lab cần cho drill (chưa áp; P13a/P13b drill)
 
 - Mọi process cluster: `hosts: ["192.168.1.247:6432", "192.168.1.248:6432"]` (bỏ `host`), `lease_name: mesh_lease`; giữ `ssl: disable` như lab hiện tại.
+- **Ghi chú tích hợp P13 (2026-11-26):** P13f (D9b) dùng alias theo cluster; cấu hình thống nhất là `name: mesh_cN` + `lease_name: mesh_cN_lease` cho từng cluster (`infra/lab/pgbouncer/`), thay cho một alias chung `mesh_lease` ở hai dòng trên/dưới.
 - PgBouncer trên mc-pg-01/02: `[databases]` có `mesh_lease = host=127.0.0.1 port=5000 dbname=meshlab pool_size=4 reserve_pool_size=2` (+ alias tương ứng cho DB `e2e_*` của harness, hoặc harness đặt `lease_name` rỗng); `max_prepared_statements = 200`; không cần `track_extra_parameters` nếu không đặt `statement_timeout` trong cấu hình.
 
 ## 4. Lint, vet, race

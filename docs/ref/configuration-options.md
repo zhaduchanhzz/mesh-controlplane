@@ -1789,26 +1789,26 @@ PostgreSQL's `statement_timeout` for every connection, sent as a startup paramet
 - **Default:** `""`
 - **Env:** `HEADSCALE_DATABASE_POSTGRES_LEASE_NAME`
 
-The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6). Empty uses [`database.postgres.name`](#database.postgres.name), still on a pool of its own.
+The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6), one per cluster so one cluster's renewals never wait for another's (D9b). Empty uses [`database.postgres.name`](#database.postgres.name), still on a pool of its own.
 
 === "YAML"
 
     ```yaml
     database:
       postgres:
-        lease_name: mesh_lease
+        lease_name: mesh_c1_lease
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_DATABASE_POSTGRES_LEASE_NAME=mesh_lease
+    export HEADSCALE_DATABASE_POSTGRES_LEASE_NAME=mesh_c1_lease
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.database.postgres.lease_name = "mesh_lease";
+    services.headscale.settings.database.postgres.lease_name = "mesh_c1_lease";
     ```
 
 #### `database.postgres.lease_max_open_conns` { #database.postgres.lease_max_open_conns data-toc-label="lease_max_open_conns" }

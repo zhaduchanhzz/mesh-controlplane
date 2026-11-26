@@ -582,9 +582,10 @@ type PostgresConfig struct {
 	// LeaseName is the database the cluster lease is renewed and polled
 	// through, on a connection pool of its own, so that it never queues
 	// behind data traffic: behind PgBouncer, an alias of the same
-	// database with its own small pool (ADR 0006 §3.6). Empty uses
+	// database with its own small pool (ADR 0006 §3.6), one per cluster so
+	// one cluster's renewals never wait for another's (D9b). Empty uses
 	// `database.postgres.name`, still on a pool of its own.
-	LeaseName string `example:"\"mesh_lease\"" koanf:"lease_name"`
+	LeaseName string `example:"\"mesh_c1_lease\"" koanf:"lease_name"`
 
 	// LeaseMaxOpenConnections caps the open connections of the lease
 	// pool.

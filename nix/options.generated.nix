@@ -558,9 +558,9 @@ in
         type = lib.types.str;
         default = "";
         description = ''
-          The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6). Empty uses `database.postgres.name`, still on a pool of its own.
+          The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6), one per cluster so one cluster's renewals never wait for another's (D9b). Empty uses `database.postgres.name`, still on a pool of its own.
         '';
-        example = "mesh_lease";
+        example = "mesh_c1_lease";
       };
       lease_max_open_conns = lib.mkOption {
         type = lib.types.int;

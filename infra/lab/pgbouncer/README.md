@@ -7,8 +7,8 @@ ADR 0005 keeps one application role for every cluster (no per-cluster role, no R
 | Where | Change |
 |---|---|
 | PgBouncer (mc-pg-01, mc-pg-02; or mc-db's `mc-pgb` container) | `[databases]`: `%include /etc/pgbouncer/pgbouncer-clusters.ini`; `RELOAD` on the admin console (no restart, existing clients keep their pools) |
-| Cluster c1 (`mc-cp`, `mc-c1b`) | `database.postgres.name: mesh_c1`, `max_open_conns: 16`, `max_idle_conns: 4`; lease pool (P13b) `mesh_c1_lease` |
-| Cluster c2 (`mc-c2`, `mc-c2b`) | `database.postgres.name: mesh_c2`, same sizes; lease pool `mesh_c2_lease` |
+| Cluster c1 (`mc-cp`, `mc-c1b`) | `database.postgres.name: mesh_c1`, `max_open_conns: 16`, `max_idle_conns: 4`; lease pool (P13b) `database.postgres.lease_name: mesh_c1_lease` |
+| Cluster c2 (`mc-c2`, `mc-c2b`) | `database.postgres.name: mesh_c2`, same sizes; lease pool `database.postgres.lease_name: mesh_c2_lease` |
 | mesh-placement, mesh-bootstrap, CLI | `database.postgres.name: mesh_ops` |
 | Then | remove the `*`/`meshlab` catch-all entries so nothing bypasses the caps |
 
@@ -26,7 +26,7 @@ max_connections >= 2 × 52            (two PgBouncer instances)
                = 127  →  set 150 (lab today: 200)
 ```
 
-Each new cluster adds an alias pair (`mesh_cN` 20 + `mesh_cN_lease` 3) and 46 to the bound.
+Each new cluster adds an alias pair (`mesh_cN` 20 + `mesh_cN_lease` 3) and 46 to the bound; its config names both (`database.postgres.name: mesh_cN`, `lease_name: mesh_cN_lease`). The Go lease pool holds at most `lease_max_open_conns` (default 2) connections per process, so an active and a standby fit `max_db_connections=3` with one spare.
 
 Go side per process: `max_open_conns` ≤ the alias `pool_size` (16) so a single process does not queue on itself; the standby of a cluster uses one or two connections (lease polls).
 
