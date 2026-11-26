@@ -196,7 +196,7 @@ type (
 )
 
 func registerDevices(api huma.API, b Backend) {
-	deviceTags := []string{"Devices", "Tailscale compat"}
+	deviceTags := []string{"Devices", tagTailscaleCompat}
 
 	huma.Register(api, requireScope(huma.Operation{
 		OperationID: "getDevice",

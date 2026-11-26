@@ -164,12 +164,14 @@ type tenantRuntime struct {
 	epoch uint64
 	h     *Headscale
 
-	// policyRev is the tailnets.policy_revision the runtime's policy matches;
-	// only the reconcile loop reads or writes it after load.
-	policyRev uint64
+	// policyRev is the tailnets.policy_revision the runtime's policy matches:
+	// set at load, by the reconcile loop, and by a policy write through the
+	// runtime's own state (P12d, the tenant API), which stores and installs
+	// in one step.
+	policyRev atomic.Uint64
 	// configRev is the tailnets.config_revision the runtime's DNS matches
 	// (ADR 0008); same rules as policyRev.
-	configRev uint64
+	configRev atomic.Uint64
 
 	cancel context.CancelFunc // stops its scheduled tasks
 	stop   func()             // from startRuntime
@@ -386,11 +388,17 @@ func (c *Cluster) load(tn types.Tailnet) (*tenantRuntime, error) {
 
 	h.leaseGate = c.leaseHeld
 
-	rt := &tenantRuntime{
-		id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h,
-		policyRev: tdb.Tailnet().PolicyRevision,
-		configRev: tdb.Tailnet().ConfigRevision,
-	}
+	rt := &tenantRuntime{id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h}
+	rt.policyRev.Store(tdb.Tailnet().PolicyRevision)
+	rt.configRev.Store(tdb.Tailnet().ConfigRevision)
+
+	// A write through the runtime's state (P12d) installed what it stored:
+	// the reconcile loop need not install it again. A revision recorded
+	// out of order only costs one more reload.
+	h.state.ObserveRevisions(&state.RevisionObservers{
+		Policy: rt.policyRev.Store,
+		Config: rt.configRev.Store,
+	})
 
 	log.Info().Str("tailnet", id.String()).Str("slug", tn.Slug).Uint64("epoch", rt.epoch).Msg("loaded tailnet runtime")
 
@@ -464,11 +472,11 @@ func (c *Cluster) reconcile() {
 		case !ok || tn.OwnerEpoch != rt.epoch:
 			stale = append(stale, rt)
 		default:
-			if tn.PolicyRevision != rt.policyRev {
+			if tn.PolicyRevision != rt.policyRev.Load() {
 				policyChanged = append(policyChanged, rt)
 			}
 
-			if tn.ConfigRevision != rt.configRev {
+			if tn.ConfigRevision != rt.configRev.Load() {
 				configChanged = append(configChanged, rt)
 			}
 		}
@@ -481,7 +489,7 @@ func (c *Cluster) reconcile() {
 		// As for policy: recorded even when the new settings do not load,
 		// so the runtime keeps serving its previous DNS and the error is
 		// logged once.
-		rt.configRev = rev
+		rt.configRev.Store(rev)
 
 		dns, err := c.tailnetDNS(rt.id, rt.slug)
 		if err != nil {
@@ -501,7 +509,7 @@ func (c *Cluster) reconcile() {
 		// The revision is recorded even when the new policy does not load:
 		// the runtime keeps enforcing the previous one (never allow-all) and
 		// the error is logged once, not on every tick.
-		rt.policyRev = rev
+		rt.policyRev.Store(rev)
 
 		changes, err := rt.h.state.ReloadPolicy()
 		if err != nil {

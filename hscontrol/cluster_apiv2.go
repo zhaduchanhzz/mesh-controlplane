@@ -29,8 +29,10 @@ import (
 // serving that tailnet, and that runtime's v2 API authenticates the key
 // again through its own scoped handle. {tailnet} accepts only "-" or the
 // key's tailnet ID; a device of another tailnet is not in the runtime and is
-// 404. Policy, DNS settings and device trust settings are refused (see
-// apiv2.Backend.Tailnet); /api/v1 is not mounted.
+// 404. The tailnet settings and the device trust settings are refused (see
+// apiv2.Backend.Tailnet); the tailnet's own policy and DNS settings are
+// written through its runtime (P12d), with a per-tailnet bucket of their
+// own (tuning.tenant_api.config_write_rate); /api/v1 is not mounted.
 //
 // Every request is rate limited (tuning.tenant_api, P12c B4): a key this
 // process has not authenticated recently spends the pre-authentication
@@ -61,6 +63,11 @@ type clusterAPI struct {
 	keys     *ratelimit.Buckets
 	tailnets *ratelimit.Buckets
 	known    knownKeys
+	// writes is the per-tailnet bucket of policy and DNS writes (P12d),
+	// spent by the runtime's v2 API after the request buckets admitted the
+	// request and its {tailnet} was checked. Here, not in the runtime, so
+	// a reload of the runtime does not refill it.
+	writes *ratelimit.Buckets
 }
 
 func newClusterAPI(c *Cluster) *clusterAPI {
@@ -72,6 +79,7 @@ func newClusterAPI(c *Cluster) *clusterAPI {
 		preauth:  ratelimit.NewBucket(float64(ta.PreauthRate), ta.PreauthBurst, now),
 		keys:     ratelimit.NewBuckets(float64(ta.KeyRate), ta.KeyBurst),
 		tailnets: ratelimit.NewBuckets(float64(ta.TailnetRate), ta.TailnetBurst),
+		writes:   ratelimit.NewBuckets(float64(ta.ConfigWriteRate)/60, ta.ConfigWriteBurst),
 	}
 }
 
@@ -133,19 +141,40 @@ type runtimeAPI struct {
 }
 
 // apiV2 returns rt's v2 API: the runtime's state, bound to its tailnet.
-func (rt *tenantRuntime) apiV2() http.Handler {
+func (rt *tenantRuntime) apiV2(c *Cluster) http.Handler {
 	rt.api.once.Do(func() {
+		id := rt.id
 		mux, _ := apiv2.Handler(apiv2.Backend{
 			State:     rt.h.state,
 			Change:    rt.h.Change,
 			Cfg:       rt.h.cfg,
 			Connected: rt.h.isConnected,
-			Tailnet:   rt.id.String(),
+			Tailnet:   id.String(),
+			Tenant: &apiv2.Tenant{
+				Slug:              rt.slug,
+				ClusterBaseDomain: c.cfg.DNSConfig.BaseDomain,
+				AllowConfigWrite: func() bool {
+					return c.api.writes.Allow(id.String(), time.Now())
+				},
+				Audit: func(w apiv2.TenantWrite) { auditTenantWrite(id, w) },
+			},
 		})
 		rt.api.h = mux
 	})
 
 	return rt.api.h
+}
+
+// auditTenantWrite logs a tenant's stored policy or DNS write (P12d): the
+// tailnet, the operation, the API key's ID, the new revision and the
+// SHA-256 of what was stored; never the content.
+func auditTenantWrite(id tailnet.ID, w apiv2.TenantWrite) {
+	log.Info().Str("tailnet", id.String()).Str("op", w.Op).Uint64("api_key_id", w.KeyID).
+		Uint64("revision", w.Revision).Str("sha256", w.SHA256).Msg("tenant API: configuration stored")
+
+	if fn := tenantAuditHook.Load(); fn != nil {
+		(*fn)(id, w)
+	}
 }
 
 // writeAPIError writes the Tailscale error body the v2 API uses.
@@ -274,7 +303,7 @@ func (c *Cluster) APIv2Handler(w http.ResponseWriter, r *http.Request) {
 	// The runtime's router matches the full /api/v2/... path with a
 	// routing context of its own.
 	r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, nil))
-	rt.apiV2().ServeHTTP(w, r)
+	rt.apiV2(c).ServeHTTP(w, r)
 }
 
 // tenantAuditHook, when set, also receives every audit record of a

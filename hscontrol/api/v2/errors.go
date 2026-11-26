@@ -9,8 +9,10 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	policyv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/v2"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"gorm.io/gorm"
 	"tailscale.com/util/multierr"
 )
@@ -186,6 +188,15 @@ func mapError(msg string, err error) error {
 		errors.Is(err, state.ErrRequestedTagsInvalidOrNotPermitted):
 		// As on Tailscale SaaS, the reason is the message.
 		return huma.Error400BadRequest(err.Error(), err)
+
+	// Refused tenant DNS settings (ADR 0008 §3): the reasons are the message.
+	case errors.Is(err, types.ErrInvalidTenantDNS):
+		return huma.Error400BadRequest(err.Error(), err)
+
+	// This process no longer owns the tailnet (moved, newer epoch, lease
+	// lost): nothing was stored; the client retries against the owner.
+	case errors.Is(err, tenantscope.ErrFenced), errors.Is(err, tenantscope.ErrNoFence):
+		return huma.Error503ServiceUnavailable("temporarily unavailable, retry", err)
 
 	// A refused policy is answered with its own reason as the message.
 	case errors.Is(err, state.ErrInvalidPolicy):

@@ -17,6 +17,8 @@ import (
 // transaction, on SQLite and PostgreSQL. A write after the tailnet moved
 // stores nothing and bumps nothing; the other tailnet never changes.
 
+var errRefused = errors.New("refused")
+
 func revisions(t *testing.T, p *Platform, id tailnet.ID) (uint64, uint64) {
 	t.Helper()
 
@@ -123,7 +125,6 @@ func TestTenantDNSWriteBumpsRevisionFenced(t *testing.T) {
 			assert.Equal(t, got, op)
 
 			// A refusal from the callback changes nothing.
-			errRefused := errors.New("refused")
 			_, _, err = a.UpdateTenantDNS(func(*types.TenantDNS) (*types.TenantDNS, error) { return nil, errRefused })
 			require.ErrorIs(t, err, errRefused)
 
@@ -139,7 +140,7 @@ func TestTenantDNSWriteBumpsRevisionFenced(t *testing.T) {
 			assert.Equal(t, uint64(1), cfgB)
 
 			// nil clears to the defaults.
-			_, rev, err = a.UpdateTenantDNS(func(*types.TenantDNS) (*types.TenantDNS, error) { return nil, nil })
+			_, rev, err = a.UpdateTenantDNS(func(*types.TenantDNS) (*types.TenantDNS, error) { return nil, nil }) //nolint:nilnil // nil settings: the defaults
 			require.NoError(t, err)
 			assert.Equal(t, uint64(4), rev)
 
@@ -149,7 +150,7 @@ func TestTenantDNSWriteBumpsRevisionFenced(t *testing.T) {
 
 			// After a move the old handle writes nothing.
 			require.NoError(t, p.db.Model(&types.Tailnet{}).Where("id = ?", idA.String()).
-				Updates(map[string]any{"owner_cluster_id": "cluster-2", "updated_at": time.Now().UTC()}).Error)
+				Updates(map[string]any{"owner_cluster_id": "cluster-2", "owner_epoch": 2, "updated_at": time.Now().UTC()}).Error)
 
 			_, _, err = a.UpdateTenantDNS(func(*types.TenantDNS) (*types.TenantDNS, error) {
 				return &types.TenantDNS{SearchDomains: []string{"late.example"}}, nil
@@ -186,7 +187,7 @@ func TestTenantConfigWriteNeedsFence(t *testing.T) {
 			_, _, err = unfenced.SetPolicyRevised(`{}`)
 			require.ErrorIs(t, err, tenantscope.ErrNoFence)
 
-			_, _, err = unfenced.UpdateTenantDNS(func(*types.TenantDNS) (*types.TenantDNS, error) { return nil, nil })
+			_, _, err = unfenced.UpdateTenantDNS(func(*types.TenantDNS) (*types.TenantDNS, error) { return nil, nil }) //nolint:nilnil // nil settings: the defaults
 			require.ErrorIs(t, err, tenantscope.ErrNoFence)
 
 			pol, cfg := revisions(t, p, id)

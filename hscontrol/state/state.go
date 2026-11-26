@@ -248,6 +248,14 @@ type State struct {
 	// policies land in the database in the order they are installed.
 	policyMu sync.Mutex
 
+	// tenantDNSMu makes storing and installing a tenant's DNS settings one
+	// step (P12d), so settings are installed in the order they are stored.
+	tenantDNSMu sync.Mutex
+
+	// revisions, when set, learns the tailnet revision a policy or DNS
+	// write stored and installed (see ObserveRevisions).
+	revisions atomic.Pointer[RevisionObservers]
+
 	// authCache holds pending Web, OIDC and SSH authentication requests.
 	// Admission preserves unexpired entries at capacity. Expiry resolves the
 	// verdict with ErrRegistrationExpired so waiting goroutines wake.
@@ -2041,9 +2049,21 @@ func (s *State) UpdatePolicy(pol []byte) (*types.Policy, []change.Change, error)
 // two writers cannot both pass a check against the same policy. A false match
 // returns [ErrPolicyPrecondition]; a nil match always passes.
 func (s *State) UpdatePolicyIf(pol []byte, match func(stored string) bool) (*types.Policy, []change.Change, error) {
+	stored, _, changes, err := s.UpdateTenantPolicyIf(pol, match)
+
+	return stored, changes, err
+}
+
+// UpdateTenantPolicyIf is [State.UpdatePolicyIf] that also returns the
+// tailnet's policy_revision after the write. On a fenced handle (a cluster
+// runtime, P12d) the policy and the revision bump are stored in one
+// transaction fenced on the tailnet's ownership, so every process of the
+// cluster sees the new revision with the new policy; without a fence (one
+// tailnet, `headscale serve`) the revision is 0.
+func (s *State) UpdateTenantPolicyIf(pol []byte, match func(stored string) bool) (*types.Policy, uint64, []change.Change, error) {
 	err := s.ValidatePolicy(pol)
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, nil, err
 	}
 
 	// Held from store to install: on PostgreSQL a concurrent writer could
@@ -2054,7 +2074,7 @@ func (s *State) UpdatePolicyIf(pol []byte, match func(stored string) bool) (*typ
 	if match != nil {
 		current, err := s.db.GetPolicy()
 		if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
-			return nil, nil, fmt.Errorf("loading policy: %w", err)
+			return nil, 0, nil, fmt.Errorf("loading policy: %w", err)
 		}
 
 		var data string
@@ -2063,18 +2083,32 @@ func (s *State) UpdatePolicyIf(pol []byte, match func(stored string) bool) (*typ
 		}
 
 		if !match(data) {
-			return nil, nil, ErrPolicyPrecondition
+			return nil, 0, nil, ErrPolicyPrecondition
 		}
 	}
 
-	stored, err := s.db.SetPolicy(string(pol))
+	var (
+		stored *types.Policy
+		rev    uint64
+	)
+
+	if s.db.Fenced() {
+		stored, rev, err = s.db.SetPolicyRevised(string(pol))
+	} else {
+		stored, err = s.db.SetPolicy(string(pol))
+	}
+
 	if err != nil {
-		return nil, nil, fmt.Errorf("storing policy: %w", err)
+		return nil, 0, nil, fmt.Errorf("storing policy: %w", err)
 	}
 
 	changed, derpChanged, err := s.reloadPolicyLocked()
 	if err != nil {
-		return stored, nil, err
+		return stored, rev, nil, err
+	}
+
+	if o := s.revisions.Load(); o != nil && o.Policy != nil && rev > 0 {
+		o.Policy(rev)
 	}
 
 	var changes []change.Change
@@ -2088,7 +2122,53 @@ func (s *State) UpdatePolicyIf(pol []byte, match func(stored string) bool) (*typ
 		changes = append(changes, change.DERPMap())
 	}
 
-	return stored, changes, nil
+	return stored, rev, changes, nil
+}
+
+// TenantDNS returns the stored DNS settings of this runtime's tailnet
+// (cluster mode, ADR 0008), nil for the defaults.
+func (s *State) TenantDNS() (*types.TenantDNS, error) {
+	return s.db.TenantDNS()
+}
+
+// UpdateTenantDNS stores what fn returns for the stored DNS settings of this
+// runtime's tailnet (nil: the defaults) and bumps its config_revision in one
+// fenced transaction (P12d), then installs them: the runtime's clients get
+// the new DNS with the returned change, and only them (I07). fn validates;
+// an error from fn, or a write the fence refuses, changes nothing. Returns
+// the new settings and revision.
+func (s *State) UpdateTenantDNS(
+	fn func(*types.TenantDNS) (*types.TenantDNS, error),
+) (*types.TenantDNS, uint64, change.Change, error) {
+	s.tenantDNSMu.Lock()
+	defer s.tenantDNSMu.Unlock()
+
+	d, rev, err := s.db.UpdateTenantDNS(fn)
+	if err != nil {
+		return nil, 0, change.Change{}, err
+	}
+
+	s.cfg.ReplaceTenantDNS("", d)
+
+	if o := s.revisions.Load(); o != nil && o.Config != nil {
+		o.Config(rev)
+	}
+
+	return d, rev, change.DNSConfig(), nil
+}
+
+// RevisionObservers learn the tailnets.policy_revision and config_revision
+// a write through this State stored and already installed, so whoever
+// reloads on a revision change (the cluster reconcile loop) does not
+// install it a second time.
+type RevisionObservers struct {
+	Policy func(rev uint64)
+	Config func(rev uint64)
+}
+
+// ObserveRevisions installs o (nil removes it).
+func (s *State) ObserveRevisions(o *RevisionObservers) {
+	s.revisions.Store(o)
 }
 
 // GetNodePrimaryRoutes returns the primary routes for a node.

@@ -22,9 +22,10 @@ import (
 )
 
 // P08b, the public /api/v2 of a cluster (owner decision Q3): a tenant key
-// manages its own devices and pre-auth keys live, B gets no frame; policy,
-// DNS settings and device trust settings are refused; only valid
-// platform-issued keys get in; every key and tailnet is rate limited.
+// manages its own devices and pre-auth keys live, B gets no frame; the
+// tailnet settings and device trust settings are refused (P12d lets the
+// tenant write its own policy and DNS); only valid platform-issued keys get
+// in; every key and tailnet is rate limited.
 
 type apiResp struct {
 	code int
@@ -139,12 +140,12 @@ func TestP08bTenantAPIRefusals(t *testing.T) {
 	revBefore := tailnetRevisions(t, tc, idA)
 
 	// Operator-only writes: 403 on the key's own tailnet, nothing changes.
+	// (P12d: the tenant now writes its own policy and DNS settings and
+	// disables key expiry on its devices; TestP12d* covers those.)
 	for _, c := range []struct{ method, path, body string }{
-		{http.MethodPost, "/api/v2/tailnet/-/acl", `{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}`},
-		{http.MethodPost, "/api/v2/tailnet/" + idA + "/acl", `{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}]}`},
 		{http.MethodPatch, "/api/v2/tailnet/-/settings", `{"devicesApprovalOn":true}`},
+		{http.MethodPatch, "/api/v2/tailnet/" + idA + "/settings", `{"devicesApprovalOn":true}`},
 		{http.MethodPost, fmt.Sprintf("/api/v2/device/%d/authorized", id1), `{"authorized":true}`},
-		{http.MethodPost, fmt.Sprintf("/api/v2/device/%d/key", id1), `{"keyExpiryDisabled":true}`},
 		{http.MethodPost, fmt.Sprintf("/api/v2/device/%d/update-client", id1), ""},
 		{http.MethodPost, "/api/v2/tailnet/-/keys", `{"keyType":"client","scopes":["devices:core"],"tags":["tag:x"]}`},
 	} {

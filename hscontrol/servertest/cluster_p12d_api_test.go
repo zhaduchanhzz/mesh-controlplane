@@ -366,7 +366,7 @@ func TestP12dTenantDNS(t *testing.T) {
 	jsonEq(`{"dns":[]}`, call(http.MethodGet, "nameservers", ""), "GET nameservers")
 	jsonEq(`{"searchPaths":[]}`, call(http.MethodGet, "searchpaths", ""), "GET searchpaths")
 	jsonEq(`{}`, call(http.MethodGet, "split-dns", ""), "GET split-dns")
-	jsonEq(`{"magicDNS":true}`, call(http.MethodGet, "preferences", ""), "GET preferences")
+	jsonEq(`{"magicDNS":true,"overrideLocalDNS":false}`, call(http.MethodGet, "preferences", ""), "GET preferences")
 
 	// Nameservers.
 	jsonEq(`{"dns":["9.9.9.9"],"magicDNS":true}`, call(http.MethodPost, "nameservers", `{"dns":["9.9.9.9"]}`), "POST nameservers")
@@ -394,9 +394,9 @@ func TestP12dTenantDNS(t *testing.T) {
 	})
 
 	// Preferences.
-	jsonEq(`{"magicDNS":false}`, call(http.MethodPost, "preferences", `{"magicDNS":false}`), "MagicDNS off")
+	jsonEq(`{"magicDNS":false,"overrideLocalDNS":false}`, call(http.MethodPost, "preferences", `{"magicDNS":false}`), "MagicDNS off")
 	a1.WaitForCondition(t, "a1 without MagicDNS", clusterWait, func(nm *netmap.NetworkMap) bool { return !nm.DNS.Proxied })
-	jsonEq(`{"magicDNS":true}`, call(http.MethodPost, "preferences", `{"magicDNS":true}`), "MagicDNS on")
+	jsonEq(`{"magicDNS":true,"overrideLocalDNS":false}`, call(http.MethodPost, "preferences", `{"magicDNS":true}`), "MagicDNS on")
 	a1.WaitForCondition(t, "a1 with MagicDNS", clusterWait, func(nm *netmap.NetworkMap) bool { return nm.DNS.Proxied })
 
 	writes := 9
@@ -419,6 +419,16 @@ func TestP12dTenantDNS(t *testing.T) {
 	ownBase := servertest.ClusterTailnetDomain(tenantA)
 	otherBase := servertest.ClusterTailnetDomain(tenantB)
 
+	// A body of the wrong JSON type is refused by the schema check (422, as
+	// every typed v2 body); a value the settings refuse is 400.
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodPost, "nameservers", `{"dns":"9.9.9.9"}`},
+		{http.MethodPost, "preferences", `{"magicDNS":"yes"}`},
+	} {
+		r := call(c.method, c.path, c.body)
+		assert.Equal(t, http.StatusUnprocessableEntity, r.code, "%s %s %s: %s", c.method, c.path, c.body, r.body)
+	}
+
 	for _, c := range []struct{ method, path, body string }{
 		{http.MethodPatch, "split-dns", `{"` + inCluster + `":["10.0.0.1"]}`},
 		{http.MethodPatch, "split-dns", `{"` + ownBase + `":["10.0.0.1"]}`},
@@ -428,10 +438,8 @@ func TestP12dTenantDNS(t *testing.T) {
 		{http.MethodPatch, "split-dns", `["corp.example"]`},
 		{http.MethodPost, "nameservers", `{"dns":["not-an-ip"]}`},
 		{http.MethodPost, "nameservers", `{"dns":["http://dns.example/q"]}`},
-		{http.MethodPost, "nameservers", `{"dns":"9.9.9.9"}`},
 		{http.MethodPost, "nameservers", `{"dns":[` + strings.Repeat(`"9.9.9.9",`, 64) + `"9.9.9.9"]}`},
 		{http.MethodPost, "searchpaths", `{"searchPaths":["bad_domain!"]}`},
-		{http.MethodPost, "preferences", `{"magicDNS":"yes"}`},
 	} {
 		r := call(c.method, c.path, c.body)
 		assert.Equal(t, http.StatusBadRequest, r.code, "%s %s %s: %s", c.method, c.path, c.body, r.body)

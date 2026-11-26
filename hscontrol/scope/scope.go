@@ -49,6 +49,10 @@ const (
 
 	Users     Scope = "users"
 	UsersRead Scope = "users:read"
+
+	// DNS gates a tailnet's DNS settings (P12d).
+	DNS     Scope = "dns"
+	DNSRead Scope = "dns:read"
 )
 
 const readSuffix = ":read"
@@ -66,6 +70,7 @@ func Known() []Scope {
 		PolicyFile, PolicyFileRead,
 		FeatureSettings, FeatureSettingsRead,
 		Users, UsersRead,
+		DNS, DNSRead,
 	}
 }
 

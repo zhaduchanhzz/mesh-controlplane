@@ -39,6 +39,25 @@ const defaultPolicy = `{
 }
 `
 
+// defaultTenantPolicy is defaultPolicy for a tailnet where a missing or
+// empty policy denies everything (a tenant tailnet of a cluster, AGENTS
+// rule 8): what a tenant reads must be what is enforced, and writing back
+// what it read must never open the tailnet.
+const defaultTenantPolicy = `{
+	// No policy is stored: this tailnet allows nothing.
+	"grants": [],
+}
+`
+
+// defaultPolicyOf is the policy GET serves when none is stored.
+func defaultPolicyOf(b Backend) string {
+	if b.Cfg != nil && b.Cfg.PolicyEmptyDenies {
+		return defaultTenantPolicy
+	}
+
+	return defaultPolicy
+}
+
 type getACLInput struct {
 	Tailnet string `path:"tailnet"`
 	Accept  string `header:"Accept"`
@@ -70,7 +89,7 @@ type setACLInput struct {
 }
 
 func registerACL(api huma.API, b Backend) {
-	aclTags := []string{"Policy", "Tailscale compat"}
+	aclTags := []string{"Policy", tagTailscaleCompat}
 
 	huma.Register(api, requireScope(huma.Operation{
 		OperationID: "getACL",
@@ -119,11 +138,22 @@ func registerACL(api huma.API, b Backend) {
 			return nil, err
 		}
 
+		// Cluster mode (P12d): the tenant's own policy, size limited and
+		// rate limited per tailnet.
+		if b.Tailnet != "" {
+			err = tenantWriteGate(b, len(in.RawBody), tenantPolicyLimit(b))
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		if b.Cfg.Policy.Mode != types.PolicyModeDB {
 			return nil, huma.Error400BadRequest(
 				types.ErrPolicyUpdateIsDisabled.Error(), types.ErrPolicyUpdateIsDisabled,
 			)
 		}
+
+		def := defaultPolicyOf(b)
 
 		// Checked under the policy lock, so two writers holding the same ETag
 		// cannot both pass.
@@ -131,14 +161,18 @@ func registerACL(api huma.API, b Backend) {
 		if in.IfMatch != "" {
 			match = func(stored string) bool {
 				if stored == "" {
-					stored = defaultPolicy
+					stored = def
 				}
 
-				return etagMatches(in.IfMatch, []byte(stored))
+				return etagMatches(in.IfMatch, []byte(stored), def)
 			}
 		}
 
-		updated, cs, err := b.State.UpdatePolicyIf(in.RawBody, match)
+		// Validated (tests included) before anything is stored; a refused
+		// policy leaves the stored and enforced one as it was. In cluster
+		// mode the policy and its policy_revision are stored in one fenced
+		// transaction.
+		updated, rev, cs, err := b.State.UpdateTenantPolicyIf(in.RawBody, match)
 		b.Change(cs...)
 
 		if errors.Is(err, state.ErrPolicyPrecondition) {
@@ -147,6 +181,10 @@ func registerACL(api huma.API, b Backend) {
 
 		if err != nil {
 			return nil, mapError("setting policy", err)
+		}
+
+		if b.Tailnet != "" {
+			auditTenantWrite(ctx, b, "setACL", rev, []byte(updated.Data))
 		}
 
 		return streamPolicy([]byte(updated.Data), aclWriteContentType(in.Accept)), nil
@@ -184,6 +222,15 @@ func registerValidateACL(api huma.API, b Backend, aclTags []string) {
 			return nil, huma.Error400BadRequest("unexpected end of JSON input")
 		}
 
+		// Cluster mode (P12d): validating compiles the policy and runs its
+		// tests, so it shares the config-write bucket.
+		if b.Tailnet != "" {
+			err = tenantWriteGate(b, len(in.RawBody), tenantPolicyLimit(b))
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		out := &validateACLOutput{}
 
 		err = b.State.ValidatePolicy(in.RawBody)
@@ -205,22 +252,25 @@ func registerValidateACL(api huma.API, b Backend, aclTags []string) {
 	api.OpenAPI().Paths["/api/v2/tailnet/{tailnet}/acl/validate"].Post.RequestBody.Required = false
 }
 
-// currentPolicy returns the stored policy bytes, or the allow-all default when
-// none is set. File mode reads the configured path; DB mode reads the database.
+// currentPolicy returns the stored policy bytes, or the default when none is
+// set (allow-all, or deny-all where an empty policy denies). File mode reads
+// the configured path; DB mode reads the database.
 func currentPolicy(b Backend) ([]byte, error) {
+	def := defaultPolicyOf(b)
+
 	switch b.Cfg.Policy.Mode {
 	case types.PolicyModeDB:
 		p, err := b.State.GetPolicy()
 		if err != nil {
 			if errors.Is(err, types.ErrPolicyNotFound) {
-				return []byte(defaultPolicy), nil
+				return []byte(def), nil
 			}
 
 			return nil, huma.Error500InternalServerError("loading policy", err)
 		}
 
 		if p.Data == "" {
-			return []byte(defaultPolicy), nil
+			return []byte(def), nil
 		}
 
 		return []byte(p.Data), nil
@@ -228,7 +278,7 @@ func currentPolicy(b Backend) ([]byte, error) {
 	case types.PolicyModeFile:
 		path := b.Cfg.AbsPath(b.Cfg.Policy.Path)
 		if path == "" {
-			return []byte(defaultPolicy), nil
+			return []byte(def), nil
 		}
 
 		data, err := os.ReadFile(path)
@@ -293,16 +343,17 @@ func policyETag(data []byte) string {
 }
 
 // etagMatches reports whether an If-Match header satisfies the current policy.
-// "*" always matches; "ts-default" matches only when no policy is set (an
-// approximation of Tailscale's untouched-default semantics).
-func etagMatches(ifMatch string, current []byte) bool {
+// "*" always matches; "ts-default" matches only when no policy is set, def
+// being what is served then (an approximation of Tailscale's
+// untouched-default semantics).
+func etagMatches(ifMatch string, current []byte, def string) bool {
 	ifMatch = strings.TrimSpace(ifMatch)
 
 	switch ifMatch {
 	case "*":
 		return true
 	case `"ts-default"`, "ts-default":
-		return string(current) == defaultPolicy
+		return string(current) == def
 	default:
 		return ifMatch == policyETag(current)
 	}
