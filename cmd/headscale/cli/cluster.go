@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
@@ -45,6 +47,13 @@ var (
 	errPolicyFlagChoice  = errors.New("give exactly one of --file, --clear, --show")
 	errUserRequired      = errors.New("--user is required")
 	errKeyIDRequired     = errors.New("--id is required")
+
+	errPolicyEmptyNotAsked = errors.New("the policy is empty; give --file with a policy, or --empty to store an empty " +
+		"policy that denies every access of the tailnet")
+	errPolicyEmptyWithFile = errors.New("--empty stores an empty policy; it takes no --file content")
+
+	// clusterPolicyEmpty is `tailnet policy --empty`.
+	clusterPolicyEmpty bool
 )
 
 func init() {
@@ -53,7 +62,8 @@ func init() {
 	tailnetCmd.PersistentFlags().StringVar(&clusterSlug, "slug", "", "tailnet slug")
 
 	tailnetStatusCmd.Flags().StringVar(&clusterStatus, "set", "", "new status: PENDING, ACTIVE, SUSPENDED or DELETING")
-	tailnetPolicyCmd.Flags().StringVar(&clusterPolicyFile, "file", "", "policy file (HuJSON)")
+	tailnetPolicyCmd.Flags().StringVar(&clusterPolicyFile, "file", "", "policy file (HuJSON), validated before it is stored")
+	tailnetPolicyCmd.Flags().BoolVar(&clusterPolicyEmpty, "empty", false, "store an empty policy: deny every access of the tailnet")
 	tailnetDNSCmd.Flags().StringVar(&clusterDNSFile, "file", "", "DNS settings file (JSON; see ADR 0008)")
 	tailnetDNSCmd.Flags().BoolVar(&clusterDNSClear, "clear", false, "drop the tailnet's DNS settings (the defaults)")
 	tailnetDNSCmd.Flags().BoolVar(&clusterDNSShow, "show", false, "print the stored DNS settings")
@@ -206,38 +216,87 @@ var tailnetStatusCmd = &cobra.Command{
 
 var tailnetPolicyCmd = &cobra.Command{
 	Use:   "policy",
-	Short: "Store the policy of ACTIVE tailnet --slug",
+	Short: "Store the policy (--file, validated) or an empty deny-all policy (--empty) of ACTIVE tailnet --slug",
 	RunE: func(_ *cobra.Command, _ []string) error {
-		data, err := os.ReadFile(clusterPolicyFile)
-		if err != nil {
-			return err
+		var data []byte
+
+		if clusterPolicyFile != "" {
+			var err error
+
+			data, err = os.ReadFile(clusterPolicyFile)
+			if err != nil {
+				return err
+			}
 		}
 
 		return withPlatform(func(p *db.Platform) error {
-			tn, err := p.TailnetBySlug(clusterSlug)
-			if err != nil {
-				return err
-			}
-
-			id, err := tailnet.ParseID(tn.ID)
-			if err != nil {
-				return err
-			}
-
-			hs, err := p.TenantDB(id)
-			if err != nil {
-				return err
-			}
-
-			_, err = hs.SetPolicy(string(data))
-			if err != nil {
-				return err
-			}
-
-			// A running cluster reloads the policy when the revision moves.
-			return p.BumpPolicyRevision(id)
+			return setTailnetPolicyCLI(p, clusterSlug, data, clusterPolicyEmpty)
 		})
 	},
+}
+
+// setTailnetPolicyCLI stores data as the policy of ACTIVE tailnet slug and
+// bumps its policy revision (P12c A6). The policy is validated first, as a
+// policy write to a running tailnet would be (tenant semantics: a policy
+// without rules denies): one that does not parse would make the tailnet
+// fail to load at its next failover or move. An empty policy revokes every
+// access of the tailnet; it is stored only when empty asks for it, and then
+// data must be empty.
+func setTailnetPolicyCLI(p *db.Platform, slug string, data []byte, empty bool) error {
+	blank := len(bytes.TrimSpace(data)) == 0
+
+	switch {
+	case empty && !blank:
+		return errPolicyEmptyWithFile
+	case !empty && blank:
+		return errPolicyEmptyNotAsked
+	}
+
+	tn, err := p.TailnetBySlug(slug)
+	if err != nil {
+		return err
+	}
+
+	id, err := tailnet.ParseID(tn.ID)
+	if err != nil {
+		return err
+	}
+
+	hs, err := p.TenantDB(id)
+	if err != nil {
+		return err
+	}
+
+	if !empty {
+		err = validateTailnetPolicy(hs, data)
+		if err != nil {
+			return fmt.Errorf("refusing to store the policy of tailnet %s: %w", slug, err)
+		}
+	}
+
+	_, err = hs.SetPolicy(string(data))
+	if err != nil {
+		return err
+	}
+
+	// A running cluster reloads the policy when the revision moves.
+	return p.BumpPolicyRevision(id)
+}
+
+// validateTailnetPolicy checks data against the tailnet's users and nodes
+// with the semantics a cluster runtime installs it with.
+func validateTailnetPolicy(hs *db.HSDatabase, data []byte) error {
+	users, err := hs.ListUsers(nil)
+	if err != nil {
+		return fmt.Errorf("loading users for policy validation: %w", err)
+	}
+
+	nodes, err := hs.ListNodes()
+	if err != nil {
+		return fmt.Errorf("loading nodes for policy validation: %w", err)
+	}
+
+	return policy.ValidatePolicy(data, users, nodes.ViewSlice(), policy.WithEmptyPolicyDenies(true))
 }
 
 var (

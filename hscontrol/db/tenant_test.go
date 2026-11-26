@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"tailscale.com/types/key"
 )
 
@@ -271,6 +272,39 @@ func TestScopedContextKeepsTailnet(t *testing.T) {
 	err = hsdb.DB.WithContext(t.Context()).Model(&types.User{}).Count(&n).Error
 	require.Error(t, err, "a scope-less context must fail closed")
 
-	require.NoError(t, hsdb.DB.WithContext(hsdb.ScopedContext(t.Context())).Model(&types.User{}).Count(&n).Error)
+	ctx, err := hsdb.ScopedContext(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, hsdb.DB.WithContext(ctx).Model(&types.User{}).Count(&n).Error)
 	assert.EqualValues(t, 1, n)
+}
+
+// P12c A7: ScopedContext on A's handle with a context already bound to B
+// must not hand back B's context: a read on A's handle with it would see
+// B's rows.
+func TestScopedContextRefusesOtherTailnet(t *testing.T) {
+	p := openPlatform(t, sqliteTestConfig(filepath.Join(t.TempDir(), "conflict.db")))
+	a := tenantDB(t, p, platformTailnet(t, p, "local", types.TailnetActive, false))
+	b := tenantDB(t, p, platformTailnet(t, p, "local", types.TailnetActive, false))
+
+	_, err := b.CreateUser(types.User{Name: "bob"})
+	require.NoError(t, err)
+
+	ctxB := b.DB.Statement.Context
+
+	ctx, err := a.ScopedContext(ctxB)
+	require.ErrorIs(t, err, tailnet.ErrScopeConflict, "ScopedContext must refuse a context bound to another tailnet")
+	assert.Nil(t, ctx, "no context is handed back on a conflict")
+
+	// The same tailnet's own context is accepted.
+	ctxA, err := a.ScopedContext(a.DB.Statement.Context)
+	require.NoError(t, err)
+
+	var users []types.User
+	require.NoError(t, a.DB.WithContext(ctxA).Find(&users).Error)
+	assert.Empty(t, users, "A has no users; B's bob is not visible")
+
+	// A handle without a scope fails closed too.
+	unscoped := &HSDatabase{DB: a.raw}
+	_, err = unscoped.ScopedContext(t.Context())
+	require.ErrorIs(t, err, tailnet.ErrNoScope)
 }

@@ -2,6 +2,7 @@ package hscontrol
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	apiv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/api/v2"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/ratelimit"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tenantlabel"
 )
 
@@ -29,9 +31,14 @@ import (
 // 404. Policy, DNS settings and device trust settings are refused (see
 // apiv2.Backend.Tailnet); /api/v1 is not mounted.
 //
-// Every request is rate limited: a global bucket before the key lookup (an
-// unauthenticated flood cannot exhaust the database), then the key's and
-// the tailnet's buckets (tuning.tenant_api).
+// Every request is rate limited (tuning.tenant_api, P12c B4): a key this
+// process has not authenticated recently spends the pre-authentication
+// bucket before its database lookup (a flood of garbage keys cannot exhaust
+// the database, and spends nothing else); then the key's and the tailnet's
+// buckets; only a request they admit spends the global bucket. Neither a
+// tenant over its limit nor unauthenticated keys can make another tenant's
+// requests 429 (invariant I10); a key not seen for knownKeyTTL competes for
+// the pre-authentication bucket like any unknown key.
 
 var (
 	clusterAPIRefused = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -49,18 +56,73 @@ var (
 // clusterAPI is the state of the public /api/v2 of a cluster process.
 type clusterAPI struct {
 	global   *ratelimit.Bucket
+	preauth  *ratelimit.Bucket
 	keys     *ratelimit.Buckets
 	tailnets *ratelimit.Buckets
+	known    knownKeys
 }
 
 func newClusterAPI(c *Cluster) *clusterAPI {
 	ta := c.cfg.Tuning.TenantAPI
+	now := time.Now()
 
 	return &clusterAPI{
-		global:   ratelimit.NewBucket(float64(ta.GlobalRate), ta.GlobalBurst, time.Now()),
+		global:   ratelimit.NewBucket(float64(ta.GlobalRate), ta.GlobalBurst, now),
+		preauth:  ratelimit.NewBucket(float64(ta.PreauthRate), ta.PreauthBurst, now),
 		keys:     ratelimit.NewBuckets(float64(ta.KeyRate), ta.KeyBurst),
 		tailnets: ratelimit.NewBuckets(float64(ta.TailnetRate), ta.TailnetBurst),
 	}
+}
+
+// knownKeyTTL is how long an API key that authenticated is routed without a
+// new lookup (and without the pre-authentication bucket).
+const knownKeyTTL = time.Minute
+
+// maxKnownKeys bounds knownKeys; past it the set starts over. Only keys that
+// authenticated enter it, so garbage cannot fill it.
+const maxKnownKeys = 10_000
+
+// knownKeys remembers, by SHA-256 of the whole token, the tailnet and key ID
+// of API keys that authenticated recently. It only routes and picks the
+// buckets to charge: the runtime authenticates the key again on every
+// request through its tailnet-scoped handle (revocation and expiry are
+// checked there), and a key's tailnet never changes.
+type knownKeys struct {
+	mu sync.Mutex
+	m  map[[sha256.Size]byte]knownKey
+}
+
+type knownKey struct {
+	tailnet tailnet.ID
+	keyID   string
+	until   time.Time
+}
+
+func (k *knownKeys) get(token string, now time.Time) (tailnet.ID, string, bool) {
+	h := sha256.Sum256([]byte(token))
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	e, ok := k.m[h]
+	if !ok || !now.Before(e.until) {
+		return tailnet.ID{}, "", false
+	}
+
+	return e.tailnet, e.keyID, true
+}
+
+func (k *knownKeys) put(token string, id tailnet.ID, keyID string, now time.Time) {
+	h := sha256.Sum256([]byte(token))
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	if k.m == nil || len(k.m) >= maxKnownKeys {
+		k.m = make(map[[sha256.Size]byte]knownKey)
+	}
+
+	k.m[h] = knownKey{tailnet: id, keyID: keyID, until: now.Add(knownKeyTTL)}
 }
 
 // runtimeAPI is the v2 API of one runtime, built on first use.
@@ -129,13 +191,6 @@ func apiToken(header string) (string, bool) {
 func (c *Cluster) APIv2Handler(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 
-	if !c.api.global.Allow(now) {
-		clusterAPIRefused.WithLabelValues("global_limit").Inc()
-		writeAPIError(w, http.StatusTooManyRequests, "rate limited")
-
-		return
-	}
-
 	if !c.ready.Load() || !c.leaseHeld() {
 		clusterAPIRefused.WithLabelValues("standby").Inc()
 		writeAPIError(w, http.StatusServiceUnavailable, "not ready")
@@ -151,28 +206,50 @@ func (c *Cluster) APIv2Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, keyID, err := c.platform.TailnetForAPIKey(token) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
-	if err != nil {
-		if errors.Is(err, db.ErrUnknownTenant) {
-			clusterAPIRefused.WithLabelValues("unauthenticated").Inc()
-			writeAPIError(w, http.StatusUnauthorized, "unauthorized")
+	id, keyID, ok := c.api.known.get(token, now)
+	if !ok {
+		if !c.api.preauth.Allow(now) {
+			clusterAPIRefused.WithLabelValues("preauth_limit").Inc()
+			writeAPIError(w, http.StatusTooManyRequests, "rate limited")
 
 			return
 		}
 
-		log.Error().Err(err).Msg("cluster api: API key lookup failed")
-		clusterAPIRefused.WithLabelValues("lookup_error").Inc()
-		writeAPIError(w, http.StatusServiceUnavailable, "temporarily unavailable")
+		var err error
 
-		return
+		id, keyID, err = c.platform.TailnetForAPIKey(token) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
+		if err != nil {
+			if errors.Is(err, db.ErrUnknownTenant) {
+				clusterAPIRefused.WithLabelValues("unauthenticated").Inc()
+				writeAPIError(w, http.StatusUnauthorized, "unauthorized")
+
+				return
+			}
+
+			log.Error().Err(err).Msg("cluster api: API key lookup failed")
+			clusterAPIRefused.WithLabelValues("lookup_error").Inc()
+			writeAPIError(w, http.StatusServiceUnavailable, "temporarily unavailable")
+
+			return
+		}
+
+		c.api.known.put(token, id, keyID, now)
 	}
 
 	label := tenantlabel.Label(id.String())
 
 	// The key's bucket first: a key over its limit does not spend its
-	// tailnet's tokens.
+	// tailnet's tokens; a request either refuses does not spend the global
+	// bucket.
 	if !c.api.keys.Allow(keyID, now) || !c.api.tailnets.Allow(id.String(), now) {
 		tailnetAPIRequests.WithLabelValues(label, "limited").Inc()
+		writeAPIError(w, http.StatusTooManyRequests, "rate limited")
+
+		return
+	}
+
+	if !c.api.global.Allow(now) {
+		clusterAPIRefused.WithLabelValues("global_limit").Inc()
 		writeAPIError(w, http.StatusTooManyRequests, "rate limited")
 
 		return

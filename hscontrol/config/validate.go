@@ -266,7 +266,7 @@ func Validate(c *types.Config) error {
 
 	// P08b: the public /api/v2 of a cluster is always rate limited.
 	if ta := c.Tuning.TenantAPI; ta.GlobalRate < 1 || ta.GlobalBurst < 1 || ta.TailnetRate < 1 ||
-		ta.TailnetBurst < 1 || ta.KeyRate < 1 || ta.KeyBurst < 1 {
+		ta.TailnetBurst < 1 || ta.KeyRate < 1 || ta.KeyBurst < 1 || ta.PreauthRate < 1 || ta.PreauthBurst < 1 {
 		v.Add(&types.ConfigError{
 			Reason: "tuning.tenant_api: every rate and burst must be at least 1 (the public /api/v2 is never unlimited)",
 			Current: []types.KV{
@@ -276,8 +276,10 @@ func Validate(c *types.Config) error {
 				{Key: "tuning.tenant_api.tailnet_burst", Value: strconv.Itoa(ta.TailnetBurst)},
 				{Key: "tuning.tenant_api.key_rate", Value: strconv.Itoa(ta.KeyRate)},
 				{Key: "tuning.tenant_api.key_burst", Value: strconv.Itoa(ta.KeyBurst)},
+				{Key: "tuning.tenant_api.preauth_rate", Value: strconv.Itoa(ta.PreauthRate)},
+				{Key: "tuning.tenant_api.preauth_burst", Value: strconv.Itoa(ta.PreauthBurst)},
 			},
-			Hint: "defaults: global 200/s burst 400, tailnet 20/s burst 40, key 10/s burst 20",
+			Hint: "defaults: global 200/s burst 400, tailnet 20/s burst 40, key 10/s burst 20, preauth 50/s burst 100",
 		})
 	}
 

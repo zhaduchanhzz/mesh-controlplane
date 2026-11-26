@@ -215,6 +215,7 @@ func TestP08bTenantAPIRateLimits(t *testing.T) {
 			GlobalRate: 1000, GlobalBurst: 1000,
 			TailnetRate: 1, TailnetBurst: 4,
 			KeyRate: 1, KeyBurst: 2,
+			PreauthRate: 1000, PreauthBurst: 1000,
 		},
 	}, servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
 

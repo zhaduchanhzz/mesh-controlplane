@@ -12,6 +12,14 @@
 # - Databases: `meshlab`, long-lived (lab stage 2, manual tests, long runs);
 #   per-run E2E databases e2e_* are created and dropped by the harness
 #   (`db.sh`). Every database is owned by role `headscale`.
+# - Timeouts (P12c B2, ADR 0006 §3.4), below the cluster lease's self-fence
+#   deadline (ttl - safety_margin, 8 s by default): a client waits at most
+#   query_wait_timeout = 5 s for a server connection; a transaction left
+#   idle (process paused or cut off before COMMIT) is ended after 5 s by
+#   PgBouncer (idle_transaction_timeout) and by PostgreSQL
+#   (idle_in_transaction_session_timeout of role headscale), so its locks
+#   cannot hold a standby's lease takeover. Fenced transactions bound
+#   themselves tighter (SET LOCAL, tenantscope.SetTransactionBound).
 # - Passwords live in /opt/mc-db (root, 0700) and in the operator's
 #   %USERPROFILE%\.mesh-lab\mc-db.env; never on a command line or in a log.
 set -euo pipefail
@@ -53,6 +61,8 @@ default_pool_size = 20
 max_client_conn = 2000
 max_db_connections = 80
 ignore_startup_parameters = extra_float_digits
+query_wait_timeout = 5
+idle_transaction_timeout = 5
 EOF
 chmod 644 "$DIR/postgres.pass" "$DIR/userlist.txt" "$DIR/pgbouncer.ini"
 
@@ -90,6 +100,7 @@ ALTER ROLE postgres PASSWORD :'super';
 SELECT format('CREATE ROLE headscale LOGIN PASSWORD %L', :'app')
   WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'headscale') \gexec
 ALTER ROLE headscale PASSWORD :'app';
+ALTER ROLE headscale SET idle_in_transaction_session_timeout = '5s';
 SELECT 'CREATE DATABASE meshlab OWNER headscale'
   WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'meshlab') \gexec
 SQL

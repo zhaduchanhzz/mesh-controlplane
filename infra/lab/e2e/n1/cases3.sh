@@ -242,7 +242,9 @@ S13B_RATE=${S13B_RATE:-30}
 S13B_SECONDS=${S13B_SECONDS:-40}
 boot_start() {
   local i
-  scp -q "${SSHO[@]}" "$BOOT_BIN" "$CP_SSH:/tmp/mesh-bootstrap" || return 1
+  binsrv_start || return 1
+  put cp mesh-bootstrap /tmp/mesh-bootstrap || { binsrv_stop; return 1; }
+  binsrv_stop || return 1
   cp_ "set -e; sudo install -m 0755 /tmp/mesh-bootstrap /usr/local/bin/mesh-bootstrap; rm -f /tmp/mesh-bootstrap
     sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null || true; sudo systemctl reset-failed mesh-bootstrap-e2e 2>/dev/null || true
     sudo systemd-run --quiet --unit=mesh-bootstrap-e2e --uid=headscale --gid=headscale \
@@ -275,7 +277,7 @@ for l in open(sys.argv[1]):
 }
 t_s13b() {
   local p="" fpid sa sb u
-  [ -n "${BOOT_BIN:-}" ] || { record S13b FAIL "BOOT_BIN not set: bootstrap flood not run"; return; }
+  [ -n "${BOOT_BIN:-}" ] || [ -n "${CI_BINDIR:-}" ] || { record S13b FAIL "BOOT_BIN not set: bootstrap flood not run"; return; }
   boot_start || { record S13b FAIL "bootstrap did not start (logs/bootstrap.log)"; boot_stop; return; }
   u=$(boot_url_of "$TMPD/key-b" b); [ "$u" = "$URL1" ] || p="$p; before: bootstrap for b -> [$u]"
   local e="$ART_DIR/logs/S13b-copy.err"

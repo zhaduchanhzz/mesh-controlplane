@@ -345,10 +345,12 @@ func TestOperatorFlow(t *testing.T) {
 	assert.Equal(t, "c2", got["moving_to_cluster_id"])
 	assert.EqualValues(t, 0, got["devices"])
 
+	// P12c C3: a tailnet with a move pending enrolls nothing (its devices
+	// were counted against the target at the request).
 	code, q := e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/" + id + "/quota"})
 	require.Equal(t, http.StatusOK, code)
-	assert.Equal(t, true, q["allowed"])
-	assert.EqualValues(t, 5000, q["limit"])
+	assert.Equal(t, false, q["allowed"])
+	assert.Contains(t, q["reason"], "moving")
 
 	code, st := e.do(t, c, call{method: http.MethodPut, path: "/v1/clusters/c1/state", key: "s1", body: map[string]any{"state": "DRAINING", "expected_revision": 1}})
 	require.Equal(t, http.StatusOK, code, st)

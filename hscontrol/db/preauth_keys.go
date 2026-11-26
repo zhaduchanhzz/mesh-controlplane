@@ -377,7 +377,7 @@ func DestroyPreAuthKey(tx *gorm.DB, id uint64) error {
 	return tx.Transaction(func(db *gorm.DB) error {
 		res := db.Model(&types.Credential{}).
 			Where("kind = ? AND id = ? AND ephemeral = ?", types.CredentialPreAuthKey, id, true).
-			Where("id IN (SELECT auth_key_id FROM nodes WHERE auth_key_id IS NOT NULL)").
+			Where("id IN (?)", keysInUse(db)).
 			Update("revoked", gorm.Expr("COALESCE(revoked, ?)", time.Now()))
 		if res.Error != nil {
 			return res.Error
@@ -461,7 +461,7 @@ func (hsdb *HSDatabase) DestroyRevokedPreAuthKeysBefore(cutoff time.Time) (int, 
 
 		err := tx.Model(&types.Credential{}).
 			Where("kind = ? AND revoked IS NOT NULL AND revoked < ?", types.CredentialPreAuthKey, cutoff).
-			Where("id NOT IN (SELECT auth_key_id FROM nodes WHERE auth_key_id IS NOT NULL)").
+			Where("id NOT IN (?)", keysInUse(tx)).
 			Pluck("id", &ids).Error
 		if err != nil {
 			return err
@@ -522,4 +522,12 @@ func ExpirePreAuthKey(tx *gorm.DB, id uint64) error {
 	}
 
 	return nil
+}
+
+// keysInUse is the subquery of the auth_key_id values of tx's tailnet's
+// nodes. A GORM subquery, so tenantscope confines it to the scope like the
+// statement it is used in (P12c A2: a raw "SELECT … FROM nodes" in a
+// condition would read every tenant's nodes).
+func keysInUse(tx *gorm.DB) *gorm.DB {
+	return tx.Model(&types.Node{}).Select("auth_key_id").Where("auth_key_id IS NOT NULL")
 }

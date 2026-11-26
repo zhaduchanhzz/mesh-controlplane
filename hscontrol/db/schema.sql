@@ -276,3 +276,31 @@ CREATE TABLE tailnet_moves(
 );
 CREATE UNIQUE INDEX idx_tailnet_moves_open ON tailnet_moves(tailnet_id) WHERE state IN ('SCHEDULED','REQUESTED');
 CREATE INDEX idx_tailnet_moves_due ON tailnet_moves(state, scheduled_at);
+
+-- tailnet_id of a tenant row never changes (P12c A8): see
+-- hscontrol/db/tenant_immutable.go.
+CREATE TRIGGER trg_users_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON users
+WHEN NEW.tailnet_id IS NOT OLD.tailnet_id
+BEGIN
+  SELECT RAISE(ABORT, 'tailnet_id of a tenant row is immutable');
+END;
+CREATE TRIGGER trg_credentials_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON credentials
+WHEN NEW.tailnet_id IS NOT OLD.tailnet_id
+BEGIN
+  SELECT RAISE(ABORT, 'tailnet_id of a tenant row is immutable');
+END;
+CREATE TRIGGER trg_nodes_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON nodes
+WHEN NEW.tailnet_id IS NOT OLD.tailnet_id
+BEGIN
+  SELECT RAISE(ABORT, 'tailnet_id of a tenant row is immutable');
+END;
+CREATE TRIGGER trg_policies_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON policies
+WHEN NEW.tailnet_id IS NOT OLD.tailnet_id
+BEGIN
+  SELECT RAISE(ABORT, 'tailnet_id of a tenant row is immutable');
+END;
+CREATE TRIGGER trg_tailnet_settings_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON tailnet_settings
+WHEN NEW.tailnet_id IS NOT OLD.tailnet_id
+BEGIN
+  SELECT RAISE(ABORT, 'tailnet_id of a tenant row is immutable');
+END;

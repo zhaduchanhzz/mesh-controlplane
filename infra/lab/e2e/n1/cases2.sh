@@ -95,24 +95,71 @@ tailnet_updates() { # ACTIVE_NODE TAILNET_ID
   on "$1" "curl -s -m 3 http://127.0.0.1:9095/metrics" 2>/dev/null \
     | awk -v t="$2" '$0 ~ "^headscale_tailnet_mapresponses_sent_total\\{" && index($0,"tailnet=\""t"\"") && index($0,"type=\"update\"") {s+=$2} END {printf "%d", s}'
 }
-t_s12() {
-  local p="" act tb u0 u1 i
-  act=$(active_of c1); tb=$(cat "$TMPD/id-b" 2>/dev/null)
-  # Baseline only once B is quiet: B's own late events (b2 back online after
-  # S10, endpoint updates) must not be counted against A (run at 3ad5743).
-  local prev=-1; u0=$(tailnet_updates "$act" "$tb")
-  for i in $(seq 1 10); do [ "$u0" = "$prev" ] && break; prev=$u0; sleep 4; u0=$(tailnet_updates "$act" "$tb"); done
-  printf 'S12 B baseline %s after %d reads\n' "$u0" "$i" >>"$ART_DIR/timings.txt"
-  for i in 1 2 3; do
-    TS $A2 "set --advertise-routes=10.98.$i.0/24" >/dev/null 2>&1; sleep 1
-    TS $A2 down >/dev/null 2>&1; sleep 1; TS $A2 up >/dev/null 2>&1; sleep 2
+# S12 diagnostics (P12c, runs e9e10fc/b43d6c7): every netmap b1 and b2
+# receive (tailscale debug watch-ipn --netmap, one timestamped line per output
+# line, redacted) and B's frame counter once a second, across the control
+# window and A's activity, plus a timestamped mark for each step. A frame for
+# B can then be attributed: a change inside B (endpoints, online, last seen),
+# the periodic full map of the incremental netmap, or A.
+s12_diag_start() { # ATTEMPT ACTIVE_NODE TAILNET_ID
+  local ip
+  for ip in $B1 $B2; do
+    vm $ip "cat >/tmp/n1-s12w.sh" <<EOF
+T=/opt/tailscale/$V/tailscale; f=; \$T debug watch-ipn --help 2>&1 | grep -q -- '-netmap' && f=--netmap
+\$T --socket=$TSS debug watch-ipn \$f 2>&1 | while IFS= read -r l; do printf '%s %s\n' "\$(date -u +%T.%3N)" "\$l"; done > /tmp/n1-s12w.log
+EOF
+    vm $ip "sudo systemctl stop n1-s12w 2>/dev/null; sudo systemctl reset-failed n1-s12w 2>/dev/null; sudo rm -f /tmp/n1-s12w.log; sudo systemd-run --quiet --collect --unit=n1-s12w -p RuntimeMaxSec=240 bash /tmp/n1-s12w.sh" || true
   done
-  TS $A2 "set --advertise-routes=" >/dev/null 2>&1; sleep 3
-  u1=$(tailnet_updates "$act" "$tb")
-  grep -qE 'n1-a[12]' <<<"$(ts_json $B1)$(netmap $B1)" && p="$p; B saw an A node"
-  [ -n "$tb" ] && [ "$u0" = "$u1" ] || p="$p; B update frames $u0 -> $u1 (tailnet id [$tb])"
+  rm -f "$TMPD/s12-stop"
+  ( while [ ! -e "$TMPD/s12-stop" ]; do printf '%s %s\n' "$(date -u +%T)" "$(tailnet_updates "$2" "$3")"; sleep 1; done ) >"$ART_DIR/logs/S12-$1-counter.log" 2>&1 &
+  S12_CNT_PID=$!
+}
+s12_diag_stop() { # ATTEMPT
+  local ip
+  touch "$TMPD/s12-stop"; wait "$S12_CNT_PID" 2>/dev/null; rm -f "$TMPD/s12-stop"
+  for ip in $B1 $B2; do
+    vm $ip "sudo systemctl stop n1-s12w 2>/dev/null; sudo cat /tmp/n1-s12w.log 2>/dev/null; sudo rm -f /tmp/n1-s12w.log /tmp/n1-s12w.sh" 2>/dev/null | redact >"$ART_DIR/logs/S12-$1-watch-$ip.log"
+  done
+}
+s12_mark() { printf '%s %s\n' "$(date -u +%T.%3N)" "$*" >>"$ART_DIR/logs/S12-marks.log"; }
+t_s12() {
+  local p="" act tb u0 u1 c0 c1 i prev same=0 t0 ta dt=70 allowed
+  act=$(active_of c1); tb=$(cat "$TMPD/id-b" 2>/dev/null)
+  # B's own clients send periodic updates (on 1.104.7 a frame for B about
+  # every 60 s, with the incremental netmap reconcile and full-map refresh
+  # set to 1 h in N1: runs e9e10fc, b43d6c7, f4ea6d4), so "no frame for B
+  # while A is busy" depends on timing. Instead:
+  #   1. B quiet: 3 equal reads 5 s apart (b2 reconnected in S10);
+  #   2. control window of 70 s (longer than B's own period) without any A
+  #      activity: B's own frame rate;
+  #   3. A's activity (3 rounds: route change, down, up): B may get at most
+  #      the frames its own rate explains, ceil(control * activity / 70);
+  #      a leak of A's changes adds at least one frame per round;
+  #   4. B never names an A node; every notification b1/b2 receive in both
+  #      windows is kept (tailscale debug watch-ipn) as evidence.
+  prev=-1; u0=$(tailnet_updates "$act" "$tb")
+  for i in $(seq 1 12); do
+    if [ "$u0" = "$prev" ]; then same=$((same + 1)); else same=0; fi
+    [ "$same" -ge 2 ] && break
+    prev=$u0; sleep 5; u0=$(tailnet_updates "$act" "$tb")
+  done
+  s12_diag_start 1 "$act" "$tb"; s12_mark "control window start (B at $u0)"
+  c0=$u0; sleep $dt; c1=$(tailnet_updates "$act" "$tb"); s12_mark "control window end (B at $c1)"
+  t0=$(date +%s); u0=$c1
+  for i in 1 2 3; do
+    s12_mark "A: a2 advertise 10.98.$i.0/24"; TS $A2 "set --advertise-routes=10.98.$i.0/24" >/dev/null 2>&1; sleep 1
+    s12_mark "A: a2 down"; TS $A2 down >/dev/null 2>&1; sleep 1; s12_mark "A: a2 up"; TS $A2 up >/dev/null 2>&1; sleep 2
+  done
+  s12_mark "A: a2 advertise none"; TS $A2 "set --advertise-routes=" >/dev/null 2>&1; sleep 3
+  u1=$(tailnet_updates "$act" "$tb"); ta=$(( $(date +%s) - t0 )); s12_mark "A activity end (B at $u1)"; s12_diag_stop 1
+  allowed=$(( ((c1 - c0) * ta + dt - 1) / dt ))
+  printf 'S12: B quiet at %s after %d reads; control %ds: %s -> %s (%d frames); A activity %ds: %s -> %s (%d frames, allowed %d)\n' \
+    "$c0" "$i" "$dt" "$c0" "$c1" $((c1 - c0)) "$ta" "$u0" "$u1" $((u1 - u0)) "$allowed" >>"$ART_DIR/timings.txt"
+  [ -n "$tb" ] || p="$p; no tailnet id for B"
+  grep -qE 'n1-a[12]' <<<"$(ts_json $B1)$(netmap $B1)$(cat "$ART_DIR"/logs/S12-1-watch-*.log 2>/dev/null)" && p="$p; B saw an A node"
+  [ $((u1 - u0)) -le "$allowed" ] || p="$p; B got $((u1 - u0)) frames during ${ta}s of A activity, its own rate allows $allowed ($((c1 - c0)) in ${dt}s; tailnet id [$tb])"
   wait_peers $A1 n1-a2 30 || p="$p; a1 lost a2"
-  [ -z "$p" ] && record S12 PASS "3 rounds of A activity: B's update frames unchanged ($u0), B never named an A node" || record S12 FAIL "${p#; }"
+  [ -z "$p" ] && record S12 PASS "3 rounds of A activity: B got $((u1 - u0)) frames in ${ta}s, within its own rate ($((c1 - c0)) in a ${dt}s control window); B never named an A node (watch-ipn logs kept)" || record S12 FAIL "${p#; }"
 }
 
 t_s14() {

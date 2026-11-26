@@ -182,7 +182,7 @@ func openDB(tb testing.TB) *gorm.DB {
 		tb.Fatal(err)
 	}
 
-	err = Register(db)
+	err = Register(db, "items", "owners")
 	if err != nil {
 		tb.Fatal(err)
 	}
