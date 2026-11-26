@@ -95,7 +95,7 @@ func newPostgresDBFromDSN(t *testing.T, dsn string) *url.URL {
 
 	kv := map[string]string{}
 
-	for _, f := range strings.Fields(dsn) {
+	for f := range strings.FieldsSeq(dsn) {
 		k, v, ok := strings.Cut(f, "=")
 		if !ok {
 			t.Fatalf("MESH_TEST_POSTGRES_DSN: want key=value fields, got %q", k)

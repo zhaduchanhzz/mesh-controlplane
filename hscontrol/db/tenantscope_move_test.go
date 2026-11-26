@@ -81,7 +81,7 @@ func TestUpdateCannotMoveRowToAnotherTailnet(t *testing.T) {
 
 			for _, m := range moves {
 				id := m.row()
-				assert.Error(t, m.run(id), "%s on %s under A must be refused", m.name, m.table)
+				require.Error(t, m.run(id), "%s on %s under A must be refused", m.name, m.table)
 				assert.Equal(t, idA, tt.rawTailnetOf(t, m.table, id), "%s on %s: the row stays in A", m.name, m.table)
 			}
 

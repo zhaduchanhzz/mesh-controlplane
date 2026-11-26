@@ -20,8 +20,10 @@ func TestTailnetMovesDDLInSchemaFilesAndInChain(t *testing.T) {
 
 	// P12c A8 appended 202611261200-tenant-id-immutable after it: committed
 	// migrations keep their place, new ones go after them.
-	var ids []string
-	for _, m := range v01Migrations() {
+	chain := v01Migrations()
+
+	ids := make([]string, 0, len(chain))
+	for _, m := range chain {
 		ids = append(ids, m.ID)
 	}
 

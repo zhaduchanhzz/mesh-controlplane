@@ -95,36 +95,42 @@ func TestTenantTableWithoutSchemaIsRefused(t *testing.T) {
 			}{
 				{"Table(nodes).Find(dto)", func() (int, error) {
 					var out []nodeDTO
+
 					err := a.Table("nodes").Find(&out).Error
 
 					return len(out), err
 				}},
 				{"Table(nodes AS n).Find(dto)", func() (int, error) {
 					var out []nodeDTO
+
 					err := a.Table("nodes AS n").Find(&out).Error
 
 					return len(out), err
 				}},
 				{"Table(schema.nodes).Find(dto)", func() (int, error) {
 					var out []nodeDTO
+
 					err := a.Table(qualified).Find(&out).Error
 
 					return len(out), err
 				}},
 				{"Find(model without TailnetID, TableName nodes)", func() (int, error) {
 					var out []nodeRow
+
 					err := a.Find(&out).Error
 
 					return len(out), err
 				}},
 				{"Table(users).Pluck", func() (int, error) {
 					var out []string
+
 					err := a.Table("users").Pluck("name", &out).Error
 
 					return len(out), err
 				}},
 				{"Model(Tailnet).Joins(JOIN nodes).Scan", func() (int, error) {
 					var out []string
+
 					err := a.Model(&types.Tailnet{}).Joins("JOIN nodes ON nodes.tailnet_id = tailnets.id").
 						Select("nodes.hostname").Scan(&out).Error
 
@@ -132,6 +138,7 @@ func TestTenantTableWithoutSchemaIsRefused(t *testing.T) {
 				}},
 				{"Model(Tailnet).Where(subquery on nodes)", func() (int, error) {
 					var out []types.Tailnet
+
 					err := a.Model(&types.Tailnet{}).
 						Where("id IN (SELECT tailnet_id FROM nodes WHERE hostname = ?)", "laptop").Find(&out).Error
 
@@ -139,6 +146,7 @@ func TestTenantTableWithoutSchemaIsRefused(t *testing.T) {
 				}},
 				{"Model(Node).Select(subquery on credentials)", func() (int, error) {
 					var out []int64
+
 					err := a.Model(&types.Node{}).Select("(SELECT count(*) FROM credentials)").Scan(&out).Error
 
 					return len(out), err
@@ -147,21 +155,21 @@ func TestTenantTableWithoutSchemaIsRefused(t *testing.T) {
 
 			for _, r := range reads {
 				n, err := r.run()
-				assert.Error(t, err, "%s under A must be refused, read %d rows", r.name, n)
+				require.Error(t, err, "%s under A must be refused, read %d rows", r.name, n)
 				assert.Zero(t, n, "%s returned rows", r.name)
 			}
 
 			err := a.Table("credentials").Create(map[string]any{
 				"tailnet_id": tt.idB.String(), "kind": "api", "identifier": "smuggled", "hash": []byte("$x"),
 			}).Error
-			assert.Error(t, err, "Table(credentials).Create(map) under A must be refused")
+			require.Error(t, err, "Table(credentials).Create(map) under A must be refused")
 			assert.Zero(t, tt.count(t, tt.b, &types.Credential{}, "identifier = ?", "smuggled"), "nothing inserted into B")
 
 			err = a.Table("nodes").Where("hostname = ?", "laptop").Updates(map[string]any{"hostname": "pwned"}).Error
-			assert.Error(t, err, "Table(nodes).Updates(map) under A must be refused")
+			require.Error(t, err, "Table(nodes).Updates(map) under A must be refused")
 
 			err = a.Table("nodes").Where("hostname = ?", "laptop").Delete(&nodeDTO{}).Error
-			assert.Error(t, err, "Table(nodes).Delete(dto) under A must be refused")
+			require.Error(t, err, "Table(nodes).Delete(dto) under A must be refused")
 
 			assert.Equal(t, tt.nodesB, tt.count(t, tt.b, &types.Node{}, "hostname = ?", "laptop"), "B's nodes unchanged")
 			assert.EqualValues(t, 1, tt.count(t, tt.a, &types.Node{}, "hostname = ?", "laptop"), "A's nodes unchanged")

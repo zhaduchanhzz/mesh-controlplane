@@ -82,7 +82,7 @@ func TestUnconfinedTenantTableRefused(t *testing.T) {
 	refused := map[string]error{
 		"Table(items)":            dbA.Table("items").Find(&out).Error,
 		"Table(items i)":          dbA.Table("items i").Find(&out).Error,
-		"Table((?) x) with items": dbA.Table("(SELECT * FROM items) x").Find(&out).Error,
+		"Table((?) x) with items": dbA.Table("(SELECT id, name FROM items) x").Find(&out).Error,
 		"Model(global).Joins":     dbA.Model(&global{}).Joins("JOIN items ON 1 = 1").Find(&out).Error,
 		"Model(global).Where":     dbA.Model(&global{}).Where("EXISTS (SELECT 1 FROM items)").Find(&out).Error,
 		"Model(item).Order":       dbA.Model(&item{}).Order("(SELECT max(name) FROM owners)").Find(&out).Error,

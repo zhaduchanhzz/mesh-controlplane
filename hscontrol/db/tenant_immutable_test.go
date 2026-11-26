@@ -60,7 +60,7 @@ func TestTailnetIDImmutableInDatabase(t *testing.T) {
 
 			for table, where := range rows {
 				err := tt.p.db.Exec(`UPDATE `+table+` SET tailnet_id = ? WHERE `+where, tt.idB.String()).Error
-				assert.Error(t, err, "raw UPDATE %s SET tailnet_id = B must fail", table)
+				require.Error(t, err, "raw UPDATE %s SET tailnet_id = B must fail", table)
 
 				var got string
 				require.NoError(t, tt.p.db.Raw(`SELECT tailnet_id FROM `+table+` WHERE `+where).Scan(&got).Error)

@@ -6,9 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"tailscale.com/types/netmap"
-
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
+	"tailscale.com/types/netmap"
 )
 
 // P12c A6 (AGENTS rule 8): an operator empties the policy of a tailnet that

@@ -179,7 +179,7 @@ func introspectPostgres(t *testing.T, db *gorm.DB) schemaInfo {
 		for _, ix := range idx {
 			if ix.Primary {
 				tbl.pk = ix.Cols
-				for _, c := range strings.Split(ix.Cols, ",") {
+				for c := range strings.SplitSeq(ix.Cols, ",") {
 					col := tbl.columns[c]
 					col.pk = true
 					tbl.columns[c] = col

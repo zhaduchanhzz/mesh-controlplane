@@ -180,8 +180,8 @@ func (s *rawSQLScanner) load(t *testing.T, root string) {
 // "=" in a closure changes the variable of the enclosing function.
 type rawSQLScope struct {
 	parent  *rawSQLScope
-	defined map[string]bool        // := , var, parameters, range variables
-	opaque  map[string]bool        // assigned something the guard cannot follow
+	defined map[string]bool       // := , var, parameters, range variables
+	opaque  map[string]bool       // assigned something the guard cannot follow
 	locals  map[string][]ast.Expr // values assigned
 }
 
@@ -548,6 +548,7 @@ func (s *rawSQLScanner) statements(t *testing.T) []rawSQLStatement {
 						}
 
 						var b strings.Builder
+
 						_ = printer.Fprint(&b, s.fset, arg)
 						norm := rawSQLExprPrefix + fd.Name.Name + ": " + rawSQLNormalize(b.String())
 						out = append(out, rawSQLStatement{file: rel, pos: pos, sql: norm, hash: rawSQLHash(norm)})
@@ -718,8 +719,10 @@ func h(db *gorm.DB) {
 	s := &rawSQLScanner{fset: token.NewFileSet(), pkgs: map[string]*rawSQLPackage{}}
 	s.load(t, dir)
 
-	var got []string
-	for _, st := range s.statements(t) {
+	found := s.statements(t)
+
+	got := make([]string, 0, len(found))
+	for _, st := range found {
 		got = append(got, st.sql)
 	}
 

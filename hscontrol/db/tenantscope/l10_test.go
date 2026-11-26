@@ -12,6 +12,8 @@ import (
 // no condition for them, so the DELETE would hit every row of the tenant),
 // and a batch create from maps is stamped like a single map.
 
+var errCreatePanicked = errors.New("create panicked")
+
 func TestDeleteSliceWithoutKeysRefused(t *testing.T) {
 	db := openDB(t)
 	dbA := db.WithContext(ctxFor(t, idA))
@@ -54,14 +56,21 @@ func TestCreateFromMapsStamped(t *testing.T) {
 
 	// Built, not run: GORM itself cannot scan the returned keys of a batch
 	// of maps into the maps; what matters here is how the plugin stamps it.
-	create := func(rows []map[string]any) (stmt *gorm.Statement, err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("panic: %v", r)
-			}
+	create := func(rows []map[string]any) (*gorm.Statement, error) {
+		var (
+			tx        *gorm.DB
+			recovered any
+		)
+
+		func() {
+			defer func() { recovered = recover() }()
+
+			tx = dbA.Session(&gorm.Session{DryRun: true}).Model(&item{}).Create(rows)
 		}()
 
-		tx := dbA.Session(&gorm.Session{DryRun: true}).Model(&item{}).Create(rows)
+		if recovered != nil {
+			return nil, fmt.Errorf("%w: %v", errCreatePanicked, recovered)
+		}
 
 		return tx.Statement, tx.Error
 	}
