@@ -250,9 +250,30 @@ type Result struct {
 	EndMS   int64  `json:"end_ms"`
 	OK      bool   `json:"ok"`
 	Error   string `json:"error,omitempty"`
-	// OutputTail is the redacted end of the command's output.
+	// OutputTail is the redacted end of the command's output (last attempt).
 	OutputTail string `json:"output_tail,omitempty"`
+	// Attempts is how often the command ran; EarlierFailures holds the
+	// redacted end of each failed attempt before the last one.
+	Attempts        int      `json:"attempts"`
+	EarlierFailures []string `json:"earlier_failures,omitempty"`
 }
+
+// Retry bounds how often a failed target is run again (owner decision
+// 2026-11-26: the target cluster loads a handed-over tailnet up to one
+// reconcile interval after bootstrap already names it, and a login in that
+// window is refused; a retry after at least that interval succeeds).
+type Retry struct {
+	// Attempts is the total number of runs per target; below 1 means 1.
+	Attempts int
+	// Delay is the wait before each further attempt. The target gives its
+	// concurrency slot back while it waits.
+	Delay time.Duration
+	// Sleep replaces the wait in tests; nil sleeps for real.
+	Sleep func(context.Context, time.Duration) error
+}
+
+// maxEarlier bounds the output kept per earlier failed attempt.
+const maxEarlier = 256
 
 // Summary is the measured run (owner decision Q7: t50/t90/t100).
 type Summary struct {
@@ -264,6 +285,8 @@ type Summary struct {
 	Concurrency int       `json:"concurrency"`
 	OK          int       `json:"ok"`
 	Failed      int       `json:"failed"`
+	// Retried counts the targets that needed more than one attempt.
+	Retried int `json:"retried"`
 	// T50MS, T90MS, T100MS: time from the start of the run until 50 / 90 /
 	// 100 % of all targets had re-logged; -1 when that share never did.
 	T50MS   int64    `json:"t50_ms"`
@@ -290,39 +313,89 @@ func tail(b []byte) string {
 	return Redact(string(b))
 }
 
+// earlier is the redacted record of a failed attempt that is retried: the
+// end of its output, or its error when it printed nothing. Redaction runs
+// before the cut so a key split at the cut is never kept.
+func earlier(out []byte, err error) string {
+	s := Redact(string(out))
+	if strings.TrimSpace(s) == "" {
+		s = Redact(err.Error())
+	}
+
+	if len(s) > maxEarlier {
+		s = s[len(s)-maxEarlier:]
+	}
+
+	return s
+}
+
 // Run runs run for every target, at most concurrency at a time, each
-// bounded by perTarget, and measures when each one finished.
-func Run(ctx context.Context, loginServer string, targets []string, concurrency int, perTarget time.Duration, run Runner) Summary {
+// attempt bounded by perTarget, a failed target again as retry allows, and
+// measures when each one finished.
+func Run(ctx context.Context, loginServer string, targets []string, concurrency int, perTarget time.Duration, retry Retry, run Runner) Summary {
 	if concurrency < 1 {
 		concurrency = 1
+	}
+
+	attempts := max(retry.Attempts, 1)
+
+	sleep := retry.Sleep
+	if sleep == nil {
+		sleep = sleepCtx
 	}
 
 	start := time.Now()
 	results := make([]Result, len(targets))
 	sem := make(chan struct{}, concurrency)
 
+	// once runs one attempt in a concurrency slot; startMS is when it got one.
+	once := func(target string) (int64, []byte, error) {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+
+		startMS := time.Since(start).Milliseconds()
+
+		tctx, cancel := context.WithTimeout(ctx, perTarget)
+		defer cancel()
+
+		out, err := run(tctx, target, loginServer)
+
+		return startMS, out, err
+	}
+
 	var wg sync.WaitGroup
 
 	for i, target := range targets {
 		wg.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			res := Result{Target: target}
 
-			res := Result{Target: target, StartMS: time.Since(start).Milliseconds()}
+			for n := 1; ; n++ {
+				startMS, out, err := once(target)
+				if n == 1 {
+					res.StartMS = startMS
+				}
 
-			tctx, cancel := context.WithTimeout(ctx, perTarget)
-			out, err := run(tctx, target, loginServer)
+				res.Attempts = n
+				res.OK = err == nil
+				res.OutputTail = tail(out)
+				res.Error = ""
 
-			cancel()
+				if err != nil {
+					res.Error = Redact(err.Error())
+				}
 
-			res.EndMS = time.Since(start).Milliseconds()
-			res.OK = err == nil
-			res.OutputTail = tail(out)
+				if err == nil || n >= attempts || ctx.Err() != nil {
+					break
+				}
 
-			if err != nil {
-				res.Error = Redact(err.Error())
+				res.EarlierFailures = append(res.EarlierFailures, earlier(out, err))
+
+				if sleep(ctx, retry.Delay) != nil {
+					break
+				}
 			}
 
+			res.EndMS = time.Since(start).Milliseconds()
 			results[i] = res
 		})
 	}
@@ -344,6 +417,10 @@ func Summarize(loginServer string, concurrency int, results []Result) Summary {
 	var done []int64
 
 	for _, r := range results {
+		if r.Attempts > 1 {
+			s.Retried++
+		}
+
 		if r.OK {
 			s.OK++
 

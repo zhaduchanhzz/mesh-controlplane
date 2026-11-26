@@ -32,7 +32,7 @@ ping)
 rb-docker)
   d=$2 s=$3 boot=$4 from=$5 par=$6
   "$d/mesh-rebootstrap" -bootstrap "$boot" -authkey-file "$d/key-$s" -tenant "$s" \
-    -targets "$d/targets-$s" -concurrency "$par" -timeout 120s -max-wait 5m -poll 1s \
+    -targets "$d/targets-$s" -concurrency "$par" -timeout 120s -max-wait 5m -poll 1s -attempts 3 -retry-delay 2s \
     -from "$from" -out "$d/rb-$s.json" \
     -cmd "docker exec -i {target} timeout 100 tailscale up --login-server={login_server} --auth-key=file:/dev/stdin --hostname={target} --force-reauth <$d/key-$s" \
     >"$d/rb-$s.log" 2>&1
@@ -43,7 +43,7 @@ rb-vm)
   h=$(hostname -s)-p12b
   echo local >"$d/targets"
   "$rb" -bootstrap "$boot" -authkey-file "$d/key" -tenant "$s" \
-    -targets "$d/targets" -concurrency 1 -timeout 120s -max-wait 5m -poll 1s \
+    -targets "$d/targets" -concurrency 1 -timeout 120s -max-wait 5m -poll 1s -attempts 3 -retry-delay 2s \
     -from "$from" -out "$d/rb.json" \
     -cmd "timeout 100 /opt/tailscale/$ver/tailscale --socket=$d/tailscaled.sock up --login-server={login_server} --auth-key=file:$d/key --hostname=$h --accept-dns=false --netfilter-mode=off --force-reauth" \
     >"$d/rb.log" 2>&1

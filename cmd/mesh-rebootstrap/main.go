@@ -59,6 +59,8 @@ func main() {
 		dryRun      = flag.Bool("dry-run", false, "resolve and print the commands, run nothing")
 		fromURL     = flag.String("from", "", "control URL before the move: wait until bootstrap gives another one")
 		poll        = flag.Duration("poll", 2*time.Second, "longest wait between bootstrap polls")
+		attempts    = flag.Int("attempts", 3, "runs per target at most (a login right after the hand-over can be refused until the target cluster has loaded the tailnet)")
+		retryDelay  = flag.Duration("retry-delay", 2*time.Second, "wait before running a failed target again (at least the clusters' reconcile interval)")
 	)
 
 	flag.Parse()
@@ -66,7 +68,7 @@ func main() {
 	opts := options{
 		boot: *boot, keyFile: *keyFile, tenant: *tenant, caFile: *caFile, targetsFile: *targetsFile, cmdTmpl: *cmdTmpl,
 		concurrency: *concurrency, perTarget: *perTarget, maxWait: *maxWait, out: *out, dryRun: *dryRun,
-		fromURL: *fromURL, poll: *poll,
+		fromURL: *fromURL, poll: *poll, attempts: *attempts, retryDelay: *retryDelay,
 	}
 
 	if err := run(opts); err != nil { //nolint:noinlineerr
@@ -76,8 +78,8 @@ func main() {
 
 type options struct {
 	boot, keyFile, tenant, caFile, targetsFile, cmdTmpl string
-	concurrency                                         int
-	perTarget, maxWait, poll                            time.Duration
+	concurrency, attempts                               int
+	perTarget, maxWait, poll, retryDelay                time.Duration
 	out, fromURL                                        string
 	dryRun                                              bool
 }
@@ -157,8 +159,9 @@ func run(o options) error {
 		return c.CombinedOutput()
 	}
 
-	sum := rebootstrap.Run(ctx, login, targets, concurrency, perTarget, runner)
-	log.Printf("done: %d ok, %d failed; t50=%dms t90=%dms t100=%dms", sum.OK, sum.Failed, sum.T50MS, sum.T90MS, sum.T100MS)
+	retry := rebootstrap.Retry{Attempts: o.attempts, Delay: o.retryDelay}
+	sum := rebootstrap.Run(ctx, login, targets, concurrency, perTarget, retry, runner)
+	log.Printf("done: %d ok, %d failed, %d retried; t50=%dms t90=%dms t100=%dms", sum.OK, sum.Failed, sum.Retried, sum.T50MS, sum.T90MS, sum.T100MS)
 
 	b, err := json.MarshalIndent(sum, "", "  ")
 	if err != nil {

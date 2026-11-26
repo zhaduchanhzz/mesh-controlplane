@@ -669,8 +669,17 @@ iso=lambda v: datetime.datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", v).
 d=json.load(open(sys.argv[1], encoding="utf-8")); at=iso(sys.argv[2]); st=iso(d["started_at"])
 off=int((st-at).total_seconds()*1000)
 f=lambda v: v if v<0 else v+off
-print("ok=%d failed=%d t50=%d t90=%d t100=%d ms (from run start); from scheduled_at: t50=%d t90=%d t100=%d ms" % (d["ok"],d["failed"],d["t50_ms"],d["t90_ms"],d["t100_ms"],f(d["t50_ms"]),f(d["t90_ms"]),f(d["t100_ms"])))' \
+print("ok=%d failed=%d retried=%d t50=%d t90=%d t100=%d ms (from run start); from scheduled_at: t50=%d t90=%d t100=%d ms" % (d["ok"],d["failed"],d.get("retried",0),d["t50_ms"],d["t90_ms"],d["t100_ms"],f(d["t50_ms"]),f(d["t90_ms"]),f(d["t100_ms"])))' \
     "$ART_DIR/logs/rebootstrap-$s.json" "$at" 2>/dev/null | strip_cr)
+  # Retried targets (owner decision 2026-11-26: mesh-rebootstrap runs a target
+  # again when its login came before the target cluster loaded the tailnet).
+  py 'import json,sys
+d=json.load(open(sys.argv[1], encoding="utf-8"))
+for x in d.get("results") or []:
+    if x.get("attempts", 1) > 1:
+        why = " | ".join(sorted({(e.strip().splitlines() or ["-"])[-1] for e in x.get("earlier_failures") or []}))
+        print("M04 %s retried %s: attempts=%d ok=%s start=%dms end=%dms earlier: %s" % (sys.argv[2], x["target"], x["attempts"], x["ok"], x["start_ms"], x["end_ms"], why))' \
+    "$ART_DIR/logs/rebootstrap-$s.json" "$s" 2>/dev/null | tr -d '\r' >>"$ART_DIR/timings.txt"
   printf 'M04 %s %s N=%d PAR=%d: %s; ping gap %s ms (failed/samples %s); manual interventions %d%s\n' \
     "$s" "$ver" "$N" "$PAR" "$tt" "${gap%% *}" "${gap#* }" "$manual" "${stuck:+ (debug restun:$stuck)}" >>"$ART_DIR/timings.txt"
   [ -z "$p" ] && record "M04.$r" PASS "$ver: $N clients re-bootstrapped $PAR at a time: $tt; all Running at $to, same node IDs and IPs (nodes kept), $a sees $((want - 1)) peers, notice gone; ping gap ${gap%% *} ms; manual interventions $manual${stuck:+ (owner decision (a): debug restun of$stuck)}" \

@@ -149,7 +149,7 @@ func TestRunBoundsConcurrencyAndMeasures(t *testing.T) {
 		return []byte("ok " + login), nil
 	}
 
-	s := Run(context.Background(), "https://c2.example:8443", targets, 8, time.Second, run)
+	s := Run(context.Background(), "https://c2.example:8443", targets, 8, time.Second, Retry{}, run)
 
 	assert.LessOrEqual(t, peak.Load(), int32(8))
 	assert.Equal(t, 20, s.Targets)
@@ -176,9 +176,137 @@ func TestRunPerTargetTimeout(t *testing.T) {
 		return nil, ctx.Err()
 	}
 
-	s := Run(context.Background(), "https://c2", []string{"slow"}, 1, 50*time.Millisecond, run)
+	s := Run(context.Background(), "https://c2", []string{"slow"}, 1, 50*time.Millisecond, Retry{}, run)
 	assert.Equal(t, 1, s.Failed)
 	assert.Contains(t, s.Results[0].Error, "deadline")
+}
+
+// P12b E2E M04.1 (2026-11-26): bootstrap names the target cluster as soon
+// as the source hands over, but the target loads the tailnet up to one
+// reconcile interval later; a login in that window gets "invalid pre auth
+// key". The first batch must be run again, and the summary says so.
+func TestRunRetriesTargetsRefusedBeforeTheTargetLoaded(t *testing.T) {
+	var loaded atomic.Bool
+
+	var calls atomic.Int32
+
+	run := func(_ context.Context, target, _ string) ([]byte, error) {
+		calls.Add(1)
+
+		if !loaded.Load() {
+			return []byte("backend error: invalid pre auth key " + testKey + "\n"), errExit1
+		}
+
+		return []byte("ok " + target), nil
+	}
+
+	var slept []time.Duration
+
+	retry := Retry{Attempts: 3, Delay: 2 * time.Second, Sleep: func(_ context.Context, d time.Duration) error {
+		slept = append(slept, d)
+		loaded.Store(true) // the target cluster loads the tailnet meanwhile
+
+		return nil
+	}}
+
+	s := Run(context.Background(), "https://c2", []string{"a"}, 1, time.Second, retry, run)
+	require.Len(t, s.Results, 1)
+
+	r := s.Results[0]
+	assert.True(t, r.OK)
+	assert.Equal(t, 2, r.Attempts)
+	assert.Equal(t, 1, s.OK)
+	assert.Equal(t, 0, s.Failed)
+	assert.Equal(t, 1, s.Retried)
+	assert.Equal(t, []time.Duration{2 * time.Second}, slept)
+	assert.EqualValues(t, 2, calls.Load())
+	require.Len(t, r.EarlierFailures, 1)
+	assert.Contains(t, r.EarlierFailures[0], "invalid pre auth key")
+	assert.NotContains(t, r.EarlierFailures[0], testSecret, "earlier failures are redacted")
+	assert.Empty(t, r.Error, "the last attempt decides the outcome")
+}
+
+func TestRunGivesUpAfterAttempts(t *testing.T) {
+	var calls atomic.Int32
+
+	run := func(context.Context, string, string) ([]byte, error) {
+		calls.Add(1)
+
+		return nil, errExit1
+	}
+
+	noSleep := func(context.Context, time.Duration) error { return nil }
+
+	s := Run(context.Background(), "https://c2", []string{"a", "b"}, 2, time.Second, Retry{Attempts: 3, Sleep: noSleep}, run)
+	assert.EqualValues(t, 6, calls.Load())
+	assert.Equal(t, 2, s.Failed)
+	assert.Equal(t, 2, s.Retried)
+
+	for _, r := range s.Results {
+		assert.Equal(t, 3, r.Attempts)
+		assert.Equal(t, "exit status 1", r.Error)
+		assert.Equal(t, []string{"exit status 1", "exit status 1"}, r.EarlierFailures, "no output: the error is kept")
+	}
+
+	// Without a retry budget a target runs once.
+	calls.Store(0)
+	s = Run(context.Background(), "https://c2", []string{"a"}, 1, time.Second, Retry{}, run)
+	assert.EqualValues(t, 1, calls.Load())
+	assert.Equal(t, 1, s.Results[0].Attempts)
+	assert.Equal(t, 0, s.Retried)
+}
+
+// A cancelled run stops retrying at once.
+func TestRunStopsRetryingWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var calls atomic.Int32
+
+	run := func(context.Context, string, string) ([]byte, error) {
+		calls.Add(1)
+		cancel()
+
+		return nil, errExit1
+	}
+
+	s := Run(ctx, "https://c2", []string{"a"}, 1, time.Second, Retry{Attempts: 5, Delay: time.Hour}, run)
+	assert.EqualValues(t, 1, calls.Load())
+	assert.False(t, s.Results[0].OK)
+	assert.Equal(t, 1, s.Results[0].Attempts)
+}
+
+// While a target waits to retry it does not hold a concurrency slot (the
+// check bites when a runs first; if b does, the wait just ends at once).
+func TestRunRetryWaitFreesTheSlot(t *testing.T) {
+	var first atomic.Bool
+
+	release := make(chan struct{})
+
+	run := func(_ context.Context, target, _ string) ([]byte, error) {
+		if target == "a" && !first.Swap(true) {
+			return nil, errExit1
+		}
+
+		if target == "b" {
+			close(release) // b ran while a was waiting
+		}
+
+		return nil, nil
+	}
+
+	sleep := func(ctx context.Context, _ time.Duration) error {
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			return errors.New("b never ran while a waited")
+		}
+	}
+
+	s := Run(context.Background(), "https://c2", []string{"a", "b"}, 1, time.Second, Retry{Attempts: 2, Sleep: sleep}, run)
+	assert.Equal(t, 2, s.OK, "%+v", s.Results)
 }
 
 func TestSummarizePercentiles(t *testing.T) {
