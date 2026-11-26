@@ -499,12 +499,13 @@ func p14fDiff(t *testing.T, render func(types.NodeID, change.Change) (*tailcfg.M
 			g = gp.LoginName() + "|" + gp.DisplayName()
 		}
 
-		// Finding F2-1: with no peer, a policy change response carries no
-		// user profile, so a node tagged into having no peer never gets its
-		// own tagged identity's profile (TestClusterP14fSelfTagProfile).
-		// P14F_M07_SKIP_F2_1=1 skips exactly that case to look for other
+		// Findings F2-1 and F2-2 (evidence/P14f-f12.md): the profile of a
+		// tagged node's own identity is not sent when it has no peer
+		// (TestClusterP14fSelfTagProfile) nor refreshed when it is renamed
+		// (TestClusterP14fTaggedRenameProfile). P14F_M07_SKIP_SELF_PROFILE=1
+		// skips only the self node's own profile, to look for other
 		// differences; the default is strict.
-		if !ok && os.Getenv("P14F_M07_SKIP_F2_1") == "1" && full.Node != nil && id == full.Node.User && len(full.Peers) == 0 {
+		if os.Getenv("P14F_M07_SKIP_SELF_PROFILE") == "1" && full.Node != nil && id == full.Node.User {
 			continue
 		}
 
@@ -681,6 +682,53 @@ func TestClusterP14fSelfTagProfile(t *testing.T) {
 				return last == ""
 			})
 			require.True(t, ok, "tagged self node vs a fresh full map: %s", last)
+		})
+	}
+}
+
+// TestClusterP14fTaggedRenameProfile is M07's second finding (F2-2,
+// evidence/P14f-f12.md): a tagged node's own identity is named after the
+// node (mapper taggedSelfUserID), so renaming it must reach the node as a
+// new profile of that identity.
+func TestClusterP14fTaggedRenameProfile(t *testing.T) {
+	for _, off := range []bool{false, true} {
+		t.Run(fmt.Sprintf("incremental=%t", !off), func(t *testing.T) {
+			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{IncrementalNetmapOff: off},
+				servertest.TailnetSeed{Slug: tenantA})
+			srv := tc.Tenant(t, tenantA)
+			alice := srv.CreateUser(t, "alice")
+			tc.SetPolicy(t, tenantA, p14fPolicies[0])
+
+			k := srv.CreatePreAuthKey(t, types.UserID(alice.ID))
+			c1 := servertest.NewClusterClient(t, srv, "p14f-ren-1", servertest.ClusterClientOptions{AuthKey: k})
+			c2 := servertest.NewClusterClient(t, srv, "p14f-ren-2", servertest.ClusterClientOptions{AuthKey: k})
+			waitPeersExactly(t, c1, selfKey(t, c2))
+
+			nv, ok := srv.State().GetNodeByNodeKey(selfKey(t, c1))
+			require.True(t, ok)
+
+			rt := tc.Runtime(t, tenantA)
+			_, ch, err := srv.State().SetNodeTags(nv.ID(), []string{"tag:srv"})
+			require.NoError(t, err)
+			rt.Change(ch)
+
+			render := rt.MapBatcher().MapResponseFromChange
+
+			var last string
+
+			require.True(t, assertEventually(func() bool {
+				last = p14fDiff(t, render, c1.Netmap())
+				return last == ""
+			}), "after tagging: %s", last)
+
+			_, ch, err = srv.State().RenameNode(nv.ID(), "p14f-ren-renamed")
+			require.NoError(t, err)
+			rt.Change(ch)
+
+			require.True(t, assertEventually(func() bool {
+				last = p14fDiff(t, render, c1.Netmap())
+				return last == ""
+			}), "after renaming the tagged node: %s", last)
 		})
 	}
 }
