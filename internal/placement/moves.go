@@ -303,7 +303,14 @@ func (r *Registry) RunDueMoves(ctx context.Context, op Op) (RunReport, error) {
 
 		state, errText := r.requestMove(ctx, op, m)
 
-		_, err := mutate(ctx, r, op, "MoveDue", m.ID, map[string]any{"state": state, "error": errText},
+		// Test hook (P12c C2): a cancel that lands after the scheduler took
+		// the move as due, before its outcome is recorded.
+		err := r.step("move-due")
+		if err != nil {
+			return rep, err
+		}
+
+		_, err = mutate(ctx, r, op, "MoveDue", m.ID, map[string]any{"state": state, "error": errText},
 			func(tx *gorm.DB) (Move, string, error) {
 				out, err := r.setMoveState(tx, m, MoveScheduled, state, errText, r.now())
 
