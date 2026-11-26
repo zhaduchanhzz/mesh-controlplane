@@ -75,6 +75,22 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # P12c A5: the PostgreSQL tests (hscontrol/db, tenantscope, lease) run
+      # against a throwaway server built from the runner's preinstalled
+      # PostgreSQL binaries (the ones postgrestest also finds), on a unix
+      # socket with trust authentication: no password, no secret. With
+      # MESH_TEST_REQUIRE_POSTGRES the hscontrol/db tests fail instead of
+      # skipping when PostgreSQL is missing.
+      - name: start throwaway PostgreSQL
+        run: |
+          pgbin=$(find /usr/lib/postgresql -mindepth 2 -maxdepth 2 -name bin -type d | sort -V | tail -1)
+          pgdir="$RUNNER_TEMP/pg"
+          mkdir -p "$pgdir/sock"
+          "$pgbin/initdb" -D "$pgdir/data" -U ci --auth=trust >/dev/null
+          "$pgbin/pg_ctl" -D "$pgdir/data" -l "$pgdir/log" -w start \
+            -o "-k $pgdir/sock -c listen_addresses= -c max_connections=300"
+          echo "MESH_TEST_POSTGRES_DSN=host=$pgdir/sock port=5432 user=ci dbname=postgres sslmode=disable" >> "$GITHUB_ENV"
+          echo "MESH_TEST_REQUIRE_POSTGRES=1" >> "$GITHUB_ENV"
       - name: go test -race
         env:
           CGO_ENABLED: "1"
