@@ -18,7 +18,8 @@
 # S01, S02, S03, S11 (n1probe switch-tenant), S15 (relay region, relay path,
 # unknown key refused by derp-check). Batch 2 (cases2.sh): S07, S08, S10,
 # S12, S14, S16, S17, S18, M06. Batch 3 (cases3.sh): S04, S05, S06, S09, S13,
-# S13b (bootstrap flood; needs BOOT_BIN).
+# S13b (bootstrap flood; needs BOOT_BIN). Batch 4 (cases4.sh): S08b. Batch 5
+# (cases5.sh): S08c.0-.6 (P12d subnet routers through the tenant API only).
 #
 # Usage: MODE=off|on V=1.104.7|1.84.3 BIN=… PROBE_BIN=… BOOT_BIN=… infra/lab/e2e/n1/run.sh
 # Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
@@ -209,6 +210,8 @@ cleanup() {
   log "cleanup"
   local n ip
   binsrv_stop || { log "n1-binsrv not stopped"; CLEAN_OK=0; }
+  # S08c objects (router netns, LAN bridge, nft, ip_forward) left by an aborted run.
+  for ip in $A1 $A2 $B2; do s08c_vm_undo "$ip" >/dev/null 2>&1 || { log "$ip: S08c objects not removed"; CLEAN_OK=0; }; done
   for ip in $A1 $A2 $B1 $B2; do
     vm "$ip" "sudo journalctl -u $TSU --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/ts-$ip.log" || true
     vm "$ip" "sudo nft delete table inet n1test 2>/dev/null; true" >/dev/null 2>&1
@@ -532,6 +535,8 @@ NFT" || p="$p; nft on a2"
 . "$(dirname "$0")/cases3.sh"
 # shellcheck source=cases4.sh
 . "$(dirname "$0")/cases4.sh"
+# shellcheck source=cases5.sh
+. "$(dirname "$0")/cases5.sh"
 
 # --------------------------------------------------------------------- main ---
 T0=$(date +%s)
@@ -551,6 +556,7 @@ t_s15
 t_s07
 t_s08
 t_s08b
+t_s08c
 t_s10
 t_s12
 t_s14
