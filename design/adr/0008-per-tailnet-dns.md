@@ -40,11 +40,17 @@
   - Tên record trùng tên MagicDNS của một node trong tailnet vẫn bị chặn như hiện nay: `reservedLabel`, và `CertDomain` từ chối tên mà một extra record đang giữ.
 - **Giới hạn kích thước (chống DoS, I10), chỉnh được trong config của cluster:** mặc định tối đa 1 000 record, 64 nameserver (global + split), 64 search domain, JSON tối đa 256 KiB. Khóa: `tuning.tenant_dns.max_extra_records`, `max_nameservers`, `max_search_domains`, `max_config_bytes`; mỗi khóa phải dương, có mặc định, có doc sinh tự động và nằm trong `TestConfigFields`. Chỉ operator đổi được (file config), tenant thì không. Hạ giới hạn khi đã có tailnet vượt mức: DNS đang dùng của tailnet đó vẫn nạp (không cắt dữ liệu đã lưu) nhưng có cảnh báo, và lần ghi kế tiếp phải nằm trong giới hạn mới.
 - **Ghi lỗi:** JSON hỏng hoặc vi phạm ràng buộc thì lệnh ghi bị từ chối, giá trị cũ giữ nguyên.
+- **Bổ sung P12d (2026-11-26, sau review bảo mật API tenant):** mọi lệnh ghi (tenant qua `/api/v2` và operator qua CLI) còn từ chối:
+  - search domain nằm trong miền của cluster, trừ subtree của chính tailnet;
+  - split domain chứa miền của cluster (cha của base domain);
+  - quá `tuning.tenant_dns.max_split_domains` split domain (mặc định 64; domain trỏ tới danh sách rỗng cũng tính);
+  - nameserver loopback, link-local, interface-local, unspecified hoặc có zone, kể cả host IP của URL DoH.
+  Khi nạp DNS đã lưu, các quy tắc mới chỉ cảnh báo (`TenantDNS.ValidateStored` kiểm định dạng), như cách hạ giới hạn ở trên; lần ghi kế tiếp phải thỏa toàn bộ quy tắc.
 - **Đọc lỗi:** khi nạp, nếu `dns_config` trong DB không validate được (ví dụ do bị sửa tay), runtime của tailnet đó **không được nạp** và có log lỗi chỉ ghi tailnet ID. Không có trường hợp chạy tiếp với DNS mặc định.
 
 ### 4. Ai ghi được
 - **P06:** chỉ operator, qua CLI cluster `cluster tailnet dns --slug S --file dns.json`. Có thêm `--clear` để về mặc định và `--show` để xem. CLI đi qua platform DB handle, giống `tailnet policy`.
-- **API v2 cho tenant** (khóa admin scoped theo tailnet, P08a): **chưa** làm trong P06. Ghi DNS từ phía tenant cần review authZ và giới hạn tần suất riêng; sẽ làm ở ticket API sau (P08b hoặc P12). Endpoint `GET /api/v2/tailnet/-/settings` hiện đọc `cfg.DNSConfig` dùng chung (`api/v2/settings.go:82`); P06 sửa nó để đọc DNS của runtime.
+- **API v2 cho tenant — P12d (quyết định của chủ dự án 2026-11-26):** tenant ghi DNS của chính tailnet mình qua `/api/v2` (nameservers, searchpaths, split-dns, preferences), cùng validate, giới hạn tần suất ghi theo tailnet và audit (`docs/tenant-api/subnet-routers.md`). Ghi chú lịch sử: **API v2 cho tenant** (khóa admin scoped theo tailnet, P08a): **chưa** làm trong P06. Ghi DNS từ phía tenant cần review authZ và giới hạn tần suất riêng; sẽ làm ở ticket API sau (P08b hoặc P12). Endpoint `GET /api/v2/tailnet/-/settings` hiện đọc `cfg.DNSConfig` dùng chung (`api/v2/settings.go:82`); P06 sửa nó để đọc DNS của runtime.
 
 ### 5. Mỗi runtime có `Config` riêng cho DNS
 - `Cluster.load` dựng một bản `Config` cho runtime: **sao chép nông** `Cluster.cfg`, rồi gán `DNSConfig` mới (sao chép sâu các slice) từ §1–§2. Sau đó gọi `StartDNS` trên **bản sao** trước khi `newHeadscale` dùng nó. `newHeadscale` không còn gọi `StartDNS` trên một config dùng chung.

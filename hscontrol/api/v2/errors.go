@@ -8,9 +8,12 @@ import (
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	policyv2 "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/policy/v2"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"gorm.io/gorm"
 	"tailscale.com/util/multierr"
 )
@@ -187,6 +190,19 @@ func mapError(msg string, err error) error {
 		// As on Tailscale SaaS, the reason is the message.
 		return huma.Error400BadRequest(err.Error(), err)
 
+	// Refused tenant DNS settings (ADR 0008 §3): the reasons are the message.
+	case errors.Is(err, types.ErrInvalidTenantDNS):
+		return huma.Error400BadRequest(err.Error(), err)
+
+	// This process no longer owns the tailnet (moved, newer epoch, lease
+	// lost): nothing was stored; the client retries against the owner. The
+	// cause names clusters, lease holders and epochs: logged, never in the
+	// answer (P12d review 4).
+	case errors.Is(err, tenantscope.ErrFenced), errors.Is(err, tenantscope.ErrNoFence):
+		log.Warn().Err(err).Msg(msg + ": refused by the ownership fence")
+
+		return huma.Error503ServiceUnavailable(errRetryUnavailable)
+
 	// A refused policy is answered with its own reason as the message.
 	case errors.Is(err, state.ErrInvalidPolicy):
 		message, data := policyRefusal(err)
@@ -196,4 +212,31 @@ func mapError(msg string, err error) error {
 	default:
 		return huma.Error500InternalServerError(msg, err)
 	}
+}
+
+// errRetryUnavailable is the whole answer to a write the ownership fence
+// refused.
+const errRetryUnavailable = "temporarily unavailable, retry"
+
+// internalError is a 500 whose cause is logged, never answered: database,
+// parser or compiler internals, or stored data the operator must fix, are
+// not the caller's input (P12d review 4).
+func internalError(msg string, err error) error {
+	log.Error().Err(err).Msg(msg)
+
+	return huma.Error500InternalServerError(msg)
+}
+
+// mapTenantError is [mapError] for the tenant's policy, DNS and device key
+// writes (P12d): a 500 carries msg only (see [internalError]); refusals
+// about the caller's own input keep their reasons.
+func mapTenantError(msg string, err error) error {
+	mapped := mapError(msg, err)
+
+	var se huma.StatusError
+	if errors.As(mapped, &se) && se.GetStatus() == http.StatusInternalServerError {
+		return internalError(msg, err)
+	}
+
+	return mapped
 }

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -164,12 +163,11 @@ type tenantRuntime struct {
 	epoch uint64
 	h     *Headscale
 
-	// policyRev is the tailnets.policy_revision the runtime's policy matches;
-	// only the reconcile loop reads or writes it after load.
-	policyRev uint64
-	// configRev is the tailnets.config_revision the runtime's DNS matches
-	// (ADR 0008); same rules as policyRev.
-	configRev uint64
+	// The tailnets.policy_revision and config_revision the runtime's policy
+	// and DNS settings match are kept by its state (InstalledRevisions):
+	// set at load, by a write through the runtime (P12d, the tenant API),
+	// and by the reconcile loop, each under the lock that makes storing (or
+	// reading) and installing one step.
 
 	cancel context.CancelFunc // stops its scheduled tasks
 	stop   func()             // from startRuntime
@@ -386,11 +384,12 @@ func (c *Cluster) load(tn types.Tailnet) (*tenantRuntime, error) {
 
 	h.leaseGate = c.leaseHeld
 
-	rt := &tenantRuntime{
-		id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h,
-		policyRev: tdb.Tailnet().PolicyRevision,
-		configRev: tdb.Tailnet().ConfigRevision,
-	}
+	rt := &tenantRuntime{id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h}
+
+	// The revisions TenantDB read; the policy and DNS settings were read
+	// after them, so they are at least that new (a newer one only costs
+	// one more reload).
+	h.state.SetInstalledRevisions(tdb.Tailnet().PolicyRevision, tdb.Tailnet().ConfigRevision)
 
 	log.Info().Str("tailnet", id.String()).Str("slug", tn.Slug).Uint64("epoch", rt.epoch).Msg("loaded tailnet runtime")
 
@@ -464,11 +463,16 @@ func (c *Cluster) reconcile() {
 		case !ok || tn.OwnerEpoch != rt.epoch:
 			stale = append(stale, rt)
 		default:
-			if tn.PolicyRevision != rt.policyRev {
+			// A hint only: the runtime's state compares again, and reads
+			// and installs, under the lock its writes hold (P12d review 1,
+			// 8), so a revision a tenant write installed meanwhile is not
+			// installed again, and older settings never replace newer ones.
+			policyRev, configRev := rt.h.state.InstalledRevisions()
+			if tn.PolicyRevision != policyRev {
 				policyChanged = append(policyChanged, rt)
 			}
 
-			if tn.ConfigRevision != rt.configRev {
+			if tn.ConfigRevision != configRev {
 				configChanged = append(configChanged, rt)
 			}
 		}
@@ -477,13 +481,18 @@ func (c *Cluster) reconcile() {
 	c.mu.RUnlock()
 
 	for _, rt := range configChanged {
-		rev := want[rt.id.String()].ConfigRevision
-		// As for policy: recorded even when the new settings do not load,
-		// so the runtime keeps serving its previous DNS and the error is
-		// logged once.
-		rt.configRev = rev
+		// The settings are read through the runtime's own scoped handle.
+		// As for policy: the revision is recorded even when the new
+		// settings do not load, so the runtime keeps serving its previous
+		// DNS and the error is logged once.
+		rev, installed, err := rt.h.state.ReloadTenantDNS(func(d *types.TenantDNS) error {
+			err := c.checkTailnetDNS(rt.id, rt.slug, d)
+			if err == nil {
+				runReconcileDNSHook(rt.id)
+			}
 
-		dns, err := c.tailnetDNS(rt.id, rt.slug)
+			return err
+		})
 		if err != nil {
 			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("config_revision", rev).
 				Msg("reconcile: new DNS settings rejected, keeping the previous ones")
@@ -491,19 +500,19 @@ func (c *Cluster) reconcile() {
 			continue
 		}
 
-		rt.h.cfg.ReplaceTenantDNS(rt.slug, dns)
+		if !installed {
+			continue
+		}
+
 		rt.h.Change(change.DNSConfig())
 		log.Info().Str("tailnet", rt.id.String()).Uint64("config_revision", rev).Msg("reconcile: DNS settings reloaded")
 	}
 
 	for _, rt := range policyChanged {
-		rev := want[rt.id.String()].PolicyRevision
 		// The revision is recorded even when the new policy does not load:
 		// the runtime keeps enforcing the previous one (never allow-all) and
 		// the error is logged once, not on every tick.
-		rt.policyRev = rev
-
-		changes, err := rt.h.state.ReloadPolicy()
+		changes, rev, reloaded, err := rt.h.state.ReloadTenantPolicy()
 		if err != nil {
 			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).
 				Msg("reconcile: new policy rejected, keeping the previous one")
@@ -511,6 +520,11 @@ func (c *Cluster) reconcile() {
 			continue
 		}
 
+		if !reloaded {
+			continue
+		}
+
+		// Nothing is sent when the stored policy is the one in force.
 		rt.h.Change(changes...)
 		log.Info().Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).Msg("reconcile: policy reloaded")
 	}
@@ -573,35 +587,42 @@ func (c *Cluster) applyMoveNotices() {
 
 // tailnetDNS reads and checks tailnet id's stored DNS settings (ADR 0008):
 // nil for the defaults; an error when they do not parse or break a rule of
-// form. Settings over the size limits (lowered after they were stored)
-// still load, with a warning; the next write must fit.
+// form. Settings over the size limits (lowered after they were stored), or
+// breaking only a rule added since they were stored (P12d review 7), still
+// load, with a warning; the next write must pass.
 func (c *Cluster) tailnetDNS(id tailnet.ID, slug string) (*types.TenantDNS, error) {
 	dns, err := c.platform.TailnetDNS(id)
 	if err != nil {
 		return nil, err
 	}
 
-	if dns == nil {
-		return nil, nil //nolint:nilnil // the defaults
-	}
-
-	err = dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, unlimitedTenantDNS)
+	err = c.checkTailnetDNS(id, slug, dns)
 	if err != nil {
-		return nil, fmt.Errorf("stored DNS settings: %w", err)
-	}
-
-	err = dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, c.cfg.Tuning.TenantDNS)
-	if err != nil {
-		log.Warn().Str("tailnet", id.String()).Msg("stored DNS settings exceed tuning.tenant_dns; " +
-			"they are served, the next write must fit")
+		return nil, err
 	}
 
 	return dns, nil
 }
 
-// unlimitedTenantDNS checks form only.
-var unlimitedTenantDNS = types.TenantDNSLimits{
-	MaxExtraRecords: math.MaxInt, MaxNameservers: math.MaxInt, MaxSearchDomains: math.MaxInt, MaxConfigBytes: math.MaxInt,
+// checkTailnetDNS checks stored DNS settings dns of tailnet id (nil: the
+// defaults) as [Cluster.tailnetDNS] does.
+func (c *Cluster) checkTailnetDNS(id tailnet.ID, slug string, dns *types.TenantDNS) error {
+	if dns == nil {
+		return nil
+	}
+
+	err := dns.ValidateStored(slug, c.cfg.DNSConfig.BaseDomain)
+	if err != nil {
+		return fmt.Errorf("stored DNS settings: %w", err)
+	}
+
+	err = dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, c.cfg.Tuning.TenantDNS)
+	if err != nil {
+		log.Warn().Str("tailnet", id.String()).Msg("stored DNS settings exceed tuning.tenant_dns or break a rule " +
+			"added since they were stored; they are served, the next write must pass")
+	}
+
+	return nil
 }
 
 func containsRuntime(rts []*tenantRuntime, id string) bool {

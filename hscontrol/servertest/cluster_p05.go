@@ -214,7 +214,14 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 	}
 
 	if o.TenantAPI != nil {
+		// Fields left zero keep their defaults (P12d added the config
+		// write bucket and the policy size limit).
+		def := cfg.Tuning.TenantAPI
 		cfg.Tuning.TenantAPI = *o.TenantAPI
+		ta := &cfg.Tuning.TenantAPI
+		ta.ConfigWriteRate = cmp.Or(ta.ConfigWriteRate, def.ConfigWriteRate)
+		ta.ConfigWriteBurst = cmp.Or(ta.ConfigWriteBurst, def.ConfigWriteBurst)
+		ta.MaxPolicyBytes = cmp.Or(ta.MaxPolicyBytes, def.MaxPolicyBytes)
 	}
 
 	if o.VerifySecret != "" {

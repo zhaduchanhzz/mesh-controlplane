@@ -63,7 +63,7 @@ var ErrInvalidPolicy = errors.New("invalid policy")
 
 // ErrPolicyPrecondition is returned by [State.UpdatePolicyIf] when the stored
 // policy fails the caller's check.
-var ErrPolicyPrecondition = errors.New("policy precondition failed")
+var ErrPolicyPrecondition = hsdb.ErrPolicyPrecondition
 
 // invalidPolicyError marks a refusal as [ErrInvalidPolicy] and keeps the
 // reason's own text, which API answers show as is.
@@ -247,6 +247,23 @@ type State struct {
 	// policyMu makes storing, loading and installing a policy one step, so
 	// policies land in the database in the order they are installed.
 	policyMu sync.Mutex
+
+	// tenantDNSMu makes storing and installing a tenant's DNS settings one
+	// step (P12d), so settings are installed in the order they are stored.
+	tenantDNSMu sync.Mutex
+
+	// policyRev and configRev are the tailnets.policy_revision and
+	// config_revision of the policy and DNS settings this runtime installed
+	// (cluster mode): set at load, by a write through this State once it
+	// stored and installed, and by the reconcile loop's reloads. Written
+	// under policyMu and tenantDNSMu respectively, so a reload compares and
+	// installs in the same step as a write.
+	policyRev atomic.Uint64
+	configRev atomic.Uint64
+
+	// policyInstallHook, when set, runs after a policy write was stored
+	// and before it is installed; an error is an install failure (tests).
+	policyInstallHook atomic.Pointer[func() error]
 
 	// authCache holds pending Web, OIDC and SSH authentication requests.
 	// Admission preserves unexpired entries at capacity. Expiry resolves the
@@ -675,14 +692,25 @@ func (s *State) reloadPolicyLocked() (bool, bool, error) {
 		return false, false, fmt.Errorf("loading policy: %w", err)
 	}
 
+	return s.installPolicyLocked(pol, s.polMan.SetPolicy)
+}
+
+// installPolicyLocked installs pol with set (the policy manager's SetPolicy,
+// or SetValidatedPolicy for bytes validated under the same lock), for
+// callers holding policyMu; results as [State.reloadPolicyLocked].
+func (s *State) installPolicyLocked(pol []byte, set func([]byte) (bool, error)) (bool, bool, error) {
 	// nil means no policy is configured (none stored, or stored empty).
 	// Upstream installs nothing then and keeps the current policy. A tenant
 	// tailnet (PolicyEmptyDenies) installs deny-all at once (P12c A6, AGENTS
 	// rule 8): an operator who empties the policy revokes access now, not
 	// at the next restart. SetPolicy turns the empty input into "{}".
-	var policyChanged bool
+	var (
+		policyChanged bool
+		err           error
+	)
+
 	if pol != nil || s.cfg.PolicyEmptyDenies {
-		policyChanged, err = s.polMan.SetPolicy(pol)
+		policyChanged, err = set(pol)
 		if err != nil {
 			return false, false, fmt.Errorf("setting policy: %w", err)
 		}
@@ -701,9 +729,7 @@ func (s *State) reloadPolicyLocked() (bool, bool, error) {
 	// inputs of the peer map rebuild it themselves (node writes in the
 	// [NodeStore], [State.updatePolicyManagerNodes] and
 	// [State.updatePolicyManagerUsers]), so the O(n^2) rebuild is skipped
-	// then. The policy API handlers always get here that way: they apply
-	// the policy with [State.SetPolicy], which rebuilds, store it, and
-	// reload the very same bytes.
+	// then.
 	if policyChanged {
 		// Stale approvals must not persist if checkPeriod rules are modified
 		// or removed.
@@ -2041,40 +2067,97 @@ func (s *State) UpdatePolicy(pol []byte) (*types.Policy, []change.Change, error)
 // two writers cannot both pass a check against the same policy. A false match
 // returns [ErrPolicyPrecondition]; a nil match always passes.
 func (s *State) UpdatePolicyIf(pol []byte, match func(stored string) bool) (*types.Policy, []change.Change, error) {
-	err := s.ValidatePolicy(pol)
-	if err != nil {
-		return nil, nil, err
-	}
+	stored, _, changes, err := s.UpdateTenantPolicyIf(pol, match)
 
-	// Held from store to install: on PostgreSQL a concurrent writer could
-	// otherwise commit an older row after a newer one pruned the rest.
+	return stored, changes, err
+}
+
+// ErrPolicyNotInForce is returned (as a [*PolicyNotInForceError]) by
+// [State.UpdateTenantPolicyIf] for a policy that was stored, but could not
+// be installed afterwards: the write is committed, the previous policy
+// stays enforced until the stored one is installed (in cluster mode by the
+// reconcile loop, which sees its revision as not installed).
+var ErrPolicyNotInForce = errors.New("policy stored but not in force")
+
+// PolicyNotInForceError is [ErrPolicyNotInForce] with the stored revision
+// and the install error (for logs only: it may hold internals).
+type PolicyNotInForceError struct {
+	Revision uint64
+	Err      error
+}
+
+func (e *PolicyNotInForceError) Error() string {
+	return fmt.Sprintf("policy stored (revision %d) but not in force: %v", e.Revision, e.Err)
+}
+
+// Unwrap is only [ErrPolicyNotInForce]: the install error must not make
+// the write look refused (such as [ErrInvalidPolicy]).
+func (e *PolicyNotInForceError) Unwrap() error { return ErrPolicyNotInForce }
+
+// UpdateTenantPolicyIf is [State.UpdatePolicyIf] that also returns the
+// tailnet's policy_revision after the write. On a fenced handle (a cluster
+// runtime, P12d) the policy and the revision bump are stored in one
+// transaction fenced on the tailnet's ownership, so every process of the
+// cluster sees the new revision with the new policy; without a fence (one
+// tailnet, `headscale serve`) the revision is 0.
+//
+// Validating, storing and installing are one step under policyMu (P12d
+// review 2): the policy is checked (its tests included) against the users
+// and nodes of that moment, stored, then installed from the very bytes
+// validated, without running its tests a second time. A refusal before
+// the store (invalid policy, precondition, fence) stores nothing and
+// changes nothing, so nothing can install it later. Once stored, an
+// install failure is a [*PolicyNotInForceError] returned with the stored
+// policy and revision: the caller must report the write as stored; the
+// previous policy stays enforced until the stored one is installed.
+func (s *State) UpdateTenantPolicyIf(pol []byte, match func(stored string) bool) (*types.Policy, uint64, []change.Change, error) {
+	// Held from validation to install: on PostgreSQL a concurrent writer
+	// could otherwise commit an older row after a newer one pruned the
+	// rest, and the reconcile loop compares and installs under it.
 	s.policyMu.Lock()
 	defer s.policyMu.Unlock()
 
-	if match != nil {
-		current, err := s.db.GetPolicy()
-		if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
-			return nil, nil, fmt.Errorf("loading policy: %w", err)
-		}
+	err := s.ValidatePolicy(pol)
+	if err != nil {
+		return nil, 0, nil, err
+	}
 
-		var data string
-		if current != nil {
-			data = current.Data
-		}
+	var (
+		stored *types.Policy
+		rev    uint64
+	)
 
-		if !match(data) {
-			return nil, nil, ErrPolicyPrecondition
+	if s.db.Fenced() {
+		// The precondition is checked in the write's transaction, after
+		// the ownership lock (P12d review 3): a policy another handle (the
+		// operator CLI) committed meanwhile is seen, never overwritten.
+		stored, rev, err = s.db.SetPolicyRevisedIf(string(pol), match)
+	} else {
+		stored, err = s.setPolicyIfLocked(string(pol), match)
+	}
+
+	if errors.Is(err, hsdb.ErrPolicyPrecondition) {
+		return nil, 0, nil, ErrPolicyPrecondition
+	}
+
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("storing policy: %w", err)
+	}
+
+	if fn := s.policyInstallHook.Load(); fn != nil {
+		err = (*fn)()
+		if err != nil {
+			return stored, rev, nil, &PolicyNotInForceError{Revision: rev, Err: err}
 		}
 	}
 
-	stored, err := s.db.SetPolicy(string(pol))
+	changed, derpChanged, err := s.installPolicyLocked(pol, s.polMan.SetValidatedPolicy)
 	if err != nil {
-		return nil, nil, fmt.Errorf("storing policy: %w", err)
+		return stored, rev, nil, &PolicyNotInForceError{Revision: rev, Err: err}
 	}
 
-	changed, derpChanged, err := s.reloadPolicyLocked()
-	if err != nil {
-		return stored, nil, err
+	if rev > 0 {
+		s.policyRev.Store(rev)
 	}
 
 	var changes []change.Change
@@ -2088,7 +2171,178 @@ func (s *State) UpdatePolicyIf(pol []byte, match func(stored string) bool) (*typ
 		changes = append(changes, change.DERPMap())
 	}
 
-	return stored, changes, nil
+	return stored, rev, changes, nil
+}
+
+// setPolicyIfLocked stores data when match (if any) accepts the stored
+// policy, on a handle without a fence (one tailnet): checked under
+// policyMu, which every writer of this process holds.
+func (s *State) setPolicyIfLocked(data string, match func(stored string) bool) (*types.Policy, error) {
+	if match != nil {
+		current, err := s.db.GetPolicy()
+		if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
+			return nil, fmt.Errorf("loading policy: %w", err)
+		}
+
+		var stored string
+		if current != nil {
+			stored = current.Data
+		}
+
+		if !match(stored) {
+			return nil, hsdb.ErrPolicyPrecondition
+		}
+	}
+
+	return s.db.SetPolicy(data)
+}
+
+// TenantDNS returns the stored DNS settings of this runtime's tailnet
+// (cluster mode, ADR 0008), nil for the defaults.
+func (s *State) TenantDNS() (*types.TenantDNS, error) {
+	return s.db.TenantDNS()
+}
+
+// UpdateTenantDNS stores what fn returns for the stored DNS settings of this
+// runtime's tailnet (nil: the defaults) and bumps its config_revision in one
+// fenced transaction (P12d), then installs them: the runtime's clients get
+// the new DNS with the returned change, and only them (I07). fn validates;
+// an error from fn, or a write the fence refuses, changes nothing. Returns
+// the new settings and revision.
+func (s *State) UpdateTenantDNS(
+	fn func(*types.TenantDNS) (*types.TenantDNS, error),
+) (*types.TenantDNS, uint64, change.Change, error) {
+	s.tenantDNSMu.Lock()
+	defer s.tenantDNSMu.Unlock()
+
+	d, rev, err := s.db.UpdateTenantDNS(fn)
+	if err != nil {
+		return nil, 0, change.Change{}, err
+	}
+
+	s.cfg.ReplaceTenantDNS("", d)
+	s.configRev.Store(rev)
+
+	return d, rev, change.DNSConfig(), nil
+}
+
+// SetInstalledRevisions records the tailnets.policy_revision and
+// config_revision of what this runtime loaded (cluster mode). The policy
+// and DNS settings must have been read after the revisions, so they are at
+// least that new.
+func (s *State) SetInstalledRevisions(policy, config uint64) {
+	s.policyMu.Lock()
+	s.policyRev.Store(policy)
+	s.policyMu.Unlock()
+
+	s.tenantDNSMu.Lock()
+	s.configRev.Store(config)
+	s.tenantDNSMu.Unlock()
+}
+
+// InstalledRevisions returns the tailnets.policy_revision and
+// config_revision of the policy and DNS settings this runtime has
+// installed, or last tried to (cluster mode).
+func (s *State) InstalledRevisions() (uint64, uint64) {
+	return s.policyRev.Load(), s.configRev.Load()
+}
+
+// ReloadTenantPolicy installs the stored policy of this runtime's tailnet
+// when its policy_revision is not the one installed (cluster mode, the
+// reconcile loop). The revision is read first and under policyMu, the lock
+// every policy write through this State holds from store to install: a
+// revision a write stored and installed is never installed again, and
+// what is read is at least that revision. The revision is recorded even
+// when the policy does not load: the previous one stays enforced (never
+// allow-all) and the error is reported once. It returns the changes to
+// send (none when the stored policy is the one in force), the revision
+// read, and whether it was a new one.
+func (s *State) ReloadTenantPolicy() ([]change.Change, uint64, bool, error) {
+	s.policyMu.Lock()
+	defer s.policyMu.Unlock()
+
+	rev, _, err := s.db.TailnetRevisions()
+	if err != nil {
+		return nil, 0, false, err
+	}
+
+	if rev == s.policyRev.Load() {
+		return nil, rev, false, nil
+	}
+
+	s.policyRev.Store(rev)
+
+	changed, derpChanged, err := s.reloadPolicyLocked()
+	if err != nil {
+		return nil, rev, true, err
+	}
+
+	var changes []change.Change
+
+	if changed {
+		changes = append(changes, change.PolicyChange())
+	}
+
+	if derpChanged {
+		changes = append(changes, change.DERPMap())
+	}
+
+	return changes, rev, true, nil
+}
+
+// ReloadTenantDNS installs the stored DNS settings of this runtime's
+// tailnet, read through its own scoped handle, when its config_revision is
+// not the one installed (cluster mode, the reconcile loop). As
+// [State.ReloadTenantPolicy], under tenantDNSMu: the lock tenant DNS writes
+// hold from store to install, so settings read here are never older than
+// settings a write installed, and a revision a write installed is not
+// installed again. check validates the settings read (nil: the defaults);
+// an error keeps the previous settings, and the revision is recorded so
+// it is reported once. It returns the revision read and whether the
+// settings were replaced; the caller then sends [change.DNSConfig].
+func (s *State) ReloadTenantDNS(check func(*types.TenantDNS) error) (uint64, bool, error) {
+	s.tenantDNSMu.Lock()
+	defer s.tenantDNSMu.Unlock()
+
+	_, rev, err := s.db.TailnetRevisions()
+	if err != nil {
+		return 0, false, err
+	}
+
+	if rev == s.configRev.Load() {
+		return rev, false, nil
+	}
+
+	s.configRev.Store(rev)
+
+	d, err := s.db.TenantDNS()
+	if err != nil {
+		return rev, false, err
+	}
+
+	if check != nil {
+		err = check(d)
+		if err != nil {
+			return rev, false, err
+		}
+	}
+
+	s.cfg.ReplaceTenantDNS("", d)
+
+	return rev, true, nil
+}
+
+// SetPolicyInstallHookForTest makes fn run after a policy write was stored
+// and before it is installed; an error from fn is an install failure. nil
+// removes it. For tests.
+func (s *State) SetPolicyInstallHookForTest(fn func() error) {
+	if fn == nil {
+		s.policyInstallHook.Store(nil)
+
+		return
+	}
+
+	s.policyInstallHook.Store(&fn)
 }
 
 // GetNodePrimaryRoutes returns the primary routes for a node.

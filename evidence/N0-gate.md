@@ -26,3 +26,14 @@ Nhánh `feat/CI-green`, merge `44e523a`. Chi tiết trong `evidence/source-inven
 
 - CI đã đỏ liên tục từ trước P11b tới 2026-11-25. Các ticket đã merge trong khoảng đó không qua cổng CI, chỉ qua bộ test trên mc-ci.
 - Chưa có người duyệt (`Reviewed`).
+
+## Kiểm tra lại (2026-11-26, sau khi merge P12c `f868e22`)
+
+| Điều kiện | Kiểm lại | Kết quả |
+|---|---|---|
+| Snapshot, `PROVENANCE.md`, nhật ký cherry-pick | `PROVENANCE.md` có trên `master` `f868e22`; chưa cherry-pick bản vá upstream nào kể từ P00 | Không đổi, đạt |
+| Build, unit, integration smoke trên Linux | CI GitHub: `master` `f868e22` **success**; `feat/P12d-subnet-api` `06c9f7b` **success** | Đạt (CI còn xanh sau P12c) |
+| P00b, P00c có số đo | `evidence/P00b-capacity-baseline.md`, `evidence/source-inventory-P00c.md` | Có; P00c vẫn `Implemented` |
+| Lab không chứa production secret | Quét lại `git grep` (khóa riêng, token PVE, `tskey-`/`hskey-`, AWS, GitHub) trên `master`, `feat/P12d-subnet-api`, `feat/P12d-exitnode`, `feat/P13-integration`, `feat/P14a-capload`: chỉ có (1) fixture upstream `hscontrol/db/testdata/sqlite/headscale_0.29.3_dump.sql` (khóa tạo bởi binary v0.29.3 trong DB thử, không dùng ở đâu), (2) biến `$TOKEN` trong ví dụ `LAB00-operator.md`, (3) khóa giả `hskey-auth-AAAA…` trong `infra/lab/e2e/p05/run.sh`. `artifacts/` bị `.gitignore` | Đạt |
+
+N0 vẫn `Verified`, chờ chủ dự án nghiệm thu (`Reviewed`).

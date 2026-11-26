@@ -759,6 +759,20 @@ func (pm *PolicyManager) sshRuleAllowsUser(rule SSH, srcNode types.NodeView, loc
 }
 
 func (pm *PolicyManager) SetPolicy(polB []byte) (bool, error) {
+	return pm.setPolicy(polB, true)
+}
+
+// SetValidatedPolicy is [PolicyManager.SetPolicy] for bytes that
+// [ValidatePolicy] accepted just before, against the same users and nodes
+// and under the caller's write lock (P12d review 8): the policy's tests
+// (tests, sshTests) are not run a second time. Everything else, the parse
+// and the compile included, is as SetPolicy; a failure leaves the live
+// policy as it was.
+func (pm *PolicyManager) SetValidatedPolicy(polB []byte) (bool, error) {
+	return pm.setPolicy(polB, false)
+}
+
+func (pm *PolicyManager) setPolicy(polB []byte, runTests bool) (bool, error) {
 	// With [WithEmptyPolicyDenies] an empty policy (e.g. a policy file
 	// emptied before a reload) installs deny-all, as "{}" does there,
 	// instead of keeping whatever was there. Policy writes still refuse
@@ -798,12 +812,14 @@ func (pm *PolicyManager) SetPolicy(polB []byte) (bool, error) {
 	// Aggregate ACL and SSH test failures via multierr so operators
 	// see both classes in a single response instead of having to
 	// fix-and-retry to discover the second one.
-	testErr := multierr.New(
-		evaluateTestsFor(pol, users, nodes, pm.emptyDenies),
-		evaluateSSHTests(pol, users, nodes),
-	)
-	if testErr != nil {
-		return false, testErr
+	if runTests {
+		testErr := multierr.New(
+			evaluateTestsFor(pol, users, nodes, pm.emptyDenies),
+			evaluateSSHTests(pol, users, nodes),
+		)
+		if testErr != nil {
+			return false, testErr
+		}
 	}
 
 	pm.mu.Lock()

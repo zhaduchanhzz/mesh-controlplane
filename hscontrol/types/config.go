@@ -1092,7 +1092,25 @@ type TenantAPIConfig struct {
 
 	// PreauthBurst is the bucket size of `tuning.tenant_api.preauth_rate`.
 	PreauthBurst int `example:"200" koanf:"preauth_burst"`
+
+	// ConfigWriteRate is writes per minute per tailnet of its policy and
+	// DNS settings (policy set and validate, the DNS endpoints), on top of
+	// the request buckets: each write recompiles the tailnet's policy or
+	// sends a map to every one of its devices.
+	ConfigWriteRate int `example:"60" koanf:"config_write_rate"`
+
+	// ConfigWriteBurst is the bucket size of
+	// `tuning.tenant_api.config_write_rate`.
+	ConfigWriteBurst int `example:"20" koanf:"config_write_burst"`
+
+	// MaxPolicyBytes is the largest policy file a tenant may store or
+	// validate through /api/v2, at most 1048576.
+	MaxPolicyBytes int `example:"524288" koanf:"max_policy_bytes"`
 }
+
+// MaxTenantPolicyBytes bounds `tuning.tenant_api.max_policy_bytes`: the
+// request body limit of the policy endpoints.
+const MaxTenantPolicyBytes = 1 << 20
 
 // ClusterLeaseConfig times the cluster lease (P11b). Expiry is decided by
 // the database clock; the active process also stops serving on its own,

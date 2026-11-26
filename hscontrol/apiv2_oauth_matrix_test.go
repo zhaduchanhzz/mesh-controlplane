@@ -138,6 +138,13 @@ func TestAPIv2OAuthMatrix_Enforcement(t *testing.T) {
 		{"updateSettings", http.MethodPatch, "/api/v2/tailnet/-/settings", scope.FeatureSettings, map[string]any{}, false},
 		{"getKeyClient", http.MethodGet, "/api/v2/tailnet/-/keys/" + clientID, scope.OAuthKeysRead, nil, true},
 		{"getKeyAuth", http.MethodGet, "/api/v2/tailnet/-/keys/" + authKeyID, scope.AuthKeysRead, nil, true},
+		// P12d: Tailscale's DNS endpoints (writes are 501 outside cluster mode,
+		// after the scope gate).
+		{"getDNSNameservers", http.MethodGet, "/api/v2/tailnet/-/dns/nameservers", scope.DNSRead, nil, false},
+		{"setDNSNameservers", http.MethodPost, "/api/v2/tailnet/-/dns/nameservers", scope.DNS, map[string]any{"dns": []string{}}, false},
+		{"getDNSSplitDNS", http.MethodGet, "/api/v2/tailnet/-/dns/split-dns", scope.DNSRead, nil, false},
+		{"updateDNSSplitDNS", http.MethodPatch, "/api/v2/tailnet/-/dns/split-dns", scope.DNS, map[string]any{}, false},
+		{"setDNSPreferences", http.MethodPost, "/api/v2/tailnet/-/dns/preferences", scope.DNS, map[string]any{"magicDNS": true}, false},
 	}
 
 	// One token per scope, reused across every operation.

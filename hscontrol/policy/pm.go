@@ -26,6 +26,10 @@ type PolicyManager interface {
 	// client-provided URL params.
 	SSHCheckParams(srcNodeID, dstNodeID types.NodeID, localUser string) (time.Duration, bool)
 	SetPolicy(pol []byte) (bool, error)
+	// SetValidatedPolicy is SetPolicy for bytes ValidatePolicy accepted just
+	// before under the caller's write lock: the policy's tests are not run
+	// again.
+	SetValidatedPolicy(pol []byte) (bool, error)
 	// DERPMap returns the policy's derpMap, nil without one.
 	DERPMap() *tailcfg.DERPMap
 	// SetUsers replaces the user list. policyChanged reports whether clients

@@ -46,23 +46,29 @@ type Backend struct {
 	// API serves, the tailnet of the API key that reached it: {tailnet}
 	// accepts this ID or "-"; only API keys authenticate (no OAuth access
 	// tokens, no token endpoint); the operations in [clusterForbidden] are
-	// refused, since the policy, DNS and device trust settings of a tenant
-	// tailnet belong to the platform operator (owner decision Q3).
+	// refused, since the device trust and tailnet settings of a tenant
+	// tailnet belong to the platform operator (owner decision Q3). The
+	// tenant writes its own policy and DNS settings (P12d, owner decision
+	// 2026-11-26), through Tenant.
 	Tailnet string
+	// Tenant is set in cluster mode (P12d): the tailnet's own policy and
+	// DNS writes.
+	Tenant *Tenant
 }
 
 // clusterForbidden are the operations a tenant API key may not call in
-// cluster mode (P08b, owner decision Q3): writes of the policy (setACL) and
-// of tailnet settings (updateTailnetSettings), which the operator manages
-// through the database and its revisions, and device operations outside
-// the tenant's set (authorize a device, disable key expiry, push a client
-// update). Reads stay allowed. OAuth clients are refused in the keys
-// handlers.
+// cluster mode (P08b, owner decision Q3): writes of the tailnet settings
+// (updateTailnetSettings), and device operations outside the tenant's set
+// (authorize a device, push a client update). Reads stay allowed. OAuth
+// clients are refused in the keys handlers.
+//
+// P12d (owner decision 2026-11-26, replacing Q3 for these): the tenant
+// writes its own policy (setACL) and DNS settings, and disables key expiry
+// on its own devices (setDeviceKey, as Tailscale recommends for subnet
+// routers), so they are not listed.
 var clusterForbidden = map[string]bool{
-	"setACL":                true,
 	"updateTailnetSettings": true,
 	"authorizeDevice":       true,
-	"setDeviceKey":          true,
 	"updateDeviceClient":    true,
 }
 
@@ -130,6 +136,8 @@ func NewAPI(router chi.Router, backend Backend) huma.API {
 	// Must run before Register: Huma snapshots the middleware chain at operation
 	// registration, so a middleware added afterwards would silently never run.
 	api.UseMiddleware(authMiddleware(api, backend))
+	// After authentication, before the body is read (P12d review 5).
+	api.UseMiddleware(tenantWriteMiddleware(api, backend))
 
 	Register(api, backend)
 
@@ -183,6 +191,7 @@ const (
 	ownerUserKey
 	principalScopesKey
 	principalTagsKey
+	apiKeyIDKey
 )
 
 // WithLocalTrust marks a request as arriving over a locally-trusted transport
@@ -293,6 +302,9 @@ func authMiddleware(api huma.API, b Backend) func(huma.Context, func(huma.Contex
 			ctx = huma.WithValue(ctx, ownerUserKey, types.UserID(*key.UserID))
 		}
 
+		// The audit record of a tenant write names the key (P12d).
+		ctx = huma.WithValue(ctx, apiKeyIDKey, key.ID)
+
 		next(ctx)
 	}
 }
@@ -324,6 +336,14 @@ func ownerUser(ctx context.Context) (types.UserID, bool) {
 	uid, ok := ctx.Value(ownerUserKey).(types.UserID)
 
 	return uid, ok
+}
+
+// apiKeyID returns the database ID of the request's API key, 0 for any
+// other principal.
+func apiKeyID(ctx context.Context) uint64 {
+	id, _ := ctx.Value(apiKeyIDKey).(uint64)
+
+	return id
 }
 
 // principalScopes returns the scopes granted to the request's OAuth access

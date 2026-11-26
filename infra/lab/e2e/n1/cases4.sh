@@ -133,7 +133,12 @@ t_s08b() {
   printf 'S08b policy without the subnet: a1 ping %s, TCP [%s]\n' "$r" "$b" >>"$ART_DIR/timings.txt"
   set_policy a '{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}],"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}' || p="$p; restore policy a"
 
-  # Undo.
+  # Undo. Route approvals persist in the control plane (as on Tailscale): a
+  # router that advertises the prefix again would be active at once, so the
+  # approvals S08b made are removed through each tenant's own API (S08c.6
+  # checks "no route before B approves" with the same prefix behind b2).
+  r=$(api_v2 a POST "/api/v2/device/$ida/routes" '{"routes":[]}'); [ "${r%% *}" = 200 ] || p="$p; unapprove a2 -> ${r%% *}"
+  r=$(api_v2 b POST "/api/v2/device/$idb/routes" '{"routes":[]}'); [ "${r%% *}" = 200 ] || p="$p; unapprove b2 -> ${r%% *}"
   TS $A2 "set --advertise-routes=" >/dev/null 2>&1; TS $B2 "set --advertise-routes=" >/dev/null 2>&1
   TS $A1 "set --accept-routes=false" >/dev/null 2>&1; TS $B1 "set --accept-routes=false" >/dev/null 2>&1
   s08b_lan_down $A2 || p="$p; LAN behind a2 not removed"

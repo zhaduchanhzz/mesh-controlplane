@@ -105,6 +105,8 @@ func Default() types.Config {
 				TailnetRate: 20, TailnetBurst: 40,
 				KeyRate: 10, KeyBurst: 20,
 				PreauthRate: 50, PreauthBurst: 100,
+				ConfigWriteRate: 30, ConfigWriteBurst: 10,
+				MaxPolicyBytes: 256 << 10,
 			},
 			TailnetMetricLabelLimit: 2000,
 		},
