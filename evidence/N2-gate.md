@@ -1,6 +1,6 @@
 # Gate N2 Evidence — Placement, Fencing & Failover (P10–P12b)
 
-- **Trạng thái:** `Verified`, chờ chủ dự án review (gate N2). Chưa `Reviewed`.
+- **Trạng thái:** `Reviewed`. **Gate N2 đạt**: chủ dự án duyệt ngày 2026-11-26 và cho merge `feat/P12b-inventory` vào `master`.
 - **Repo commit before / after:**
   - Before: `master` `2d80f21` (sau Gate N1).
   - After: `feat/P12b-inventory` (commit chứa file này). Merge `master` `2d80f21` vào nhánh: `cec4c27` (không xung đột). Code đã test ở E2E và race dưới đây là code của `cec4c27`; các commit sau đó chỉ sửa harness và evidence.
@@ -78,7 +78,7 @@ Chi tiết: `evidence/P12b-tenant-move.md` §E2E. Tóm tắt lần chạy sạch
 ## 7. Known limitations / security blockers
 
 - **Không có security blocker** trong phạm vi N2. Không lần chạy nào ghi nhận owner kép hay hai process cùng phục vụ một tailnet.
-- Mọi ticket P10–P12b đang ở `Verified`, chưa `Reviewed`. Gate N2 cần chủ dự án review.
+- Gate N2 được review ở mức gate (file này). Evidence riêng của P10–P12 vẫn ghi trạng thái của chính chúng.
 - P11 còn mở: test timing phản hồi từ chối qua mạng, spec OpenAPI cho bootstrap, review bảo mật (`evidence/source-inventory-P11.md` §10).
 - P12: CLI qua Registry ở nhánh `feat/P12-cli`, chưa merge.
 - Chuyển tenant cần mọi client đăng nhập lại (Q1: không đổi protocol). iOS/Android cần người dùng thao tác.
@@ -86,4 +86,5 @@ Chi tiết: `evidence/P12b-tenant-move.md` §E2E. Tóm tắt lần chạy sạch
 
 ## 8. Reviewer approval
 
-Chưa. Chờ chủ dự án review gate N2.
+- **Chủ dự án, 2026-11-26:** duyệt Gate N2; merge `feat/P12b-inventory` vào `master` và push.
+- **Ngưỡng Q7 của P12b (chủ dự án chốt cùng ngày, theo số đo của lần chạy sạch):** M04 FAIL khi t100 của 24 client (8 song song) > 15 s, ping gap > 10 s, hoặc cần can thiệp tay. Lần chạy sạch đạt cả ba (6,1 s / 0,39 s; 5,2 s / 5,1 s; 0). Harness kiểm các ngưỡng này từ `5ef2069`.

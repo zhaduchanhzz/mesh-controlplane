@@ -8,7 +8,7 @@
 - **Design choice / ADR:**
   - Quyết định Q1–Q7 của chủ dự án (2026-11-26): `tickets/P12b.md` §Câu hỏi, tất cả theo đề xuất.
   - Cơ chế chuyển: **ADR 0010** (không đổi). Noise: **ADR 0005** một key mỗi cluster (không đổi). Ghi chú thiết kế mới của P12b ở §ADR note.
-- **Trạng thái:** `Verified`: unit/race/servertest, E2E lab với client thật (§E2E), B3 trên code thật (§Benchmark). Chưa `Reviewed`; chờ chủ dự án review cùng Gate N2 (`evidence/N2-gate.md`).
+- **Trạng thái:** `Verified`: unit/race/servertest, E2E lab với client thật (§E2E), B3 trên code thật (§Benchmark). **`Reviewed`**: chủ dự án duyệt cùng Gate N2 ngày 2026-11-26 (`evidence/N2-gate.md`).
   - B3: `MoveOwner` đếm thiết bị của cluster đích trong lúc giữ lock ownership (writer của tenant đang chuyển chờ ~95–153 ms). Chủ dự án chấp nhận, ghi giới hạn (2026-11-26).
   - E2E tìm ra một race (cửa sổ nạp ở cluster đích, §E2E). Chủ dự án chọn: `mesh-rebootstrap` chạy lại target lỗi (2026-11-26, `d889da7`).
 
@@ -301,9 +301,9 @@ Hai writer mỗi 2 ms ghi một thiết bị ngẫu nhiên: một trên tenant �
 - Trễ API tenant ≤ 1 chu kỳ reconcile.
 - B3: `MoveOwner` đếm thiết bị của cluster đích (Seq Scan `nodes`) trong lúc giữ `LockOwnership`; writer của tenant đang chuyển chờ 94–153 ms khi đích giữ 51.000–60.000 thiết bị, tăng theo kích thước đích (§Benchmark). Chủ dự án chấp nhận, ghi giới hạn (2026-11-26); tối ưu ở P14.
 - Cửa sổ nạp ở cluster đích ≤ 1 chu kỳ reconcile sau trao tay (ADR note 10): `mesh-rebootstrap` chạy lại target lỗi; client người dùng tự đăng nhập có thể phải thử lại. Đóng hẳn cửa sổ (bootstrap chờ đích xác nhận đã nạp) là thay đổi thiết kế, chưa làm.
-- Ngưỡng Q7 (t50/t90/t100, ping gap) chưa đặt: số đo của lần chạy sạch đầu tiên (§E2E) là cơ sở để chủ dự án chốt ngưỡng.
+- Ngưỡng Q7 (chủ dự án chốt 2026-11-26): t100 ≤ 15 s cho 24 client (PAR=8), ping gap ≤ 10 s, can thiệp tay 0. Chỉ đo với 24 client mỗi vòng; số lớn hơn thuộc P14.
 - B3 giới hạn đo: một VM cho PG và harness; 7/5 lần mỗi ô, không có khoảng tin cậy; `registry` không lấy `pg_locks`; chỉ hai cluster và đích lớn nhất 60.000 thiết bị; CAS và ghi lại mọi dòng vẫn là mô phỏng.
 
 ## Reviewer approval
 
-Chưa.
+- **Chủ dự án, 2026-11-26:** duyệt cùng Gate N2, cho merge vào `master`. Ngưỡng Q7 như §Known limitations.
