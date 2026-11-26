@@ -103,7 +103,7 @@ func (r *Registry) Reconcile(ctx context.Context) (Report, error) {
 			return fmt.Errorf("listing tailnets: %w", err)
 		}
 
-		usage, err = clusterUsage(tx)
+		usage, err = clusterUsage(tx, false)
 		if err != nil {
 			return err
 		}

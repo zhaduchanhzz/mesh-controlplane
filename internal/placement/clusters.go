@@ -218,7 +218,7 @@ func (r *Registry) GetCluster(ctx context.Context, id string) (ClusterUsage, err
 		return ClusterUsage{}, err
 	}
 
-	usage, err := clusterUsage(db)
+	usage, err := clusterUsage(db, false)
 	if err != nil {
 		return ClusterUsage{}, err
 	}
@@ -239,7 +239,7 @@ func (r *Registry) ListClusters(ctx context.Context) ([]ClusterUsage, error) {
 		return nil, fmt.Errorf("listing clusters: %w", err)
 	}
 
-	usage, err := clusterUsage(db)
+	usage, err := clusterUsage(db, false)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +288,8 @@ func place(db *gorm.DB, class Class, lock bool) (Cluster, error) {
 		return Cluster{}, fmt.Errorf("listing clusters: %w", err)
 	}
 
-	usage, err := clusterUsage(db)
+	// P12c C3: room promised to tailnets moving in is taken.
+	usage, err := clusterUsage(db, true)
 	if err != nil {
 		return Cluster{}, err
 	}
@@ -416,16 +417,35 @@ func liveLeases(db *gorm.DB) (map[string]bool, error) {
 }
 
 // clusterUsage counts, per owning cluster, live tailnets and their live
-// devices. Raw on purpose: nodes is a tenant table and this is the one
-// cross-tenant read placement makes; it returns counts only.
-func clusterUsage(db *gorm.DB) (map[string]usageRow, error) {
-	var rows []usageRow
+// devices. With incoming (placement, P12c C3) a tailnet with a move pending
+// also counts on its target (moving_to_cluster_id), as admits does: the room
+// is promised to it. Without (GetCluster, ListClusters, the reconcile report
+// R7/R8) only what each cluster owns now. Raw on purpose: nodes is a tenant
+// table and this is the one cross-tenant read placement makes; it returns
+// counts only.
+func clusterUsage(db *gorm.DB, incoming bool) (map[string]usageRow, error) {
+	var (
+		rows []usageRow
+		err  error
+	)
 
-	err := db.Raw(`SELECT t.owner_cluster_id AS cluster_id,
-		count(DISTINCT t.id) AS tailnets, count(n.id) AS devices
-		FROM tailnets t LEFT JOIN nodes n ON n.tailnet_id = t.id AND n.deleted_at IS NULL
-		WHERE t.deleted_at IS NULL
-		GROUP BY t.owner_cluster_id`).Scan(&rows).Error
+	// Two literal statements (not one built in a variable), so the raw SQL
+	// guard reads each.
+	if incoming {
+		err = db.Raw(`SELECT t.cluster_id, count(DISTINCT t.id) AS tailnets, count(n.id) AS devices
+			FROM (SELECT id, owner_cluster_id AS cluster_id FROM tailnets WHERE deleted_at IS NULL
+				UNION ALL
+				SELECT id, moving_to_cluster_id FROM tailnets WHERE deleted_at IS NULL AND moving_to_cluster_id IS NOT NULL) t
+			LEFT JOIN nodes n ON n.tailnet_id = t.id AND n.deleted_at IS NULL
+			GROUP BY t.cluster_id`).Scan(&rows).Error
+	} else {
+		err = db.Raw(`SELECT t.owner_cluster_id AS cluster_id,
+			count(DISTINCT t.id) AS tailnets, count(n.id) AS devices
+			FROM tailnets t LEFT JOIN nodes n ON n.tailnet_id = t.id AND n.deleted_at IS NULL
+			WHERE t.deleted_at IS NULL
+			GROUP BY t.owner_cluster_id`).Scan(&rows).Error
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("counting devices: %w", err)
 	}

@@ -586,7 +586,9 @@ func (h *handlers) quota(ctx context.Context, in *idPath) (*quotaOut, error) {
 	if err != nil {
 		var known bool
 
-		for _, e := range []error{placement.ErrQuotaExceeded, placement.ErrTailnetNotActive, placement.ErrUnknownCluster} {
+		for _, e := range []error{
+			placement.ErrQuotaExceeded, placement.ErrTailnetNotActive, placement.ErrUnknownCluster, placement.ErrTailnetMoving,
+		} {
 			known = known || errors.Is(err, e)
 		}
 

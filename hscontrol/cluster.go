@@ -617,7 +617,9 @@ func containsRuntime(rts []*tenantRuntime, id string) bool {
 // retire stops serving rt: it is removed from routing first (new sessions
 // for its tailnet are refused), its bound Noise sessions are closed, its map
 // streams end, and its background work stops. Its writes are already fenced
-// in the database once ownership changed.
+// in the database once ownership changed. c.retiring[rt.id] is closed once
+// every runtime of the tailnet retired so far has stopped (P12c C1: a
+// runtime loaded again and retired while an earlier one still drains).
 func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 	c.mu.Lock()
 	if cur, ok := c.runtimes[rt.id]; !ok || cur != rt {
@@ -634,6 +636,7 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 		c.retiring = make(map[tailnet.ID]chan struct{})
 	}
 
+	prev := c.retiring[rt.id]
 	c.retiring[rt.id] = stopped
 	c.mu.Unlock()
 
@@ -648,6 +651,11 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 
 	c.stopping.Go(func() {
 		c.stopRuntime(rt)
+
+		if prev != nil {
+			<-prev // bounded by that runtime's drain timeout
+		}
+
 		close(stopped)
 
 		c.mu.Lock()
@@ -663,6 +671,13 @@ func (c *Cluster) retire(rt *tenantRuntime, reason string) {
 // serving (out of routing, sessions closed, map streams ended, requests
 // drained or the drain timed out with the runtime refusing everything),
 // the owner is flipped to the target. A failed flip is retried next tick.
+//
+// P12c C1: the flip runs only under leaseMu (reconcile holds it here), which
+// every load of a runtime also holds, and only while the tailnet has no
+// runtime in routing and none still stopping. A move cancelled and requested
+// again at the same epoch (a cancel keeps the epoch) while an earlier drain
+// was under way therefore never flips over a runtime loaded in between: that
+// runtime is retired here first, like any served one.
 func (c *Cluster) handOverRequested() {
 	moving, err := c.platform.PendingHandovers()
 	if err != nil {
@@ -679,45 +694,107 @@ func (c *Cluster) handOverRequested() {
 
 		to, epoch := *tn.MovingToClusterID, tn.OwnerEpoch
 
-		c.mu.Lock()
-		if c.handingOver[id] {
-			c.mu.Unlock()
-
-			continue
-		}
-
-		if c.handingOver == nil {
-			c.handingOver = make(map[tailnet.ID]bool)
-		}
-
-		c.handingOver[id] = true
+		c.mu.RLock()
 		rt := c.runtimes[id]
-		c.mu.Unlock()
+		c.mu.RUnlock()
 
 		if rt != nil {
 			c.retire(rt, "move to cluster "+to+" requested")
 		}
 
-		c.mu.RLock()
-		stopped := c.retiring[id]
-		c.mu.RUnlock()
+		if c.awaitStopped(id, epoch, to) {
+			continue
+		}
 
-		c.stopping.Go(func() {
-			if stopped != nil {
-				<-stopped
-			}
-
-			c.handOver(id, epoch, to)
-		})
+		c.handOver(id, epoch, to)
 	}
 }
 
-func (c *Cluster) handOver(id tailnet.ID, epoch uint64, to string) {
-	defer func() {
+// awaitStopped reports whether a retired runtime of tailnet id is still
+// stopping. If so, one waiter (per tailnet) tries the hand-over as soon as
+// it stopped; reconcile retries it otherwise.
+func (c *Cluster) awaitStopped(id tailnet.ID, epoch uint64, to string) bool {
+	c.mu.Lock()
+
+	stopped := c.retiring[id]
+	if stopped == nil || isClosed(stopped) {
+		c.mu.Unlock()
+
+		return false
+	}
+
+	if c.handingOver[id] {
+		c.mu.Unlock()
+
+		return true
+	}
+
+	if c.handingOver == nil {
+		c.handingOver = make(map[tailnet.ID]bool)
+	}
+
+	c.handingOver[id] = true
+	c.mu.Unlock()
+
+	c.stopping.Go(func() {
+		<-stopped
+
 		c.mu.Lock()
 		delete(c.handingOver, id)
 		c.mu.Unlock()
-	}()
+
+		c.tryHandOver(id, epoch, to)
+	})
+
+	return true
+}
+
+// tryHandOver flips right after a drain ended. It polls leaseMu with
+// TryLock for at most one reconcile interval (the reconcile that retired the
+// runtime usually still holds it) and gives up as soon as the process stops
+// serving: a lease change or shutdown waits for c.stopping under leaseMu, so
+// this goroutine must never block on it. A give-up leaves the flip to the
+// next reconcile.
+func (c *Cluster) tryHandOver(id tailnet.ID, epoch uint64, to string) {
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+
+	giveUp := time.NewTimer(reconcileInterval)
+	defer giveUp.Stop()
+
+	for !c.leaseMu.TryLock() {
+		if !c.ready.Load() {
+			return
+		}
+
+		select {
+		case <-poll.C:
+		case <-giveUp.C:
+			return
+		}
+	}
+	defer c.leaseMu.Unlock()
+
+	if !c.ready.Load() || !c.leaseHeld() {
+		return
+	}
+
+	c.handOver(id, epoch, to)
+}
+
+// handOver flips the owner of tailnet id to the target of its requested
+// move (db.Platform.HandOver). The caller holds leaseMu, so no runtime of
+// id is loaded meanwhile; it does nothing while id has a runtime in routing
+// or one still stopping (that one is handed over once it stopped).
+func (c *Cluster) handOver(id tailnet.ID, epoch uint64, to string) {
+	c.mu.RLock()
+	_, serving := c.runtimes[id]
+	stopped := c.retiring[id]
+	c.mu.RUnlock()
+
+	if serving || (stopped != nil && !isClosed(stopped)) {
+		return
+	}
 
 	newOwner, err := c.platform.HandOver(id, epoch)
 	if err != nil {
@@ -729,6 +806,15 @@ func (c *Cluster) handOver(id tailnet.ID, epoch uint64, to string) {
 
 	log.Info().Str("tailnet", id.String()).Str("to", newOwner).Uint64("owner_epoch", epoch+1).
 		Msg("tailnet handed over: no longer served here")
+}
+
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // takeOverOrphans completes the moves to this cluster whose owner cluster

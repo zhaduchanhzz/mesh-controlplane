@@ -196,6 +196,12 @@ var (
 	// ErrUnknownCluster reports a tailnet whose owner cluster is not
 	// registered: its class and limit are unknown, so enrollment is refused.
 	ErrUnknownCluster = errors.New("owner cluster is not registered")
+	// ErrTailnetMoving reports enrollment into a tailnet with a move to
+	// another cluster pending (ADR 0010; P12c C3): its devices were counted
+	// against the target when the move was admitted, and the owner stops
+	// serving it at its next reconcile. Transient (not a quota refusal):
+	// the client retries and is sent to the new owner after the hand-over.
+	ErrTailnetMoving = errors.New("tailnet is moving to another cluster")
 )
 
 // Registry is the placement service over the shared database.
