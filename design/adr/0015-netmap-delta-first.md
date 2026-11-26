@@ -44,6 +44,19 @@ Quy tắc tính:
 3. **Thu hồi/xóa không bao giờ bị gộp hay bỏ:** hàng đợi đầy → full map cho riêng R (đã có, M04).
 4. **Không gửi chéo tenant:** diff tính trong runtime của tailnet; batcher, cache và hàng đợi theo runtime (ADR 0007). Một delta chứa peer của tailnet khác = lỗi isolation = BLOCK MERGE (AGENTS 13).
 
+#### D2 bổ sung (review bảo mật độc lập P14f, 2026-11-27; `evidence/P14f-review.md`)
+
+- **Lưới an toàn gửi đủ (R3):** một frame có danh sách `Peers` đầy đủ (phiên mới, full map định kỳ, đối chiếu, hàng đợi gộp thành full) **không bao giờ** bị lược `PacketFilters` hay `UserProfiles`, và đặt lại mốc so sánh của kết nối. Nếu trạng thái đã ghi lệch với client vì bất kỳ lý do nào (kể cả trùng hash), lần full map kế tiếp sửa cả filter.
+- **Bộ nhớ theo kết nối (R2):**
+  - mốc so sánh nén thành một từ 8 byte cho mỗi peer: 48 bit hash entry và 16 bit hiện diện (Online chính xác, dấu vân tay 14 bit của LastSeen; trùng dấu vân tay chỉ có thể giấu thay đổi LastSeen, không phải quyền truy cập);
+  - đo được 29,6 B/peer ở 10k peer và 23,6 B/peer ở 50k (trước: 65,6 và 52,5);
+  - kết nối giữ quá `maxBaselinePeers` (100 000) peer thì không giữ mốc nữa (gửi đủ, an toàn) và tăng `headscale_mapper_delta_baseline_dropped_total`.
+- **Giới hạn quan hệ peer áp cho ghi policy (R2):**
+  - `tuning.max_peer_entries` trước chỉ chặn node mới join. Nay một policy làm tổng peer entry của tailnet vượt giới hạn **và** lớn hơn mức hiện tại bị từ chối ở mọi đường ghi: `setACL`/`validate` của tenant (400 / 200 kèm lý do), `UpdatePolicy` (API v1, operator), CLI `headscale tailnet policy` (chặt: không có số hiện tại).
+  - Đếm bằng bản dựng peer map theo lớp ở chế độ chỉ đếm, dừng khi vượt giới hạn, nên chi phí bị chặn bởi giới hạn, không theo n².
+  - Ghi bị từ chối không lưu gì, không đổi revision và không ghi audit (theo hợp đồng P12d: audit chỉ ghi lần ghi đã lưu).
+- **Memo hash của entry dùng chung (R1)** thuộc cache của từng mapper (đi cùng runtime), không còn biến toàn process.
+
 ### D3. Lưới an toàn gửi lại bản đầy đủ (giữ và kiểm lại)
 
 Full map vẫn được gửi khi:
