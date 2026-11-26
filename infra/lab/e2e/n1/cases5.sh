@@ -57,7 +57,7 @@ S08C_DNS=192.168.77.53
 S08C_DOM=corp.example
 S08C_NAME=svc.corp.example
 S08C_INDOM=corp.a.c1.tailnet.internal # under A's MagicDNS domain: refused
-S08C_GAP_MAX_MS=${S08C_GAP_MAX_MS:-30000} # 15 s reconnect grace (poll.go) + margin
+S08C_GAP_MAX_MS=${S08C_GAP_MAX_MS:-20000} # 15 s reconnect grace (poll.go) + margin
 S08C_POLICY_A='{
   // S08c: tenant A, subnet routers (written through /api/v2 with If-Match)
   "tagOwners": {"tag:router": ["n1-a@"]},
@@ -71,7 +71,7 @@ S08C_POLICY_A='{
 # Its test fails (no grant to the subnet): 400, nothing stored.
 S08C_POLICY_BAD='{"grants":[{"src":["*"],"dst":["100.64.0.0/10"],"ip":["*"]}],"tests":[{"src":"n1-a@","accept":["192.168.77.2:7777"]}]}'
 S08C_KEYBODY='{"capabilities":{"devices":{"create":{"reusable":true,"ephemeral":false,"preauthorized":true,"tags":["tag:router"]}}},"expirySeconds":1800}'
-S08C_ORIG="" S08C_KID="" S08C_R1ID="" S08C_R2ID="" S08C_B2ID="" S08C_SETUP=""
+S08C_ORIG="" S08C_KID="" S08C_R1ID="" S08C_R2ID="" S08C_B2ID="" S08C_SETUP="" S08C_POLICY_TOUCHED=""
 
 # ------------------------------------------------------------- tenant API ---
 # s08c_api SLUG METHOD PATH [BODY [CONTENT_TYPE [HEADER...]]]: like api_v2
@@ -285,8 +285,15 @@ s08c_router_stop() { # N: journal to the artifacts, then the router and its netn
 }
 
 # ---------------------------------------------------------------- clients ---
-# s08c_ping CLIENT DEST -> "<received>/<sent> <avg rtt ms>"
-s08c_ping() { vm "$1" "ping -c 3 -W 2 -q $2 2>&1" | awk -F'[ /,]+' '/packets transmitted/ {r=$4; t=$1} /rtt/ {a=$8} END {printf "%s/%s %s", r+0, t+0, (a == "" ? "-" : a)}'; }
+# s08c_ping CLIENT DEST -> "<received>/<sent> <avg rtt ms>"; the raw output
+# goes to logs/S08c-ping.log. Status 0 whatever ping did: test the OUTPUT
+# ([[ $(s08c_ping ..) == 0/* ]]), never "s08c_ping | grep" (pipefail: a ping
+# without replies made such a check fail, run 20261126T132519Z).
+s08c_ping() {
+  local out; out=$(vm "$1" "ping -c 3 -W 2 $2 2>&1" | strip_cr)
+  printf '== %s %s -> %s\n%s\n' "$(date -u +%T)" "$1" "$2" "$out" >>"$ART_DIR/logs/S08c-ping.log"
+  awk -F'[ /,]+' '/packets transmitted/ {r=$4; t=$1} /rtt/ {a=$8} END {printf "%s/%s %s", r+0, t+0, (a == "" ? "-" : a)}' <<<"$out"
+}
 s08c_ping_ok() { [[ $(s08c_ping "$1" "$2") == 3/3* ]]; }
 # s08c_banner CLIENT HOST -> "LAN-<T> src=<address the LAN host saw>", or "- <error>"
 s08c_banner() {
@@ -311,9 +318,41 @@ s08c_peer_seen() { grep -qw "$2" <<<"$(peers "$1")"; }
 s08c_until() { local n=$1 i; shift; for i in $(seq 1 "$n"); do "$@" && return 0; sleep 1; done; return 1; }
 s08c_t() { date +%s%3N; }
 
+# s08c_diag LABEL CLIENT DEST: state snapshot to logs/S08c-diag.log (the
+# client's route to DEST, rules, table 52, prefs, peers' PrimaryRoutes and
+# AllowedIPs; addresses, routes, netns of a2 and b2 and of the router netns).
+s08c_diag() {
+  {
+    printf '=== %s %s: client %s, destination %s\n' "$(date -u +%T)" "$1" "$2" "$3"
+    vm "$2" "echo '--- ip route get'; ip route get $3 2>&1; echo '--- ip rule'; ip rule; echo '--- table 52'; ip route show table 52; ip -6 route show table 52
+      echo '--- prefs'; sudo /opt/tailscale/$V/tailscale --socket=$TSS debug prefs 2>&1 | grep -E '\"(RouteAll|CorpDNS|AdvertiseRoutes|NoSNAT|WantRunning)\"'" 2>&1
+    echo '--- peers (HostName Online PrimaryRoutes AllowedIPs)'
+    ts_json "$2" | py 'import json
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print("(no status: tailscaled not answering)"); sys.exit()
+for q in (d.get("Peer") or {}).values():
+    print(q.get("HostName"), q.get("Online"), q.get("PrimaryRoutes"), q.get("AllowedIPs"))' 2>&1
+    for h in "$A2:a2" "$B2:b2"; do
+      echo "--- ${h##*:}: addresses, routes, forwarding, netns"
+      vm "${h%%:*}" "ip -br addr; ip route; ip -6 route | grep -v '^fe80'; sysctl net.ipv4.ip_forward; ip netns list; for n in \$(ip netns list | awk '{print \$1}'); do echo \"[\$n]\"; sudo ip -n \$n -br addr; sudo ip -n \$n route; done" 2>&1
+    done
+  } | strip_cr | redact >>"$ART_DIR/logs/S08c-diag.log"
+}
+# s08c_done ID PASS_TEXT [CLIENT DEST]: record from the caller's p; on FAIL a
+# diagnostic snapshot first.
+s08c_done() {
+  p=${p#; }
+  if [ -z "$p" ]; then record "$1" PASS "$2"; return; fi
+  s08c_diag "$1" "${3:-$A1}" "${4:-$S08C_HOST}"
+  printf '%s FAIL: %s (snapshot: logs/S08c-diag.log)\n' "$1" "$p" >>"$ART_DIR/timings.txt"
+  record "$1" FAIL "$p"
+}
+
 # ------------------------------------------------------------------ cases ---
 s08c_setup() {
-  local p="" s
+  local p="" s r
   for s in a b; do
     cli c1 "tailnet apikey create --slug $s --user n1-$s --expiration 1h" >"$TMPD/s08c-key-$s.json" || p="$p; apikey $s"
     py 'import json; d = json.load(open(sys.argv[1])); print(d["key"])' "$TMPD/s08c-key-$s.json" | strip_cr >"$TMPD/api-$s"
@@ -321,8 +360,9 @@ s08c_setup() {
   s08c_lan_up "$A2" A 0 || p="$p; LAN behind a2"
   s08c_lan_up "$B2" B 1 || p="$p; LAN behind b2"
   s08c_banner_is "$B2" $S08C_HOST "LAN-B src=192.168.77.1" || p="$p; b2 cannot reach its own LAN host"
-  s08c_ping "$A1" $S08C_HOST | grep -q '^0/' || p="$p; a1 reaches $S08C_HOST before any router"
+  r=$(s08c_ping "$A1" $S08C_HOST); [[ $r == 0/* ]] || p="$p; a1 reaches $S08C_HOST before any router [$r]"
   S08C_SETUP=${p#; }
+  [ -z "$p" ] || s08c_diag setup "$A1" $S08C_HOST
   [ -z "$p" ]
 }
 
@@ -340,6 +380,7 @@ s08c_policy() {
   [ "${r%% *}" = 200 ] && ! grep -q '"message"' <<<"$r" || p="$p; validate(policy) [${r:0:160}]"
   r=$(s08c_api a POST /api/v2/tailnet/-/acl/validate "$S08C_POLICY_BAD" application/hujson)
   [ "${r%% *}" = 200 ] && grep -q '"message"' <<<"$r" || p="$p; validate(failing test) [${r:0:160}]"
+  S08C_POLICY_TOUCHED=1
   r=$(s08c_api a POST /api/v2/tailnet/-/acl "$S08C_POLICY_A" application/hujson 'If-Match: "0000000000000000"')
   [ "${r%% *}" = 412 ] || p="$p; stale If-Match -> ${r%% *}"
   r=$(s08c_api a POST /api/v2/tailnet/-/acl "$S08C_POLICY_BAD" application/hujson "If-Match: $e0")
@@ -378,8 +419,7 @@ t_s08c_1() {
   [ "$(s08c_devfield a n1-ar1 keyExpiryDisabled)" = true ] || p="$p; keyExpiryDisabled not set"
   printf 'S08c.1 advertise -> routes enabled by autoApprovers (API) %s ms, -> a1 primary %s ms, -> first 3/3 ping %s ms; TCP [%s]\n' \
     "$((t1 < 0 ? -1 : t1 - t0))" "$((t2 < 0 ? -1 : t2 - t0))" "$((t3 < 0 ? -1 : t3 - t0))" "$b" >>"$ART_DIR/timings.txt"
-  p=${p#; }
-  [ -z "$p" ] && record S08c.1 PASS "policy written by A's key (HuJSON, If-Match; validate ok/refused; stale ETag 412; failing test 400 and nothing stored); tagged key by API; n1-ar1 routes $S08C_V4,$S08C_V6 approved by autoApprovers (no approval call); a1 ping 3/3 + TCP LAN-A; keyExpiryDisabled by API" || record S08c.1 FAIL "$p"
+  s08c_done S08c.1 "policy written by A's key (HuJSON, If-Match; validate ok/refused; stale ETag 412; failing test 400 and nothing stored); tagged key by API; n1-ar1 routes $S08C_V4,$S08C_V6 approved by autoApprovers (no approval call); a1 ping 3/3 + TCP LAN-A; keyExpiryDisabled by API"
 }
 
 t_s08c_3() {
@@ -389,18 +429,21 @@ t_s08c_3() {
   r=$(s08c_ping "$A1" $S08C_HOST6)
   b=$(s08c_banner "$A1" $S08C_HOST6); [[ $b == LAN-A\ src=* ]] || p="$p; a1 TCP to $S08C_HOST6 [$b]"
   printf 'S08c.3 a1 -> %s: ping %s; TCP [%s]\n' "$S08C_HOST6" "$r" "$b" >>"$ART_DIR/timings.txt"
-  p=${p#; }
-  [ -z "$p" ] && record S08c.3 PASS "IPv6 subnet $S08C_V6 behind n1-ar1: a1 ping 3/3 and TCP [$b]" || record S08c.3 FAIL "$p"
+  s08c_done S08c.3 "IPv6 subnet $S08C_V6 behind n1-ar1: a1 ping 3/3 and TCP [$b]" "$A1" $S08C_HOST6
 }
 
-# s08c_gap LOG KILL_MS -> "<max gap ms> <replies before> <replies after> <first after - kill ms>"
+# s08c_gap LOG KILL_MS -> "<max gap ms> <replies before> <replies after> <end of the max gap - kill ms>"
+# (a reply can land between the kill timestamp and SIGKILL: "first reply after
+# the kill" said 1 ms in run 20261126T140829Z; the end of the gap is when
+# traffic came back).
 s08c_gap() {
   py 'import re
 ts = [float(m.group(1)) * 1000 for m in (re.match(r"\[(\d+\.\d+)\] \d+ bytes from", l) for l in open(sys.argv[1])) if m]
 k = float(sys.argv[2])
 after = [t for t in ts if t > k]
-gap = max((b - a for a, b in zip(ts, ts[1:])), default=-1)
-print("%d %d %d %d" % (gap, len(ts) - len(after), len(after), (after[0] - k) if after else -1))' "$1" "$2" | strip_cr
+i = max(range(1, len(ts)), key=lambda j: ts[j] - ts[j - 1], default=0)
+gap = ts[i] - ts[i - 1] if i else -1
+print("%d %d %d %d" % (gap, len(ts) - len(after), len(after), (ts[i] - k) if i else -1))' "$1" "$2" | strip_cr
 }
 s08c_ha_ready() { # second router joined, auto-approved, seen by a1
   s08c_router_start 2 || p="$p; router 2 netns/tailscaled"
@@ -414,7 +457,7 @@ t_s08c_2() {
   local p="" pn sn ka tk ts g b0 b1 r
   s08c_ha_ready
   pn=$(s08c_pn)
-  if [ -z "$pn" ]; then p="$p; no primary for $S08C_V4 at a1 before the kill"; record S08c.2 FAIL "${p#; }"; return; fi
+  if [ -z "$pn" ]; then p="$p; no primary for $S08C_V4 at a1 before the kill"; s08c_done S08c.2 -; return; fi
   sn=$((3 - pn))
   b0=$(s08c_banner "$A1" $S08C_HOST); [ "$b0" = "LAN-A src=192.168.77.$((2 * pn - 1))" ] || p="$p; before: TCP [$b0]"
   vm "$A1" "sudo systemctl stop n1-s08c-ping 2>/dev/null; sudo systemctl reset-failed n1-s08c-ping 2>/dev/null; sudo rm -f /run/n1-s08c-ping.log
@@ -432,15 +475,14 @@ t_s08c_2() {
   [ "${r[1]}" -ge 5 ] || p="$p; only ${r[1]} replies before the kill"
   [ "${r[2]}" -ge 5 ] || p="$p; only ${r[2]} replies after the kill"
   [ "${r[0]}" -ge 0 ] && [ "${r[0]}" -le "$S08C_GAP_MAX_MS" ] || p="$p; ping gap ${r[0]} ms > $S08C_GAP_MAX_MS"
-  printf 'S08c.2 HA: SIGKILL n1-ar%s (primary); a1 primary -> n1-ar%s after %s ms (harness clock); ping every 200 ms: max gap %s ms, first reply %s ms after the kill (a1 vs a2 clock), replies %s before / %s after; TCP before [%s] after [%s]\n' \
-    "$pn" "$sn" "$((ts < 0 ? -1 : ts - tk))" "${r[0]}" "${r[3]}" "${r[1]}" "${r[2]}" "$b0" "$b1" >>"$ART_DIR/timings.txt"
-  p=${p#; }
-  [ -z "$p" ] && record S08c.2 PASS "HA: n1-ar1 and n1-ar2 (same LAN, both auto-approved); primary n1-ar$pn SIGKILLed -> a1 moved to n1-ar$sn by itself, LAN host sees the new router; ping gap ${r[0]} ms (<= $S08C_GAP_MAX_MS)" || record S08c.2 FAIL "$p"
+  printf 'S08c.2 HA: SIGKILL n1-ar%s (primary); a1 primary -> n1-ar%s after %s ms (harness clock); ping every 200 ms: max gap %s ms, traffic back %s ms after the kill (end of the gap, a1 vs a2 clock; kill at %s), replies %s before / %s after; TCP before [%s] after [%s]\n' \
+    "$pn" "$sn" "$((ts < 0 ? -1 : ts - tk))" "${r[0]}" "${r[3]}" "$ka" "${r[1]}" "${r[2]}" "$b0" "$b1" >>"$ART_DIR/timings.txt"
+  s08c_done S08c.2 "HA: n1-ar1 and n1-ar2 (same LAN, both auto-approved); primary n1-ar$pn SIGKILLed -> a1 moved to n1-ar$sn by itself, LAN host sees the new router; ping gap ${r[0]} ms (<= $S08C_GAP_MAX_MS)"
 }
 
 t_s08c_4() {
   local p="" n la ip4 b0 b1 b2
-  n=$(s08c_pn); [ -n "$n" ] || { record S08c.4 FAIL "no router serves $S08C_V4"; return; }
+  n=$(s08c_pn); [ -n "$n" ] || { p="no router serves $S08C_V4"; s08c_done S08c.4 -; return; }
   la=192.168.77.$((2 * n - 1)); ip4=$(selfip "$A1")
   s08c_rts "$n" "set --snat-subnet-routes=false" >/dev/null 2>&1 || p="$p; snat off"
   sleep 3
@@ -454,8 +496,7 @@ t_s08c_4() {
   s08c_until 15 s08c_banner_is "$A1" $S08C_HOST "LAN-A src=$la" || p="$p; SNAT not restored [$(s08c_banner "$A1" $S08C_HOST)]"
   b2=$(s08c_banner "$A1" $S08C_HOST)
   printf 'S08c.4 SNAT off on n1-ar%s: no return route [%s]; 100.64.0.0/10 via %s [%s]; SNAT on again [%s]\n' "$n" "$b0" "$la" "$b1" "$b2" >>"$ART_DIR/timings.txt"
-  p=${p#; }
-  [ -z "$p" ] && record S08c.4 PASS "--snat-subnet-routes=false on n1-ar$n: no answer without a return route; with 100.64.0.0/10 via $la the LAN host sees a1's tailnet IP $ip4; SNAT restored" || record S08c.4 FAIL "$p"
+  s08c_done S08c.4 "--snat-subnet-routes=false on n1-ar$n: no answer without a return route; with 100.64.0.0/10 via $la the LAN host sees a1's tailnet IP $ip4; SNAT restored"
 }
 
 t_s08c_5() {
@@ -476,8 +517,7 @@ t_s08c_5() {
   b=$(s08c_banner "$A1" $S08C_NAME); [[ $b == LAN-A\ src=* ]] || p="$p; a1 TCP to $S08C_NAME [$b]"
   printf 'S08c.5 split DNS: PATCH -> a1 resolves %s through quad-100 after %s ms; OS resolver [%s]; TCP by name [%s] (router n1-ar%s)\n' \
     "$S08C_NAME" "$((t1 < 0 ? -1 : t1 - t0))" "$g" "$b" "$n" >>"$ART_DIR/timings.txt"
-  p=${p#; }
-  [ -z "$p" ] && record S08c.5 PASS "split DNS $S08C_DOM -> $S08C_DNS by A's key (PATCH/GET); $S08C_INDOM refused 400; a1 resolves $S08C_NAME (quad-100 TXT LAN-A, A $S08C_HOST; OS resolver $g) and reaches it by name" || record S08c.5 FAIL "$p"
+  s08c_done S08c.5 "split DNS $S08C_DOM -> $S08C_DNS by A's key (PATCH/GET); $S08C_INDOM refused 400; a1 resolves $S08C_NAME (quad-100 TXT LAN-A, A $S08C_HOST; OS resolver $g) and reaches it by name"
 }
 
 # S08c.6 part 1: B, same prefix and same split domain, its own key only.
@@ -488,7 +528,7 @@ s08c_iso_b() {
   TS "$B1" "set --accept-routes --accept-dns=true" >/dev/null 2>&1 || p="$p; b1 accept-routes/dns"
   sleep 4
   [ "$(s08c_primary "$B1" $S08C_V4)" = - ] || p="$p; b1 has a route before B approved"
-  s08c_ping "$B1" $S08C_HOST | grep -q '^0/' || p="$p; b1 reached $S08C_HOST before B approved"
+  r=$(s08c_ping "$B1" $S08C_HOST); [[ $r == 0/* ]] || p="$p; b1 reached $S08C_HOST before B approved [$r]"
   b=$(s08c_banner "$B1" $S08C_HOST); [[ $b == LAN-A* ]] && p="$p; b1 reached A's LAN host"
   d=$(s08c_dig "$B1" TXT); [[ $d == *LAN-A* ]] && p="$p; b1 resolved A's internal name [$d]"
   grep -q "$S08C_DOM" <<<"$(netmap "$B1")" && p="$p; b1's netmap carries A's split DNS"
@@ -545,8 +585,8 @@ EOF
 }
 t_s08c_6() {
   local p=""
-  s08c_iso_b; s08c_iso_api; p=${p#; }
-  [ -z "$p" ] && record S08c.6 PASS "B with the same prefix and split domain: nothing of A's before B acts; after B's own approval and split DNS b1 gets LAN-B only, a1 LAN-A only; 17 cross-tailnet API calls (B on A's policy/DNS/router routes/key/delete, A on B's) all 404, A's policy/DNS/devices unchanged" || record S08c.6 FAIL "$p"
+  s08c_iso_b; s08c_iso_api
+  s08c_done S08c.6 "B with the same prefix and split domain: nothing of A's before B acts; after B's own approval and split DNS b1 gets LAN-B only, a1 LAN-A only; 17 cross-tailnet API calls (B on A's policy/DNS/router routes/key/delete, A on B's) all 404, A's policy/DNS/devices unchanged" "$B1" $S08C_HOST
 }
 
 # S08c.0: undo, in the order the API needs (keys revoked last).
@@ -565,7 +605,7 @@ s08c_undo() {
   if [ -n "$S08C_KID" ]; then r=$(s08c_api a DELETE "/api/v2/tailnet/-/keys/$S08C_KID"); [ "${r%% *}" = 200 ] || p="$p; delete tagged key -> ${r%% *}"; fi
   s08c_api a GET /api/v2/tailnet/-/acl >/dev/null; e=$(s08c_etag)
   r=000; [ -n "$S08C_ORIG" ] && r=$(s08c_api a POST /api/v2/tailnet/-/acl "$S08C_ORIG" application/hujson "If-Match: $e")
-  if [ "${r%% *}" = 200 ]; then :
+  if [ "${r%% *}" = 200 ] || [ -z "$S08C_POLICY_TOUCHED" ]; then : # restored, or never written by S08c
   else p="$p; policy a not restored by API (operator fallback)"
     set_policy a '{"grants":[{"src":["*"],"dst":["*"],"ip":["*"]}],"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}' || p="$p; policy a not restored"; fi
   for i in "$A2:a2" "$B2:b2"; do vm "${i%%:*}" "sudo journalctl -u n1-s08c-lan --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/S08c-lan-${i##*:}.log"; done
@@ -581,7 +621,7 @@ s08c_undo() {
 
 t_s08c() {
   local p="" c
-  S08C_ORIG="" S08C_KID="" S08C_R1ID="" S08C_R2ID="" S08C_B2ID="" S08C_SETUP=""
+  S08C_ORIG="" S08C_KID="" S08C_R1ID="" S08C_R2ID="" S08C_B2ID="" S08C_SETUP="" S08C_POLICY_TOUCHED=""
   if s08c_setup; then
     t_s08c_1; t_s08c_3; t_s08c_2; t_s08c_4; t_s08c_5; t_s08c_6
   else
