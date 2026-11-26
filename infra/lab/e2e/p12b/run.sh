@@ -779,7 +779,7 @@ if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
   log "setup failed (see logs/setup.log)"; cleanup; exit 2
 fi
 { echo "images: $IMAGES"; echo "client VMs: ${VM_TARGETS:-none} (tailscale $VMVER, round 1)"; echo "commit: $SHA"; echo "database: $PG_DB (mc-db via PgBouncer $PG_LISTEN)"; echo "N=$N PAR=$PAR LEAD=$LEAD"
-  echo "binaries: ${CI_BINDIR:+built on mc-ci in $CI_BINDIR, fetched over the LAN}${CI_BINDIR:-copied from the laptop}"
+  if [ -n "$CI_BINDIR" ]; then echo "binaries: built on mc-ci in $CI_BINDIR, fetched over the LAN"; else echo "binaries: copied from the laptop"; fi
   echo "cluster binary: $(binsha headscale | cut -c1-16)"; echo "mesh-placement: $(binsha mesh-placement | cut -c1-16)"
   echo "mesh-bootstrap: $(binsha mesh-bootstrap | cut -c1-16)"; echo "mesh-rebootstrap: $(binsha mesh-rebootstrap | cut -c1-16)"; } >>"$ART_DIR/env.txt"
 if t_m00; then

@@ -8,7 +8,9 @@
 - **Design choice / ADR:**
   - Quyết định Q1–Q7 của chủ dự án (2026-11-26): `tickets/P12b.md` §Câu hỏi, tất cả theo đề xuất.
   - Cơ chế chuyển: **ADR 0010** (không đổi). Noise: **ADR 0005** một key mỗi cluster (không đổi). Ghi chú thiết kế mới của P12b ở §ADR note.
-- **Trạng thái:** `Implemented`, phần code `Verified` bằng unit/race/servertest. **E2E lab chưa chạy** (harness viết xong, chạy cần coordinator). **B3 trên code thật đã đo** (2026-11-25 20:32 UTC, mc-bench; §Benchmark before/after) và có một phát hiện: `MoveOwner` đếm thiết bị của cluster đích trong lúc giữ lock ownership (writer của tenant đang chuyển chờ ~95–153 ms). Chưa `Reviewed`.
+- **Trạng thái:** `Verified`: unit/race/servertest, E2E lab với client thật (§E2E), B3 trên code thật (§Benchmark). Chưa `Reviewed`; chờ chủ dự án review cùng Gate N2 (`evidence/N2-gate.md`).
+  - B3: `MoveOwner` đếm thiết bị của cluster đích trong lúc giữ lock ownership (writer của tenant đang chuyển chờ ~95–153 ms). Chủ dự án chấp nhận, ghi giới hạn (2026-11-26).
+  - E2E tìm ra một race (cửa sổ nạp ở cluster đích, §E2E). Chủ dự án chọn: `mesh-rebootstrap` chạy lại target lỗi (2026-11-26, `d889da7`).
 
 ## Tóm tắt thay đổi
 
@@ -23,6 +25,10 @@
 | Q7 E2E | `infra/lab/e2e/p12b/run.sh` (`bash -n` sạch; shellcheck không có trên máy; chưa chạy) | `c0667d2` |
 | Merge master | `44e523a` (feat/CI-green) vào nhánh; xung đột duy nhất `placementapi/api.go` (định dạng route của master + 4 route move) | `4088df8` |
 | Lint | golangci-lint 2.15.0 từ flake.lock (như `ci.yml`): 46 → **0 issues**; hai `//nolint:gosec` có lý do (G204, G703) trong `cmd/mesh-rebootstrap` | `464aac3` |
+| Sửa lỗi do merge | `ScheduleMove`: `lockClusters(tx, "id = ?", to)` | `da93abc` |
+| Harness E2E (lần chạy đầu) | Sửa harness theo các lần chạy (§E2E, bảng các lần chạy) | `6c638fb` … `843e24a`, `166161d`, `fbb9f0a`, `94189bc`, `8da4bb6` |
+| Retry trong `mesh-rebootstrap` | `rebootstrap.Retry{Attempts, Delay}`; cờ `-attempts` (mặc định 3), `-retry-delay` (mặc định 2 s); JSON ghi `attempts`, `earlier_failures` (đã redact), `retried`. RED bằng mutation (ép `attempts := 1`: 3 test mới FAIL) | `d889da7`, lint `b5e61e7` |
+| Merge master (Gate N1) | `2d80f21` vào nhánh, không xung đột | `cec4c27` |
 
 ## ADR note (ghi nhận thiết kế, theo yêu cầu coordinator)
 
@@ -35,6 +41,11 @@
 7. **Giới hạn client cũ (capver < 117):** nhận `Health`. Khi hủy, gửi `Health = []`, xóa **mọi** health message từ control. Control plane không gửi Health nào khác, nên hiện tại không mất gì; nếu sau này thêm Health khác thì phải gộp.
 8. **API tenant đọc từ state của runtime** (`State.MoveNotice`), không truy vấn chéo tailnet; trễ tối đa một chu kỳ reconcile (2 s) so với DB.
 9. **Re-bootstrap không cầm secret:** tool chỉ gửi key id + SHA-256 proof cho bootstrap; lệnh mỗi target nhận `{target}`/`{login_server}`, key tới client qua `--auth-key=file:` do operator đặt sẵn. Target và URL bị giới hạn ký tự (không chèn được cú pháp shell). Output giữ phần đuôi đã redact.
+10. **Cửa sổ nạp ở cluster đích (tìm ra ở E2E, 2026-11-26):** bootstrap trả URL đích ngay khi nguồn trao tay (`owner_cluster_id` đổi, `moving_to` trống), nhưng đích chỉ nạp tailnet ở chu kỳ reconcile kế tiếp (≤ 2 s; đo được 0,98–1,34 s). Trong khoảng đó, đăng nhập tại đích nhận `invalid pre auth key`.
+    - Không phải lỗi isolation, không có owner kép: đích chưa phục vụ tailnet nên từ chối (fail closed).
+    - Client 1.104.7: `tailscale up` dừng với `backend error: invalid pre auth key`. Client 1.84.3: `tailscaled` tự gửi lại `RegisterReq` và thành công sau ~1 s (log `p12b-m2-01.tailscaled.log`, lần chạy `20261126T035713Z`).
+    - **Quyết định của chủ dự án (2026-11-26):** `mesh-rebootstrap` chạy lại target lỗi tối đa 3 lần, cách nhau 2 s (≥ chu kỳ reconcile). Không đổi server, schema hay ADR 0010. Phương án đã loại: bootstrap giữ 503 MOVING tới khi đích xác nhận đã nạp (cần migration và đổi ADR 0010); chờ cố định 3 s.
+    - Client do người dùng tự đăng nhập lại (macOS/Windows/iOS/Android) có thể gặp lỗi này nếu đăng nhập đúng trong cửa sổ ~1–2 s; thử lại là được (runbook).
 
 ## Runbook — chuyển tenant có kế hoạch
 
@@ -54,7 +65,7 @@ POST /v1/tailnets/{id}/moves   Idempotency-Key: <khóa>
 **Re-bootstrap client** (chạy ngay trước giờ, tool tự chờ tới khi bootstrap trả URL khác nguồn):
 ```
 mesh-rebootstrap -bootstrap https://boot.<domain>:8444 -authkey-file <key reusable của tenant> -tenant <slug> \
-  -from <URL nguồn> -poll 1s -targets hosts.txt -concurrency 8 -timeout 3m -out result.json \
+  -from <URL nguồn> -poll 1s -targets hosts.txt -concurrency 8 -timeout 3m -attempts 3 -retry-delay 2s -out result.json \
   -cmd '<lệnh theo loại client, dưới>'
 ```
 | Loại client | `-cmd` / thao tác |
@@ -65,7 +76,9 @@ mesh-rebootstrap -bootstrap https://boot.<domain>:8444 -authkey-file <key reusab
 | iOS / Android | Đổi "custom coordination server" sang URL mới rồi đăng nhập lại (không tự động được) |
 
 - Q4: node cũ được giữ; re-login cùng machine key dùng lại node (cùng NodeID, IP).
-- `result.json`: thời gian từng target, t50/t90/t100, target lỗi (chạy lại riêng các target đó).
+- `result.json`: thời gian từng target, t50/t90/t100, số lần chạy (`attempts`), lỗi của các lần trước (`earlier_failures`), số target phải chạy lại (`retried`), target vẫn lỗi (chạy lại riêng các target đó).
+- `-attempts 3 -retry-delay 2s` (mặc định): trong ≤ 1 chu kỳ reconcile sau khi trao tay, cluster đích chưa nạp tailnet và trả `invalid pre auth key` (ADR note 10); target lỗi được chạy lại sau ≥ 2 s. Người dùng tự đăng nhập lại mà gặp lỗi này: đợi vài giây rồi thử lại.
+- Client 1.84.3 sau khi đổi cluster có thể giữ home DERP cũ: `tailscale debug restun` hoặc khởi động lại `tailscaled` (ADR 0009, phương án (a)).
 
 **Abort:**
 - Trước giờ hoặc khi đã `REQUESTED` mà nguồn chưa trao tay: `POST /v1/moves/{move_id}/cancel`. Thông báo trên client biến mất.
@@ -102,9 +115,69 @@ Cây trên mc-ci: `git archive` của `4088df8` (merge master `44e523a`) chép s
 
 **Chạy trước merge (tại `adeaf2f`, mc-ci, `-race`):** `TestMoveNoticeInMapResponse`, `TestMoveNoticesOnlyOwnOpenMoves` (SQLite + PostgreSQL), `TestAPIv2ScheduledMove`, `TestEndpointInventory`, `TestScheduledMoveNotifiesOnlyItsClients` (p05cluster), `./internal/rebootstrap`, `./cmd/mesh-rebootstrap`: exit 0. RED trước GREEN: `TestMoveNoticeInMapResponse` và `TestScheduledMoveNotifiesOnlyItsClients` fail tại `4840114`; `TestAPIv2ScheduledMove`, `TestEndpointInventory` và assertion API trong `TestScheduledMoveNotifiesOnlyItsClients` fail (404) tại `289ec8d`.
 
+**Retry của `mesh-rebootstrap` (`d889da7`, lint `b5e61e7`; mc-ci, Go 1.27.4):**
+
+| Test / lệnh | Exit | Ghi chú |
+|---|---|---|
+| `TestRunRetriesTargetsRefusedBeforeTheTargetLoaded` | PASS | Tái hiện M04.1: lần 1 `invalid pre auth key`, đích nạp trong lúc chờ, lần 2 thành công; `attempts=2`, `retried=1`, lỗi trước đã redact |
+| `TestRunGivesUpAfterAttempts` | PASS | Hết 3 lần thì FAIL, giữ lỗi từng lần; `Retry{}` = chạy một lần |
+| `TestRunStopsRetryingWhenCancelled` | PASS | Hủy context thì không thử lại |
+| `TestRunRetryWaitFreesTheSlot` | PASS | Trong lúc chờ, target nhả chỗ concurrency |
+| `go test -race -count=5 ./internal/rebootstrap/ ./cmd/mesh-rebootstrap/` | 0 | |
+| Mutation `attempts := 1` | 1 (mong đợi) | 3 test trên FAIL (thay cho RED, vì test viết cùng code) |
+| `golangci-lint run ./internal/rebootstrap/... ./cmd/mesh-rebootstrap/...` | 0 | 0 issues (lần đầu CI báo 5 lỗi wsl/err113 ở test, sửa ở `b5e61e7`) |
+
+**Sau merge `master` (Gate N1) vào nhánh (`cec4c27`):** race `p05cluster` trên toàn cây và GitHub CI: `evidence/N2-gate.md` §4.
+
 ## E2E artifacts / protocol map redacted
 
-Chưa chạy. Harness `infra/lab/e2e/p12b/run.sh` (§Q7). Ngưỡng: theo Q7, cố định sau lần đo đầu.
+Harness `infra/lab/e2e/p12b/run.sh` (Q7): c1 = mc-cp, c2 = mc-c2, mỗi cluster một process (failover là đối tượng của P11b/P12); DB `e2e_p12b<run>` trên mc-db qua PgBouncer; `mesh-placement` loopback mTLS trên mc-cp (scheduler 2 s); bootstrap công khai `boot.cp.gta5web.online:8444`. 24 client docker mỗi vòng × 2 phiên bản (v1.104.7, v1.84.3) cộng 2 client VM (a1 10.77.20.11, b1 10.77.30.11; vòng 1). Tailnet đối chứng `o`.
+
+### Lần chạy sạch
+
+**`0a17355` `20261126T045654Z`: 13/13 PASS, exit 0, `cleanup_ok=1`, 544 s.** Artifact `artifacts/0a17355/P12b/e2e-20261126T045654Z` (gitignored, như mọi artifact E2E).
+
+- **Binary:** build trên mc-ci từ cây của `cec4c27` (merge `master` Gate N1 vào nhánh; mỗi file `.go`, `go.mod`, `go.sum` trên mc-ci được đối chiếu với blob git của commit: 668/668 khớp). Code của `0a17355` giống `cec4c27`, chỉ khác harness. `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`, Go 1.27.4. Host lab lấy binary qua LAN (`CI_BINDIR`), sha256 kiểm trên từng host.
+
+| Binary | sha256 (16 ký tự đầu) |
+|---|---|
+| headscale (cluster) | `56352dc01879ffee` |
+| mesh-placement | `93e176150edf525c` |
+| mesh-bootstrap | `a53c77fb0132cb69` |
+| mesh-rebootstrap | `6a63b80973851a90` |
+
+- **Lệnh:** `CI_BINDIR=/home/mesh/binp12b-merged N=24 PAR=8 LEAD=60 IMAGES="tailscale/tailscale:v1.104.7 tailscale/tailscale:v1.84.3" VM_TARGETS="mesh@10.77.20.11 mesh@10.77.30.11" infra/lab/e2e/p12b/run.sh` → exit 0.
+
+| Ca | v1.104.7 (vòng 1: tailnet m1, 24 container + 2 VM) | v1.84.3 (vòng 2: tailnet m2, 24 container) |
+|---|---|---|
+| M00 | Tailnet đối chứng o trên c2 (`mc-c2@1`), o1 ↔ o2 | (chung) |
+| M01 | m1 trên c1; 26 client đăng ký tại URL do bootstrap trả (PAR=8); m1-01 thấy 25 peer; ping OK | m2 trên c1; 24 client; m2-01 thấy 23 peer; ping OK |
+| M02 | Move c1 → c2 lên lịch 05:01:05Z; thông báo trên đủ 24 client sau 16,3 s, có lý do, không nêu đích; `/api/v2` scheduled-move của m1 có, của o không; client của o không nhận thông báo | Lên lịch 05:03:44Z; đủ 24 client sau 8,7 s; như trên |
+| M03 | Yêu cầu 05:01:05.117; c1 trao tay 05:01:05.789, c2 nạp 05:01:06.557 (sau 0,77 s); epoch 2; move `HANDED_OVER`; bootstrap → c2 | Yêu cầu 05:03:45.119; trao tay .669, nạp 05:03:46.559 (sau 0,89 s); epoch 2 |
+| M04 | 24/24 container đăng nhập lại, `retried=0`; t50/t90/t100 = 4.056 / 6.067 / 6.069 ms từ lúc chạy (5.634 / 7.645 / 7.647 ms từ `scheduled_at`). **2 VM: lần 1 `invalid pre auth key`, lần 2 thành công (`attempts=2`)**. Mọi client `Running` ở c2, cùng NodeID và IP; thông báo biến mất; ping gap 5.180 ms (4/361 mẫu lỗi); can thiệp tay 0 | 24/24, `retried=0`; 249 / 383 / 385 ms từ lúc chạy (2.468 / 2.602 / 2.604 ms từ `scheduled_at`); cùng NodeID và IP; ping gap 5.140 ms (4/283); can thiệp tay 0 |
+| M05 | o không đổi (`mc-c2@1`), o1 ↔ o2, không thông báo, chỉ thấy peer của mình | như trái |
+| M06 | m1 = `mc-c2@2`, m2 = `mc-c2@2`, o = `mc-c2@1`; không tailnet nào đang chuyển, không move mở, reconcile `[]` | (chung) |
+| M07 | Artifact không chứa auth key, API key, private key hay machine/node key đầy đủ | (chung) |
+
+**Đọc số đo (chưa phải ngưỡng; Q7: chủ dự án chốt ngưỡng sau lần đo này):**
+- **Retry trên client thật:** hai VM bắt đầu lúc 05:01:05.82 và .86, trước khi c2 nạp (06.557). Lần đầu bị từ chối, lần sau thành công sau ~4,3 s (`rebootstrap-m1-vm-*.json`). Container của lần này bắt đầu sau khi c2 nạp (05:01:06.578), nên không cần retry; ở lần `fbb9f0a` và `94189bc`, cùng tình huống làm 8/24 container lỗi.
+- **t50/t90/t100 của v1.104.7 lớn hơn v1.84.3 nhiều** (6 s so với 0,4 s cho 24 client). Đây là thời gian lệnh `tailscale up` trả về: v1.104.7 chờ tới khi đăng nhập xong, v1.84.3 trả về sớm hơn rồi `tailscaled` tự hoàn tất (ADR note 10). Cả hai vòng, M04 chỉ PASS sau khi harness kiểm mọi client `Running` ở c2.
+- **Ping gap ~5,1–5,2 s** giữa cặp client đo (4 mẫu lỗi liên tiếp, mẫu mỗi 200 ms + timeout 1 s), vào lúc client đăng nhập lại (`--force-reauth`). Dữ liệu giữa các node khác không được đo trong lần này.
+- Thông báo tới đủ client sau 8,7–16,3 s: chu kỳ reconcile (2 s) cộng thời gian poll của harness qua ssh (24 client mỗi vòng).
+
+### Các lần chạy không đạt (đều do harness hoặc môi trường, trừ race ở lần 3–4)
+
+| Lần (artifact `artifacts/<commit>/P12b/e2e-<run>`) | Kết quả | Nguyên nhân | Xử lý |
+|---|---|---|---|
+| `843e24a` `20261126T031342Z` | M00, M06, M07 PASS; M01.1, M01.2 FAIL "Running 0/24" | (1) `tailscale status --json` không có newline cuối, nên marker `@@ <tên>` của `snap` dính vào dòng `}` trước đó; mọi client gộp thành một body JSON, không parse được. (2) `bash -n jobs.sh` trên VM chạy bằng user `mesh` với file 0700 của root | `166161d` (`sudo bash -n`); (1) tìm ra ở lần sau |
+| `166161d` `20261126T032756Z` | như trên | Dòng ghi lỗi chẩn đoán mới thêm bị hỏng cú pháp Python (`\n` thành newline thật) | `fbb9f0a`: marker trên dòng riêng (`printf '\n@@ %s\n'`), thử trên container thật |
+| `fbb9f0a` `20261126T034010Z` | **12/13**: M04.1 FAIL | (1) **Race sản phẩm:** 8/24 client đầu tiên đăng nhập c2 trong ~0,8 s giữa lúc c1 trao tay (03:50:55.42) và c2 nạp (56.40) → `invalid pre auth key`, không thử lại (ADR note 10). (2) VM: `/run` mount `noexec` → rc 126. (3) Pinger dừng sai tên → 0 mẫu ("gap 0 ms" không có nghĩa) | (2), (3): `94189bc` (binary VM ở `/var/lib/p12b-ts`; dừng pinger đúng tên; M04 FAIL khi pinger không có mẫu). (1): quyết định của chủ dự án → `d889da7` |
+| `94189bc` `20261126T035713Z` | M00–M03, M05 ×2, M04.2, M06 PASS; M04.1 FAIL (race, 8 target; VM b1 rc 1) | Race như trên; sửa harness đã chạy đúng (VM a1 rc 0, ping gap 5152 ms có mẫu). Lần chạy dừng ở cuối vì `run.sh` bị sửa trong lúc chạy (lỗi cú pháp, không M07, không cleanup) | Dọn tay bằng chính `cleanup()` của harness: `CLEAN_OK=1` |
+| `d889da7` `20261126T041444Z` | dừng ngay | Khởi động trên phần còn lại của lần trước; dừng trước khi tạo gì | Xóa artifact rỗng |
+| `d889da7` `20261126T041654Z`, `…T042420Z` | setup FAIL | Chép binary 81 MB từ laptop qua Tailscale bị đứt (`Connection reset by peer`) | `8da4bb6`: `CI_BINDIR`, host lab lấy binary từ mc-ci qua LAN (~2 s), kiểm sha256 trên từng host |
+| `8da4bb6` `20261126T043351Z` | M00–M02.1 PASS, rồi M04.1 không chạy được | Mọi phiên ssh của user `mesh` trên mc-ci cùng kết thúc lúc 04:35:10; systemd-logind (`RemoveIPC=yes`, mặc định) xóa file của user trong `/dev/shm`, gồm thư mục làm việc `/dev/shm/p12b` (key, `jobs.sh`, `mesh-rebootstrap`) | `loginctl enable-linger mesh` trên mc-ci; harness kiểm linger trước khi chạy (`0a17355`) |
+
+Ở mọi lần chạy tới M03, log cho thấy nguồn trao tay **trước** khi đích nạp, epoch 2; mọi lần chạy tới M06 đều PASS (một owner mỗi tailnet, không move mở, reconcile `[]`). Không lần nào ghi nhận owner kép.
 
 ## Negative tenant isolation tests
 
@@ -226,7 +299,9 @@ Hai writer mỗi 2 ms ghi một thiết bị ngẫu nhiên: một trên tenant �
 - Client không tự đổi ControlURL: mọi client phải re-login (Q1 đã chọn không đổi protocol). iOS/Android cần người dùng thao tác.
 - Health của client cũ (capver < 117) bị xóa toàn bộ khi hủy thông báo (ADR note 7).
 - Trễ API tenant ≤ 1 chu kỳ reconcile.
-- B3: `MoveOwner` đếm thiết bị của cluster đích (Seq Scan `nodes`) trong lúc giữ `LockOwnership`; writer của tenant đang chuyển chờ 94–153 ms khi đích giữ 51.000–60.000 thiết bị, tăng theo kích thước đích (§Benchmark). Chưa sửa; cần quyết định.
+- B3: `MoveOwner` đếm thiết bị của cluster đích (Seq Scan `nodes`) trong lúc giữ `LockOwnership`; writer của tenant đang chuyển chờ 94–153 ms khi đích giữ 51.000–60.000 thiết bị, tăng theo kích thước đích (§Benchmark). Chủ dự án chấp nhận, ghi giới hạn (2026-11-26); tối ưu ở P14.
+- Cửa sổ nạp ở cluster đích ≤ 1 chu kỳ reconcile sau trao tay (ADR note 10): `mesh-rebootstrap` chạy lại target lỗi; client người dùng tự đăng nhập có thể phải thử lại. Đóng hẳn cửa sổ (bootstrap chờ đích xác nhận đã nạp) là thay đổi thiết kế, chưa làm.
+- Ngưỡng Q7 (t50/t90/t100, ping gap) chưa đặt: số đo của lần chạy sạch đầu tiên (§E2E) là cơ sở để chủ dự án chốt ngưỡng.
 - B3 giới hạn đo: một VM cho PG và harness; 7/5 lần mỗi ô, không có khoảng tin cậy; `registry` không lấy `pg_locks`; chỉ hai cluster và đích lớn nhất 60.000 thiết bị; CAS và ghi lại mọi dòng vẫn là mô phỏng.
 
 ## Reviewer approval
