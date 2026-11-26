@@ -12,7 +12,7 @@
 #   jobs.sh rb-docker DIR SLUG BOOT_URL FROM_URL PAR
 #       DIR/mesh-rebootstrap for the containers listed in DIR/targets-SLUG,
 #       key DIR/key-SLUG; writes DIR/rb-SLUG.json, .log and .done (exit code).
-#   jobs.sh rb-vm DIR VER BOOT_URL FROM_URL SLUG
+#   jobs.sh rb-vm DIR VER BOOT_URL FROM_URL SLUG RB_BIN (not under DIR: /run is noexec on the VMs)
 #       DIR/mesh-rebootstrap on a client VM for its second tailscaled
 #       (/opt/tailscale/VER, socket DIR/tailscaled.sock, key DIR/key); writes
 #       DIR/rb.json, rb.log, rb.done.
@@ -39,10 +39,10 @@ rb-docker)
   echo $? >"$d/rb-$s.done"
   ;;
 rb-vm)
-  d=$2 ver=$3 boot=$4 from=$5 s=$6
+  d=$2 ver=$3 boot=$4 from=$5 s=$6 rb=$7
   h=$(hostname -s)-p12b
   echo local >"$d/targets"
-  "$d/mesh-rebootstrap" -bootstrap "$boot" -authkey-file "$d/key" -tenant "$s" \
+  "$rb" -bootstrap "$boot" -authkey-file "$d/key" -tenant "$s" \
     -targets "$d/targets" -concurrency 1 -timeout 120s -max-wait 5m -poll 1s \
     -from "$from" -out "$d/rb.json" \
     -cmd "timeout 100 /opt/tailscale/$ver/tailscale --socket=$d/tailscaled.sock up --login-server={login_server} --auth-key=file:$d/key --hostname=$h --accept-dns=false --netfilter-mode=off --force-reauth" \

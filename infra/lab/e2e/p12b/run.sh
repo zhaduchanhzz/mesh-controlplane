@@ -309,7 +309,8 @@ vm_start() {
       --socket=$VMSOCK --tun=p12bts0 --port=41642 || exit 1
     for i in \$(seq 1 60); do $VMTS status >/dev/null 2>&1; [ \$? -le 1 ] && exit 0; sleep 0.5; done; exit 1" || return 1
   vm_ "$1" "sudo install -m 0600 /dev/stdin $VMDIR/key" <"$TMPD/key-$2" || return 1
-  vm_ "$1" "sudo install -m 0700 /dev/stdin $VMDIR/mesh-rebootstrap" <"$RB_BIN" || return 1
+  # /run is noexec on the client VMs: the binary lives under $VMSTATE.
+  vm_ "$1" "sudo install -m 0700 /dev/stdin $VMSTATE/mesh-rebootstrap" <"$RB_BIN" || return 1
   tr -d '\r' <"$HERE/jobs.sh" | vm_ "$1" "sudo install -m 0700 /dev/stdin $VMDIR/jobs.sh && sudo bash -n $VMDIR/jobs.sh" || return 1
   vm_ "$1" "sudo timeout 60 /opt/tailscale/$VMVER/tailscale --socket=$VMSOCK up --login-server=$3 --auth-key=file:$VMDIR/key \
     --hostname=\$(hostname -s)-p12b --accept-dns=false --netfilter-mode=off" 2>&1 | redact >>"$ART_DIR/logs/vm-$1.cli.log"
@@ -319,7 +320,7 @@ vm_start() {
 # unit p12b-rb, jobs.sh rb-vm), waiting for a URL other than FROM_URL.
 vm_rb() {
   vm_ "$1" "sudo rm -f $VMDIR/rb.done; sudo systemctl reset-failed p12b-rb 2>/dev/null; \
-    sudo systemd-run --quiet --collect --unit=p12b-rb -p RuntimeMaxSec=900 bash $VMDIR/jobs.sh rb-vm $VMDIR $VMVER $BOOT_URL $3 $2"
+    sudo systemd-run --quiet --collect --unit=p12b-rb -p RuntimeMaxSec=900 bash $VMDIR/jobs.sh rb-vm $VMDIR $VMVER $BOOT_URL $3 $2 $VMSTATE/mesh-rebootstrap"
 }
 # vm_state TARGET -> "<state> <ip> <notice True|False>"
 vm_state() { vm_ "$1" "$VMTS status --json" 2>/dev/null | py 'import json
@@ -660,8 +661,9 @@ d=json.load(open(sys.argv[1], encoding="utf-8")); print(" ".join(x["target"] for
     case " $vmrb " in *" $vmt=0 "*) ;; *) grep -qw -- "$vmt" <<<"$restunned" || p="$p; VM $vmt mesh-rebootstrap rc [$vmrb]";; esac
   done
   [ -z "$vmrb" ] || printf 'M04 %s VMs (%s) mesh-rebootstrap rc:%s\n' "$s" "$VMVER" "$vmrb" >>"$ART_DIR/timings.txt"
-  stop_pinger "$a" >"$ART_DIR/logs/M04-$s-ping.txt"
+  stop_pinger "$s" >"$ART_DIR/logs/M04-$s-ping.txt"
   local gap; gap=$(ping_gap "$ART_DIR/logs/M04-$s-ping.txt")
+  case "${gap#* }" in */0) p="$p; pinger recorded no samples";; esac
   local tt; tt=$(py 'import json,sys,datetime,re
 iso=lambda v: datetime.datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", v).replace("Z", "+00:00"))
 d=json.load(open(sys.argv[1], encoding="utf-8")); at=iso(sys.argv[2]); st=iso(d["started_at"])
