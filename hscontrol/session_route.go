@@ -3,7 +3,9 @@ package hscontrol
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
@@ -48,6 +50,10 @@ func (ns *noiseServer) bind(h *Headscale) error {
 	switch {
 	case h == nil:
 		return errSessionUnbound
+	case ns.closed:
+		// The connection ended while this request was in flight: binding
+		// now would leave the session in h.sessions for good.
+		return errRuntimeRetired
 	case ns.headscale != nil && !ns.headscale.servable():
 		return errRuntimeRetired
 	case !h.servable():
@@ -72,14 +78,34 @@ func (ns *noiseServer) bind(h *Headscale) error {
 	}
 }
 
-// unbind forgets the session when it ends.
+// unbind forgets the session when its connection closes; the session can
+// not be bound after that.
 func (ns *noiseServer) unbind() {
 	ns.bindMu.Lock()
 	defer ns.bindMu.Unlock()
 
+	ns.closed = true
+
 	if ns.router != nil && ns.headscale != nil {
 		ns.headscale.sessions.Delete(ns)
 	}
+}
+
+// closeHookConn runs onClose once, after the first Close of the connection
+// (the HTTP server closes it when the session ends: peer gone, idle timeout,
+// or the Noise connection closed underneath, e.g. by closeSessions).
+type closeHookConn struct {
+	net.Conn
+
+	once    sync.Once
+	onClose func()
+}
+
+func (c *closeHookConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.onClose)
+
+	return err
 }
 
 // closeSessions closes every Noise session bound to h (cluster runtimes).
