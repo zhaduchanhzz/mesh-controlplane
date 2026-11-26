@@ -60,19 +60,22 @@ var rawSQLAllowlist = []rawSQLEntry{
 
 	// Placement counts (P10 quota, admission, moves): numbers only.
 	{"internal/placement/clusters.go", "c546dae73e9f8bdd", "clusterUsage: tailnets and devices per owning cluster, counts only"},
-	{"internal/placement/quota.go", "2b7ef86e10cfcd4d", "device quota of a cluster: counts its tailnets' nodes"},
-	{"internal/placement/tailnets.go", "9e47b9cd9fbce697", "admission: tailnets and devices of a cluster, counts only"},
+	{"internal/placement/clusters.go", "f51361bbeedab5f9", "clusterUsage with incoming moves (P12c C3): tailnets and devices per owning or moving-to cluster, counts only"},
+	{"internal/placement/quota.go", "d73f7920873331f1", "device budget of a cluster incl. tailnets moving in (P12c C3): a count"},
+	{"internal/placement/tailnets.go", "672991bdea3b832f", "admission incl. tailnets moving in, excluding the moving one (P12c C3): counts only"},
 	{"internal/placement/tailnets.go", "ff223c04e2408d54", "deviceCount: live devices of one tailnet, a count"},
 
 	// Unresolved SQL on platform tables: the dynamic part is a clock
 	// expression or a fixed fragment, never input.
-	{"hscontrol/db/handover.go", "31de423ab24bbd41", "TakeOver CAS on tailnets (platform table); dbNow is the dialect's now(); EXISTS reads cluster_leases"},
-	{"hscontrol/db/handover.go", "bbe074f3a7ec874c", "HandOver CAS on tailnets (platform table); dbNow is the dialect's now(); EXISTS reads cluster_leases"},
+	{"hscontrol/db/handover.go", "4e234e783ab44271", "TakeOver CAS on tailnets (platform table), dedicated-target guard (P12c C3); dbNow is the dialect's now(); EXISTS reads cluster_leases"},
+	{"hscontrol/db/handover.go", "5c79111541ae4436", "HandOver CAS on tailnets (platform table), dedicated-target guard (P12c C3); dbNow is the dialect's now(); EXISTS reads cluster_leases"},
 	{"hscontrol/db/noisekey.go", "fb8701509d049b66", "cluster Noise key registration on clusters (platform table) under the lease; dbNow is the dialect's now()"},
 	{"hscontrol/db/tenantscope/tenantscope.go", "6d4127be02fd74d7", "LockOwnership: SET LOCAL lock_timeout from an integer duration, no table"},
 	{"internal/lease/lease.go", "1908e1bbb6a4294c", "lease Get on cluster_leases (platform table); now() is the dialect's clock"},
 	{"internal/lease/lease.go", "560e0bc57dc77763", "lease Renew on cluster_leases; now()/nowPlus() are the dialect's clock"},
 	{"internal/lease/lease.go", "8f109ce712d23d27", "lease Release on cluster_leases; now() is the dialect's clock"},
-	{"internal/lease/lease.go", "5cb92b9b1d7ef096", "lease Acquire upsert on cluster_leases; q embeds the dialect's clock"},
+	{"internal/lease/lease.go", "5f6903d7977cd4c8", "lease acquire upsert on cluster_leases; q embeds the dialect's clock (P12c B1)"},
+	{"internal/lease/lease.go", "2c879f711d09f405", "lease Acquire: lock-free liveness read on cluster_leases (P12c B1); now() is the dialect's clock"},
+	{"internal/lease/lease.go", "5e553bace6cb0f8a", "lease Acquire: SET LOCAL lock_timeout from an integer millisecond count, no table (P12c B1)"},
 	{"internal/placement/moves.go", "40a70a65947699db", "queryMoves on tailnet_moves (platform table); where is a fixed condition of the callers in moves.go"},
 }
