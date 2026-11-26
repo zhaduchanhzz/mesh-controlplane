@@ -62,12 +62,14 @@ bootstrap:
         max_wal_size: 2GB
         min_wal_size: 256MB
         checkpoint_completion_target: 0.9
-        # Prepared for pgBackRest (P13c): archive_mode needs a restart, so it
-        # is on from the start; archive_command is a reload-only change.
-        # Until P13c sets `pgbackrest --stanza=mc-pg archive-push %p`, WAL
-        # segments are acknowledged and discarded (NO archive, NO PITR yet).
+        # pgBackRest (P13c): archive_mode needs a restart, so it is on from
+        # the start; archive_command is a reload-only change. The live value
+        # is in the DCS, set by `deploy.sh pgbackrest` (2026-11-26) after
+        # stanza-create; this bootstrap value only matters for a brand-new
+        # cluster, whose WAL waits in pg_wal until `deploy.sh pgbackrest` has
+        # created the stanza (deploy order: etcd, pg, pgbouncer, pgbackrest).
         archive_mode: "on"
-        archive_command: /bin/true
+        archive_command: pgbackrest --stanza=mc-pg archive-push %p
         archive_timeout: 300
         password_encryption: scram-sha-256
         shared_buffers: 1GB

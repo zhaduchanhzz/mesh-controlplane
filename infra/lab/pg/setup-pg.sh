@@ -8,8 +8,8 @@
 #                                        (copied from the first node, see
 #                                        deploy.sh; never through argv or logs)
 #
-# Idempotent. Installs and pins: PGDG postgresql-16, patroni, pgbackrest (no
-# stanza yet: P13c), chrony (replaces systemd-timesyncd), softdog watchdog,
+# Idempotent. Installs and pins: PGDG postgresql-16, patroni, pgbackrest (stanza:
+# setup-pgbackrest.sh, P13c), chrony (replaces systemd-timesyncd), softdog watchdog,
 # nftables host firewall. Patroni bootstraps a FRESH cluster `mc-pg` (initdb
 # --data-checksums on the first node to take the leader key; the second
 # clones it with pg_basebackup). This is not a migration of `meshlab`.

@@ -1,4 +1,12 @@
-# Per-cluster PostgreSQL connection limits (P13f, D9b) — NOT APPLIED
+# Per-cluster PostgreSQL connection limits (P13f, D9b)
+
+**State (2026-11-26, P13b):** the aliases are loaded on the PgBouncers of mc-pg-01/02 (`pgbouncer.ini.tmpl` + `pgbouncer-clusters.ini`, installed by `infra/lab/pg/setup-pgbouncer.sh`). The cluster configs still point at mc-db (`meshlab` there); they switch in the `meshlab` move window (`infra/lab/pg/README.md`). mc-db's `mc-pgb` is unchanged.
+
+| File | Installed as (mc-pg-01/02) |
+|---|---|
+| `pgbouncer.ini.tmpl` | `/etc/pgbouncer/pgbouncer.ini` (`@IP@` = node address): ADR 0006 settings as on mc-db, plus failover settings (`server_login_retry = 1`, `server_connect_timeout = 2`, keepalive, `server_check_query` that fails on a replica) |
+| `pgbouncer-clusters.ini` | `/etc/pgbouncer/pgbouncer-clusters.ini` (`%include`) |
+| `haproxy-pg.cfg` | `/etc/haproxy/haproxy.cfg`: `127.0.0.1:5000` → node whose Patroni `GET /primary` = 200; `inter 1s fall 2 rise 2`, `on-marked-down shutdown-sessions`, `option redispatch 1` |
 
 ADR 0005 keeps one application role for every cluster (no per-cluster role, no RLS), so PostgreSQL cannot cap connections per cluster. PgBouncer can: each cluster connects to its own **alias** of the same database (`pgbouncer-clusters.ini`), and each alias has its own `pool_size` and `max_db_connections`. A cluster that saturates its alias queues in PgBouncer (`cl_waiting`, alert `PgBouncerClientsWaiting`); other clusters keep their server connections.
 
