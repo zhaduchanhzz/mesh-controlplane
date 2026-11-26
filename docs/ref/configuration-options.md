@@ -3407,6 +3407,7 @@ Holds performance settings that rarely need changing.
         max_extra_records: 1000
         max_nameservers: 64
         max_search_domains: 64
+        max_split_domains: 64
         max_config_bytes: 262144
       incremental_netmap:
         enabled: false
@@ -3660,6 +3661,7 @@ Bounds the DNS settings each tailnet may store in cluster mode (ADR 0008).
         max_extra_records: 1000
         max_nameservers: 64
         max_search_domains: 64
+        max_split_domains: 64
         max_config_bytes: 262144
     ```
 
@@ -3745,6 +3747,34 @@ The most search domains a tailnet may store.
 
     ```nix
     services.headscale.settings.tuning.tenant_dns.max_search_domains = 16;
+    ```
+
+#### `tuning.tenant_dns.max_split_domains` { #tuning.tenant_dns.max_split_domains data-toc-label="max_split_domains" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `64`
+- **Env:** `HEADSCALE_TUNING_TENANT_DNS_MAX_SPLIT_DOMAINS`
+
+The most split DNS domains a tailnet may store, counting a domain mapped to an empty list of nameservers.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_dns:
+        max_split_domains: 16
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_DNS_MAX_SPLIT_DOMAINS=16
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_dns.max_split_domains = 16;
     ```
 
 #### `tuning.tenant_dns.max_config_bytes` { #tuning.tenant_dns.max_config_bytes data-toc-label="max_config_bytes" }

@@ -136,6 +136,8 @@ func NewAPI(router chi.Router, backend Backend) huma.API {
 	// Must run before Register: Huma snapshots the middleware chain at operation
 	// registration, so a middleware added afterwards would silently never run.
 	api.UseMiddleware(authMiddleware(api, backend))
+	// After authentication, before the body is read (P12d review 5).
+	api.UseMiddleware(tenantWriteMiddleware(api, backend))
 
 	Register(api, backend)
 

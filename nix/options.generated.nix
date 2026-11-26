@@ -1130,6 +1130,14 @@ in
         '';
         example = 16;
       };
+      max_split_domains = lib.mkOption {
+        type = lib.types.int;
+        default = 64;
+        description = ''
+          The most split DNS domains a tailnet may store, counting a domain mapped to an empty list of nameservers.
+        '';
+        example = 16;
+      };
       max_config_bytes = lib.mkOption {
         type = lib.types.int;
         default = 262144;

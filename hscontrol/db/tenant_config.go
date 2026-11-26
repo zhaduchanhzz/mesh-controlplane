@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -90,10 +91,48 @@ func (hsdb *HSDatabase) Fenced() bool {
 	return ok
 }
 
+// TailnetRevisions returns the policy_revision and config_revision of the
+// tailnet the handle is scoped to (its own tailnets row).
+func (hsdb *HSDatabase) TailnetRevisions() (uint64, uint64, error) {
+	s, err := tailnet.FromContext(hsdb.DB.Statement.Context)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var tn types.Tailnet
+
+	err = hsdb.DB.Where("id = ?", s.ID().String()).Take(&tn).Error
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading the revisions of tailnet %s: %w", s.ID(), err)
+	}
+
+	return tn.PolicyRevision, tn.ConfigRevision, nil
+}
+
+// ErrPolicyPrecondition is returned by a conditional policy write when the
+// stored policy fails the caller's check (If-Match).
+var ErrPolicyPrecondition = errors.New("policy precondition failed")
+
+// SetPolicyRevisedIf is [HSDatabase.SetPolicyRevised] that passes the
+// stored policy data ("" when none is stored) to match in the same
+// transaction, after the ownership lock and the revision bump (P12d review
+// 3): every policy write committed before it, through any handle (the
+// operator CLI's fenced handle takes the tailnet's shared lock, SQLite
+// serialises writers), is what match sees, and none can commit between the
+// check and the store. false is [ErrPolicyPrecondition]: nothing is stored
+// and nothing bumped. A nil match always passes.
+func (hsdb *HSDatabase) SetPolicyRevisedIf(policy string, match func(stored string) bool) (*types.Policy, uint64, error) {
+	return hsdb.setPolicyRevised(policy, match)
+}
+
 // SetPolicyRevised is [HSDatabase.SetPolicy] that also bumps the tailnet's
 // policy_revision in the same transaction (see above), returning the new
 // revision. It needs a fenced handle.
 func (hsdb *HSDatabase) SetPolicyRevised(policy string) (*types.Policy, uint64, error) {
+	return hsdb.setPolicyRevised(policy, nil)
+}
+
+func (hsdb *HSDatabase) setPolicyRevised(policy string, match func(stored string) bool) (*types.Policy, uint64, error) {
 	type out struct {
 		p   *types.Policy
 		rev uint64
@@ -103,6 +142,22 @@ func (hsdb *HSDatabase) SetPolicyRevised(policy string) (*types.Policy, uint64, 
 		rev, err := bumpTailnetRevision(tx, colPolicyRevision)
 		if err != nil {
 			return out{}, err
+		}
+
+		if match != nil {
+			current, err := GetPolicy(tx)
+			if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
+				return out{}, fmt.Errorf("loading policy: %w", err)
+			}
+
+			var data string
+			if current != nil {
+				data = current.Data
+			}
+
+			if !match(data) {
+				return out{}, ErrPolicyPrecondition
+			}
 		}
 
 		p := types.Policy{Data: policy}
@@ -148,11 +203,18 @@ func tenantDNSRow(tx *gorm.DB) (*types.TenantDNS, bool, error) {
 
 	d, err := types.ParseTenantDNS([]byte(rows[0].DNSConfig.String))
 	if err != nil {
-		return nil, true, fmt.Errorf("stored DNS settings: %w", err)
+		// Not types.ErrInvalidTenantDNS, which refuses a caller's input
+		// (400): this is stored data only the operator can fix.
+		return nil, true, fmt.Errorf("%w: %s", ErrStoredTenantDNS, err.Error())
 	}
 
 	return d, true, nil
 }
+
+// ErrStoredTenantDNS is returned for stored DNS settings that do not parse
+// (a hand edit of the database): never the defaults, never a refusal of
+// the caller's input.
+var ErrStoredTenantDNS = errors.New("stored DNS settings do not parse")
 
 // TenantDNS returns the stored DNS settings of the handle's tailnet, nil
 // for the defaults.

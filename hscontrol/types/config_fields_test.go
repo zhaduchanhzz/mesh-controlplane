@@ -153,6 +153,7 @@ func TestConfigFields(t *testing.T) {
 		"tuning.tenant_dns.max_extra_records",
 		"tuning.tenant_dns.max_nameservers",
 		"tuning.tenant_dns.max_search_domains",
+		"tuning.tenant_dns.max_split_domains",
 		"tuning.tenant_dns.max_config_bytes",
 		"tuning.incremental_netmap.enabled",
 		"tuning.incremental_netmap.reconcile_interval",

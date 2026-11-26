@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/rs/zerolog/log"
 	"github.com/tailscale/hujson"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/scope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
@@ -113,7 +114,7 @@ func registerACL(api huma.API, b Backend) {
 		return streamPolicy(data, aclContentType(in.Accept)), nil
 	})
 
-	huma.Register(api, requireScope(huma.Operation{
+	huma.Register(api, policyWriteOp(b, requireScope(huma.Operation{
 		OperationID:   "setACL",
 		Method:        http.MethodPost,
 		Path:          "/api/v2/tailnet/{tailnet}/acl",
@@ -132,19 +133,13 @@ func registerACL(api huma.API, b Backend) {
 			http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
 			http.StatusNotFound, http.StatusPreconditionFailed, http.StatusInternalServerError,
 		},
-	}, scope.PolicyFile), func(ctx context.Context, in *setACLInput) (*huma.StreamResponse, error) {
+	}, scope.PolicyFile)), func(ctx context.Context, in *setACLInput) (*huma.StreamResponse, error) {
+		// Cluster mode (P12d): {tailnet}, the size limit and the tailnet's
+		// write bucket were checked before the body was read
+		// (tenantWriteMiddleware); checked again here as everywhere.
 		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
-		}
-
-		// Cluster mode (P12d): the tenant's own policy, size limited and
-		// rate limited per tailnet.
-		if b.Tailnet != "" {
-			err = tenantWriteGate(b, len(in.RawBody), tenantPolicyLimit(b))
-			if err != nil {
-				return nil, err
-			}
 		}
 
 		if b.Cfg.Policy.Mode != types.PolicyModeDB {
@@ -179,12 +174,28 @@ func registerACL(api huma.API, b Backend) {
 			return nil, huma.Error412PreconditionFailed("precondition failed, invalid old hash")
 		}
 
+		// Stored, but not installed (P12d review 2): never a bare failure.
+		// The write is committed: audited, answered with its ETag and a
+		// message saying so; the previous policy stays enforced until the
+		// stored one is installed (the cluster's reconcile loop retries).
+		if errors.Is(err, state.ErrPolicyNotInForce) && updated != nil {
+			if b.Tailnet != "" {
+				auditTenantWrite(ctx, b, TenantWrite{Op: "setACL", Revision: rev, NotInForce: true}, []byte(updated.Data))
+			}
+
+			log.Error().Err(err).Str("tailnet", b.Tailnet).Uint64("revision", rev).
+				Msg("policy stored but not installed; the previous policy stays enforced")
+
+			return nil, huma.ErrorWithHeaders(huma.Error500InternalServerError(errPolicyNotInForce),
+				http.Header{"ETag": {policyETag([]byte(updated.Data))}})
+		}
+
 		if err != nil {
-			return nil, mapError("setting policy", err)
+			return nil, mapTenantError("setting policy", err)
 		}
 
 		if b.Tailnet != "" {
-			auditTenantWrite(ctx, b, "setACL", rev, []byte(updated.Data))
+			auditTenantWrite(ctx, b, TenantWrite{Op: "setACL", Revision: rev}, []byte(updated.Data))
 		}
 
 		return streamPolicy([]byte(updated.Data), aclWriteContentType(in.Accept)), nil
@@ -194,7 +205,9 @@ func registerACL(api huma.API, b Backend) {
 }
 
 func registerValidateACL(api huma.API, b Backend, aclTags []string) {
-	huma.Register(api, requireScope(huma.Operation{
+	// Cluster mode (P12d): validating compiles the policy and runs its
+	// tests, so it is gated as a write (tenantWriteMiddleware).
+	huma.Register(api, policyWriteOp(b, requireScope(huma.Operation{
 		OperationID:      "validateACL",
 		Method:           http.MethodPost,
 		Path:             "/api/v2/tailnet/{tailnet}/acl/validate",
@@ -211,7 +224,7 @@ func registerValidateACL(api huma.API, b Backend, aclTags []string) {
 			http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
 			http.StatusNotFound, http.StatusInternalServerError,
 		},
-	}, scope.PolicyFileRead), func(ctx context.Context, in *validateACLInput) (*validateACLOutput, error) {
+	}, scope.PolicyFileRead)), func(ctx context.Context, in *validateACLInput) (*validateACLOutput, error) {
 		err := requireTailnet(b, in.Tailnet)
 		if err != nil {
 			return nil, err
@@ -220,15 +233,6 @@ func registerValidateACL(api huma.API, b Backend, aclTags []string) {
 		// As on Tailscale SaaS, only a body with no policy at all is a 400.
 		if len(bytes.TrimSpace(in.RawBody)) == 0 {
 			return nil, huma.Error400BadRequest("unexpected end of JSON input")
-		}
-
-		// Cluster mode (P12d): validating compiles the policy and runs its
-		// tests, so it shares the config-write bucket.
-		if b.Tailnet != "" {
-			err = tenantWriteGate(b, len(in.RawBody), tenantPolicyLimit(b))
-			if err != nil {
-				return nil, err
-			}
 		}
 
 		out := &validateACLOutput{}
@@ -241,7 +245,7 @@ func registerValidateACL(api huma.API, b Backend, aclTags []string) {
 		}
 
 		if err != nil {
-			return nil, huma.Error500InternalServerError("validating policy", err)
+			return nil, internalError("validating policy", err)
 		}
 
 		return out, nil
@@ -250,6 +254,18 @@ func registerValidateACL(api huma.API, b Backend, aclTags []string) {
 	// huma requires a RawBody; the handler answers an empty one as Tailscale
 	// does.
 	api.OpenAPI().Paths["/api/v2/tailnet/{tailnet}/acl/validate"].Post.RequestBody.Required = false
+}
+
+// policyWriteOp is op (setACL, validateACL) in cluster mode marked as a
+// tenant configuration write whose body is at most
+// tuning.tenant_api.max_policy_bytes (P12d review 5): refused from its
+// headers when declared larger, and never read beyond the limit.
+func policyWriteOp(b Backend, op huma.Operation) huma.Operation {
+	if b.Tailnet == "" {
+		return op
+	}
+
+	return tenantConfigWrite(op, int64(tenantPolicyLimit(b)))
 }
 
 // currentPolicy returns the stored policy bytes, or the default when none is
@@ -266,7 +282,7 @@ func currentPolicy(b Backend) ([]byte, error) {
 				return []byte(def), nil
 			}
 
-			return nil, huma.Error500InternalServerError("loading policy", err)
+			return nil, internalError("loading policy", err)
 		}
 
 		if p.Data == "" {
@@ -283,7 +299,7 @@ func currentPolicy(b Backend) ([]byte, error) {
 
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("reading policy file", err)
+			return nil, internalError("reading policy file", err)
 		}
 
 		return data, nil

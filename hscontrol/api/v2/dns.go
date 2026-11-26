@@ -119,8 +119,11 @@ func registerDNS(api huma.API, b Backend) {
 		}, scope.DNSRead)
 	}
 
+	// In cluster mode {tailnet}, the body size and the tailnet's
+	// config-write bucket are checked before the body is read
+	// (tenantWriteMiddleware, P12d review 5).
 	writeOp := func(id, method, path, summary string) huma.Operation {
-		return requireScope(huma.Operation{
+		op := requireScope(huma.Operation{
 			OperationID:     id,
 			Method:          method,
 			Path:            "/api/v2/tailnet/{tailnet}/dns/" + path,
@@ -136,6 +139,12 @@ func registerDNS(api huma.API, b Backend) {
 				http.StatusServiceUnavailable,
 			},
 		}, scope.DNS)
+
+		if b.Tailnet != "" {
+			op = tenantConfigWrite(op, maxBodyBytes)
+		}
+
+		return op
 	}
 
 	huma.Register(api, readOp("getDNSNameservers", "nameservers", "List the DNS nameservers"),
@@ -341,7 +350,7 @@ func readDNS(b Backend, tn string) (*types.TenantDNS, error) {
 
 	d, err := b.State.TenantDNS()
 	if err != nil {
-		return nil, huma.Error500InternalServerError("loading DNS settings", err)
+		return nil, internalError("loading DNS settings", err)
 	}
 
 	if d == nil {
@@ -364,9 +373,10 @@ func writeDNS(ctx context.Context, b Backend, tn, op string, edit func(*types.Te
 		return nil, huma.Error501NotImplemented(errDNSFromConfig)
 	}
 
-	err = tenantWriteGate(b, 0, 0)
-	if err != nil {
-		return nil, err
+	// The write bucket was spent before the body was read
+	// (tenantWriteMiddleware); without the cluster's wiring, fail closed.
+	if b.Tenant == nil {
+		return nil, huma.Error503ServiceUnavailable(errNoTenant)
 	}
 
 	lim := b.Cfg.Tuning.TenantDNS
@@ -387,17 +397,17 @@ func writeDNS(ctx context.Context, b Backend, tn, op string, edit func(*types.Te
 		return next, nil
 	})
 	if err != nil {
-		return nil, mapError("setting DNS", err)
+		return nil, mapTenantError("setting DNS", err)
 	}
 
 	b.Change(c)
 
 	raw, err := json.Marshal(stored)
 	if err != nil {
-		return nil, huma.Error500InternalServerError("encoding DNS settings", err)
+		return nil, internalError("encoding DNS settings", err)
 	}
 
-	auditTenantWrite(ctx, b, op, rev, raw)
+	auditTenantWrite(ctx, b, TenantWrite{Op: op, Revision: rev}, raw)
 
 	return stored, nil
 }

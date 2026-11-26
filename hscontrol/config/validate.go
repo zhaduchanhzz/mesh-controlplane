@@ -253,6 +253,7 @@ func Validate(c *types.Config) error {
 		{"tuning.tenant_dns.max_extra_records", c.Tuning.TenantDNS.MaxExtraRecords, types.DefaultTenantDNSLimits.MaxExtraRecords},
 		{"tuning.tenant_dns.max_nameservers", c.Tuning.TenantDNS.MaxNameservers, types.DefaultTenantDNSLimits.MaxNameservers},
 		{"tuning.tenant_dns.max_search_domains", c.Tuning.TenantDNS.MaxSearchDomains, types.DefaultTenantDNSLimits.MaxSearchDomains},
+		{"tuning.tenant_dns.max_split_domains", c.Tuning.TenantDNS.MaxSplitDomains, types.DefaultTenantDNSLimits.MaxSplitDomains},
 		{"tuning.tenant_dns.max_config_bytes", c.Tuning.TenantDNS.MaxConfigBytes, types.DefaultTenantDNSLimits.MaxConfigBytes},
 	} {
 		if l.n <= 0 {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -54,6 +55,10 @@ type TenantDNSLimits struct {
 	// MaxSearchDomains is the most search domains a tailnet may store.
 	MaxSearchDomains int `example:"16" koanf:"max_search_domains"`
 
+	// MaxSplitDomains is the most split DNS domains a tailnet may store,
+	// counting a domain mapped to an empty list of nameservers.
+	MaxSplitDomains int `example:"16" koanf:"max_split_domains"`
+
 	// MaxConfigBytes is the largest a tailnet's DNS settings may be, as
 	// stored JSON.
 	MaxConfigBytes int `example:"524288" koanf:"max_config_bytes"`
@@ -61,7 +66,7 @@ type TenantDNSLimits struct {
 
 // DefaultTenantDNSLimits are the limits without configuration.
 var DefaultTenantDNSLimits = TenantDNSLimits{
-	MaxExtraRecords: 1000, MaxNameservers: 64, MaxSearchDomains: 64, MaxConfigBytes: 256 << 10,
+	MaxExtraRecords: 1000, MaxNameservers: 64, MaxSearchDomains: 64, MaxSplitDomains: 64, MaxConfigBytes: 256 << 10,
 }
 
 var (
@@ -124,18 +129,65 @@ func atOrBelow(name, domain string) bool {
 	return name == domain || strings.HasSuffix(name, "."+domain)
 }
 
-// validTenantNameserver accepts an IP address or an https DNS-over-HTTPS
-// URL; the config file's looser check (any URL) is not enough for input a
-// tenant controls.
-func validTenantNameserver(ns string) bool {
-	_, err := netip.ParseAddr(ns)
+// tenantNameserverProblem is why ns cannot be a tenant's nameserver, ""
+// when it can. A nameserver is an IP address or an https DNS-over-HTTPS URL;
+// the config file's looser check (any URL) is not enough for input a tenant
+// controls. With strict (every write, P12d review 7), the address, or a
+// DoH URL's IP host, must also be one a client can ask: not loopback,
+// link-local, interface-local, unspecified or zoned (a client would ask
+// itself or its own link, never a resolver of the tailnet). Host names in
+// DoH URLs are not resolved.
+func tenantNameserverProblem(ns string, strict bool) string {
+	ip, err := netip.ParseAddr(ns)
 	if err == nil {
-		return true
+		if strict {
+			return unusableResolverIP(ip)
+		}
+
+		return ""
 	}
 
 	u, err := url.Parse(ns)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return "is not an IP address or an https URL"
+	}
 
-	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil
+	if strict {
+		ip, err := netip.ParseAddr(u.Hostname())
+		if err == nil {
+			return unusableResolverIP(ip)
+		}
+	}
+
+	return ""
+}
+
+// unusableResolverIP is why ip cannot be a tailnet's resolver, "" when it
+// can.
+func unusableResolverIP(ip netip.Addr) string {
+	if ip.Zone() != "" {
+		return "has a zone"
+	}
+
+	ip = ip.Unmap()
+
+	switch {
+	case ip.IsUnspecified():
+		return "is an unspecified address"
+	case ip.IsLoopback():
+		return "is a loopback address"
+	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(), ip.IsInterfaceLocalMulticast():
+		return "is a link-local address"
+	}
+
+	return ""
+}
+
+// unlimitedTenantDNS bounds nothing: [TenantDNS.ValidateStored] checks
+// form only.
+var unlimitedTenantDNS = TenantDNSLimits{
+	MaxExtraRecords: math.MaxInt, MaxNameservers: math.MaxInt, MaxSearchDomains: math.MaxInt,
+	MaxSplitDomains: math.MaxInt, MaxConfigBytes: math.MaxInt,
 }
 
 func (l TenantDNSLimits) orDefaults() TenantDNSLimits {
@@ -152,6 +204,10 @@ func (l TenantDNSLimits) orDefaults() TenantDNSLimits {
 		d.MaxSearchDomains = l.MaxSearchDomains
 	}
 
+	if l.MaxSplitDomains > 0 {
+		d.MaxSplitDomains = l.MaxSplitDomains
+	}
+
 	if l.MaxConfigBytes > 0 {
 		d.MaxConfigBytes = l.MaxConfigBytes
 	}
@@ -160,13 +216,31 @@ func (l TenantDNSLimits) orDefaults() TenantDNSLimits {
 }
 
 // Validate checks d for tailnet slug under clusterBase against lim (ADR
-// 0008 §3). Records must be names below the tailnet's own base domain or
-// outside the cluster's entirely; split domains and search domains must be
-// DNS names, split domains outside the cluster's base; nameservers IP
-// addresses or https URLs. Every violation is listed.
-//
-//nolint:gocyclo // one check per field; every violation is collected
+// 0008 §3), as every write must pass (tenant API and operator). Records
+// must be names below the tailnet's own base domain or outside the
+// cluster's entirely; split domains and search domains must be DNS names;
+// split domains outside the cluster's base and not above it; search
+// domains outside the cluster's base or at or below the tailnet's own;
+// nameservers IP addresses or https URLs, never loopback, link-local or
+// unspecified; split domains count toward max_split_domains even mapped to
+// no nameserver. Every violation is listed.
 func (d *TenantDNS) Validate(slug, clusterBase string, lim TenantDNSLimits) error {
+	return d.validate(slug, clusterBase, lim, true)
+}
+
+// ValidateStored checks settings stored earlier, when a runtime loads them:
+// the rules of form every write has had to pass since P06, without limits.
+// The rules added since (P12d review 7: search domains in the cluster's
+// domain, split domains above it, unusable resolver addresses) and the
+// limits are [TenantDNS.Validate]'s: settings stored before them still
+// load (the caller warns), and the next write must pass them, as for a
+// lowered limit (ADR 0008 §3).
+func (d *TenantDNS) ValidateStored(slug, clusterBase string) error {
+	return d.validate(slug, clusterBase, unlimitedTenantDNS, false)
+}
+
+//nolint:gocyclo // one check per field; every violation is collected
+func (d *TenantDNS) validate(slug, clusterBase string, lim TenantDNSLimits, strict bool) error {
 	if d == nil {
 		return nil
 	}
@@ -205,9 +279,14 @@ func (d *TenantDNS) Validate(slug, clusterBase string, lim TenantDNSLimits) erro
 		bad("%d search domains, over tuning.tenant_dns.max_search_domains (%d)", n, lim.MaxSearchDomains)
 	}
 
+	// Every split domain counts, also one mapped to no nameserver.
+	if n := len(d.Nameservers.Split); n > lim.MaxSplitDomains {
+		bad("%d split DNS domains, over tuning.tenant_dns.max_split_domains (%d)", n, lim.MaxSplitDomains)
+	}
+
 	for _, ns := range d.Nameservers.Global {
-		if !validTenantNameserver(ns) {
-			bad("nameservers.global: %q is not an IP address or an https URL", ns)
+		if why := tenantNameserverProblem(ns, strict); why != "" {
+			bad("nameservers.global: %q %s", ns, why)
 		}
 	}
 
@@ -218,18 +297,24 @@ func (d *TenantDNS) Validate(slug, clusterBase string, lim TenantDNSLimits) erro
 			bad("nameservers.split: %q is not a DNS name", domain)
 		case cluster != "" && atOrBelow(n, cluster):
 			bad("nameservers.split: %q is inside the cluster's MagicDNS domain", domain)
+		case strict && cluster != "" && atOrBelow(cluster, n):
+			bad("nameservers.split: %q contains the cluster's MagicDNS domain", domain)
 		}
 
 		for _, ns := range d.Nameservers.Split[domain] {
-			if !validTenantNameserver(ns) {
-				bad("nameservers.split.%s: %q is not an IP address or an https URL", domain, ns)
+			if why := tenantNameserverProblem(ns, strict); why != "" {
+				bad("nameservers.split.%s: %q %s", domain, ns, why)
 			}
 		}
 	}
 
 	for _, s := range d.SearchDomains {
-		if _, ok := normDomain(s); !ok {
+		n, ok := normDomain(s)
+		switch {
+		case !ok:
 			bad("search_domains: %q is not a DNS name", s)
+		case strict && cluster != "" && atOrBelow(n, cluster) && !atOrBelow(n, own):
+			bad("search_domains: %q is in the cluster's MagicDNS domain but not at or below this tailnet's (%s)", s, own)
 		}
 	}
 

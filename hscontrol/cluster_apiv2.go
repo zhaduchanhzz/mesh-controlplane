@@ -165,12 +165,28 @@ func (rt *tenantRuntime) apiV2(c *Cluster) http.Handler {
 	return rt.api.h
 }
 
-// auditTenantWrite logs a tenant's stored policy or DNS write (P12d): the
-// tailnet, the operation, the API key's ID, the new revision and the
-// SHA-256 of what was stored; never the content.
+// auditTenantWrite logs a tenant's stored policy, DNS or device key write
+// (P12d): the tailnet, the operation, the API key's ID, the new revision
+// and the SHA-256 of what was stored, never the content; a policy stored
+// but not in force yet is marked so; a device key write names the device
+// and the value set.
 func auditTenantWrite(id tailnet.ID, w apiv2.TenantWrite) {
-	log.Info().Str("tailnet", id.String()).Str("op", w.Op).Uint64("api_key_id", w.KeyID).
-		Uint64("revision", w.Revision).Str("sha256", w.SHA256).Msg("tenant API: configuration stored")
+	ev := log.Info().Str("tailnet", id.String()).Str("op", w.Op).Uint64("api_key_id", w.KeyID).
+		Uint64("revision", w.Revision).Str("sha256", w.SHA256)
+
+	if w.NotInForce {
+		ev = ev.Bool("not_in_force", true)
+	}
+
+	if w.DeviceID != 0 {
+		ev = ev.Uint64("device_id", w.DeviceID)
+	}
+
+	if w.KeyExpiryDisabled != nil {
+		ev = ev.Bool("key_expiry_disabled", *w.KeyExpiryDisabled)
+	}
+
+	ev.Msg("tenant API: configuration stored")
 
 	if fn := tenantAuditHook.Load(); fn != nil {
 		(*fn)(id, w)
@@ -321,4 +337,28 @@ func (c *Cluster) SetTenantAuditHookForTest(fn func(tailnet.ID, apiv2.TenantWrit
 	}
 
 	tenantAuditHook.Store(&fn)
+}
+
+// reconcileDNSHook, when set, runs in the reconcile loop after a runtime's
+// stored DNS settings were read and before they are installed (tests: an
+// interleaving with a tenant write).
+var reconcileDNSHook atomic.Pointer[func(tailnet.ID)]
+
+func runReconcileDNSHook(id tailnet.ID) {
+	if fn := reconcileDNSHook.Load(); fn != nil {
+		(*fn)(id)
+	}
+}
+
+// SetReconcileDNSHookForTest makes fn run in the reconcile loop between
+// reading a runtime's stored DNS settings and installing them; nil removes
+// it. For tests.
+func (c *Cluster) SetReconcileDNSHookForTest(fn func(tailnet.ID)) {
+	if fn == nil {
+		reconcileDNSHook.Store(nil)
+
+		return
+	}
+
+	reconcileDNSHook.Store(&fn)
 }
