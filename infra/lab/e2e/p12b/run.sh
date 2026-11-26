@@ -425,6 +425,12 @@ trap 'cleanup; exit 2' INT TERM HUP
 # ------------------------------------------------------------------ setup ---
 setup() {
   local pass i n
+  # $CIDIR is under /dev/shm: when the last session of the ssh user on mc-ci
+  # ends, logind (RemoveIPC=yes, the default) deletes the user's files there
+  # (run 20261126T043351Z lost key, jobs.sh and mesh-rebootstrap mid-run).
+  # Linger keeps the user's manager alive; checked before anything starts.
+  ci_ "loginctl show-user \$(id -un) -p Linger | grep -qx Linger=yes" \
+    || { log "mc-ci: no linger for the ssh user (sudo loginctl enable-linger <user>); logind would wipe $CIDIR"; return 1; }
   pass=$(grep -E '^MC_DB_APP_PASSWORD=' "$MC_DB_ENV" | head -1 | cut -d= -f2-); pass=${pass%"$CR"}
   [ -n "$pass" ] || return 1
   printf '%s' "$pass" >"$TMPD/pg.pass"; unset pass; chmod 600 "$TMPD/pg.pass"
