@@ -38,22 +38,23 @@ func TestPolicyChanges(t *testing.T) {
 		t.Parallel()
 		h := servertest.NewHarness(t, 2)
 
-		// Record update counts before policy change.
-		countBefore := h.Client(0).UpdateCount()
-
-		// Set an allow-all policy explicitly.
+		// Set an allow-all policy explicitly. It compiles to what the
+		// default already gave the clients, so with delta-first (ADR 0015
+		// D2) they may get no frame: wait for the server to have handed out
+		// the change, then both must hold the allow-all filter and a peer.
 		h.ChangePolicy(t, []byte(`{
 			"acls": [
 				{"action": "accept", "src": ["*"], "dst": ["*:*"]}
 			]
 		}`))
+		h.Server.WaitMapsDelivered(t, 10*time.Second)
 
-		// Both clients should receive an update after the policy change.
-		h.Client(0).WaitForCondition(t, "update after policy",
-			10*time.Second,
-			func(nm *netmap.NetworkMap) bool {
-				return h.Client(0).UpdateCount() > countBefore
-			})
+		for _, c := range h.Clients() {
+			c.WaitForCondition(t, "allow-all in force", 10*time.Second,
+				func(nm *netmap.NetworkMap) bool {
+					return len(nm.PacketFilter) > 0 && len(nm.Peers) == 1
+				})
+		}
 	})
 
 	t.Run("policy_with_allow_all_has_packet_filter", func(t *testing.T) {
