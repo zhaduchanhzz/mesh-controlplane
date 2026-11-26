@@ -167,7 +167,8 @@ loop:
 		wg.Go(func() {
 			defer func() { <-slots }()
 
-			rctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
+			// A change in flight when the window ends still completes.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.timeout)
 			defer cancel()
 
 			t0 := time.Now()
@@ -180,9 +181,11 @@ loop:
 			}
 
 			ok.Add(1)
+
 			mu.Lock()
+			defer mu.Unlock()
+
 			lat = append(lat, time.Since(t0))
-			mu.Unlock()
 		})
 	}
 
@@ -192,6 +195,12 @@ loop:
 
 	return s
 }
+
+// Probe kinds (probes.csv, summary.json).
+const (
+	probeEndpoint = "endpoint"
+	probeHostinfo = "hostinfo"
+)
 
 // probeRec is one observation of one probe (probes.csv).
 type probeRec struct {
@@ -218,7 +227,7 @@ type probeSummary struct {
 	// OtherTailnetFrames (policy probes): frames with a packet filter received
 	// by observers of other tailnets during the probe windows.
 	OtherTailnetFrames int64 `json:"other_tailnet_filter_frames,omitempty"`
-	Command            dist  `json:"command,omitempty"`
+	Command            dist  `json:"command,omitzero"`
 }
 
 // probeRun times count client-driven changes, interval apart, alternating
@@ -227,8 +236,8 @@ func probeRun(ctx context.Context, cfg config, byKey map[key.NodePublic]*result,
 	rng *rand.Rand, recs *[]probeRec,
 ) []probeSummary {
 	sums := map[string]*probeSummary{
-		"endpoint": {Kind: "endpoint"},
-		"hostinfo": {Kind: "hostinfo"},
+		probeEndpoint: {Kind: probeEndpoint},
+		probeHostinfo: {Kind: probeHostinfo},
 	}
 	lats := map[string][]time.Duration{}
 	lasts := map[string][]time.Duration{}
@@ -242,9 +251,9 @@ func probeRun(ctx context.Context, cfg config, byKey map[key.NodePublic]*result,
 			}
 		}
 
-		kind := "endpoint"
+		kind := probeEndpoint
 		if i%2 == 1 {
-			kind = "hostinfo"
+			kind = probeHostinfo
 		}
 
 		s := sums[kind]
@@ -268,7 +277,7 @@ func probeRun(ctx context.Context, cfg config, byKey map[key.NodePublic]*result,
 
 		var match func(*tailcfg.MapResponse) bool
 
-		if kind == "endpoint" {
+		if kind == probeEndpoint {
 			ep := setEndpoint(src)
 			match = func(mr *tailcfg.MapResponse) bool { return carriesEndpoint(mr, srcID, ep) }
 		} else {
@@ -307,7 +316,7 @@ func probeRun(ctx context.Context, cfg config, byKey map[key.NodePublic]*result,
 
 	out := make([]probeSummary, 0, len(sums))
 
-	for _, kind := range []string{"endpoint", "hostinfo"} {
+	for _, kind := range []string{probeEndpoint, probeHostinfo} {
 		s := sums[kind]
 		s.Latency, s.LastObserver = distOf(lats[kind]), distOf(lasts[kind])
 		out = append(out, *s)
@@ -343,6 +352,7 @@ func collect(watch []*observer, ws []*waiter, sent time.Time, timeout time.Durat
 			worst = max(worst, rec.latency)
 		} else {
 			o.cancel(ws[j])
+
 			missed++
 		}
 
@@ -506,10 +516,12 @@ func policyRun(ctx context.Context, cfg config, tn string, observers []*observer
 		sent := time.Now()
 
 		cmd := exec.CommandContext(ctx, "sh", "-c", cfg.policyCmd) //nolint:gosec // the operator's own command
+
 		cmd.Env = append(os.Environ(), "CAPLOAD_TAILNET="+tn, "CAPLOAD_STEP="+strconv.Itoa(i))
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 
 		err := cmd.Run()
+
 		cmdDur = append(cmdDur, time.Since(sent))
 
 		if err != nil {

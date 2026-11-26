@@ -79,7 +79,7 @@ func (m *manifest) finish(dir string) error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(dir, "manifest-load.json"), b, 0o600)
+	return os.WriteFile(filepath.Join(dir, "manifest-load.json"), b, 0o600) //nolint:gosec // the operator's -out directory
 }
 
 func fileSHA256(path string) string {

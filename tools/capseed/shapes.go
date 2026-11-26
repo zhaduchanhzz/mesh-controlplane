@@ -168,7 +168,7 @@ func tagHeavyPolicy(users int, r *rand.Rand) policyDoc {
 
 		doc.Groups[name] = members
 
-		var dst []string
+		dst := make([]string, 0, tagGroupTags)
 		for _, j := range pickDistinct(r, tagRoles, tagGroupTags, -1) {
 			dst = append(dst, roleTag(j))
 		}

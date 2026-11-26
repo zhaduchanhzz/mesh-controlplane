@@ -491,7 +491,9 @@ func run(cfg config, first, reg phaseSpec) (int, error) {
 
 	if cfg.probes > 0 && len(observers) > 0 {
 		clock.mark("probe_start")
+
 		out.Probes = probeRun(ctx, cfg, byKey, observers, rng, &recs)
+
 		clock.mark("probe_end")
 
 		for _, s := range out.Probes {
@@ -511,8 +513,11 @@ func run(cfg config, first, reg phaseSpec) (int, error) {
 		}
 
 		clock.mark("policy_start")
+
 		ps := policyRun(ctx, cfg, tn, observers, &recs)
+
 		clock.mark("policy_end")
+
 		out.Policy = &ps
 
 		fmt.Printf("policy n=%d observations=%d missed=%d p50=%.0fms p99=%.0fms other_tailnet_filter_frames=%d\n", //nolint:forbidigo // harness output
@@ -520,6 +525,7 @@ func run(cfg config, first, reg phaseSpec) (int, error) {
 	}
 
 	hold := window("hold", cfg.hold, nil)
+
 	close(stopProgress)
 
 	out.HoldSec, out.HoldFrames, out.HoldBytes = hold.Seconds, hold.Frames, hold.Bytes
