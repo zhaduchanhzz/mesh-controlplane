@@ -497,7 +497,7 @@ func TestP12dReviewReconcileSkipsObservedPolicy(t *testing.T) {
 
 	clients := enroll(t, tc.Tenant(t, tenantA), "alice", "obs-a1", "obs-a2")
 	for _, c := range clients {
-		waitTenantMesh(t, c, clients, true)
+		waitTenantMesh(t, c, clients, false)
 	}
 
 	keyA := tc.MintAPIKey(t, tenantA)
