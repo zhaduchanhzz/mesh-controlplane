@@ -95,3 +95,22 @@ release build.
   short-lived lab test credentials in mode-0600 files; they are piped
   between hosts and deleted after the run, never printed or committed.
   The PostgreSQL password is only a `file:` reference in the config.
+
+## P14f F5: no-ceiling ramp (`ramp.sh`)
+
+`ramp.sh limit SHAPE…` finds the largest N one cluster process serves for a
+policy shape. It runs steps of `STEP` (5000) from `START` until a step
+fails, then bisects down to `RES` (1000). `ramp.sh step SHAPE N` runs one
+step, and `ramp.sh matrix` runs the small/medium points for the cost model.
+
+- **Settings:** the header of `ramp.sh` lists the pass criteria, the
+  blocker classes and the environment variables.
+- **Results:** each step writes
+  `$OUT/<shape>/inc<0|1>/<N>/verdict.json` (`ramp-verdict.py`).
+- **Load:** can be split over several hosts with
+  `LOAD_HOSTS="host:weight …"`.
+- **Database:** each step gets a fresh `capf5_*` database on mc-db.
+- **Shapes:** `allow_all`, `isolated`, `personal_devices`,
+  `shared_service`, `tag_heavy`.
+
+Evidence: `evidence/P14f-f5-prep.md`.

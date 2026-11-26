@@ -130,10 +130,15 @@ def main():
     srv_cores = window_cpu(srv, t0, t1, "t", "cpu_ticks", CLK_TCK)
     cpu_total_s = (fnum(srv[-1]["cpu_ticks"]) - fnum(srv[0]["cpu_ticks"])) / CLK_TCK if len(srv) >= 2 else None
 
+    # The divergence counter has labels, so it has no series until the first
+    # divergence; the check only means something if reconciles ran.
     div = 0.0
+    reconciles = 0.0
     for line in read(os.path.join(c, "metrics-final.txt")).splitlines():
         if line.startswith("headscale_nodestore_netmap_divergence_total"):
             div += fnum(line.rsplit(" ", 1)[-1])
+        elif line.startswith("headscale_nodestore_netmap_reconcile_duration_seconds_count"):
+            reconciles += fnum(line.rsplit(" ", 1)[-1])
 
     start = fnum(read(os.path.join(c, "step-start.txt")).strip())
     oom = []
@@ -154,7 +159,7 @@ def main():
         "register_all_ok": reg["nodes"] == a.register and reg["ok"] == a.register and reg["failed"] == 0,
         "rss_below_90pct": rss_frac is not None and rss_frac < RSS_LIMIT,
         "server_alive_no_restart_no_oom": a.alive == "1" and restarts == 0 and not oom,
-        "divergence_zero": div == 0,
+        "divergence_zero": div == 0 and (a.inc != "1" or reconciles >= 1),
         "no_isolation_violation": isolation == 0 and 3 not in exit_codes,
     }
     if not checks["no_isolation_violation"]:
@@ -170,8 +175,10 @@ def main():
     if verdict == "FAIL":
         if oom or a.alive != "1" or (rss_frac or 0) >= RSS_LIMIT:
             blocker = "server RAM"
-        elif not checks["divergence_zero"]:
+        elif div > 0:
             blocker = "netmap divergence (correctness)"
+        elif not checks["divergence_zero"]:
+            blocker = "no reconcile ran: divergence unchecked (lengthen HOLD or shorten RECONCILE_INTERVAL)"
         elif load_sat or re.search(r"too many open files|cannot assign requested address|address already in use", err_text):
             blocker = "load generator (CPU, ports or fds): limit is a lower bound"
         elif srv_cores is not None and cores and srv_cores >= BUSY * cores:
@@ -187,7 +194,7 @@ def main():
             "cpu_cores_avg_enroll": round(srv_cores, 2) if srv_cores is not None else None,
             "cpu_seconds_total": round(cpu_total_s, 1) if cpu_total_s is not None else None,
             "alive_at_end": a.alive == "1", "restarts": restarts, "oom": oom,
-            "netmap_divergence_total": div,
+            "netmap_divergence_total": div, "netmap_reconciles": reconciles,
         },
         "enroll": {**enroll, "first_map_p99_ms_max": max(fm_p99) if fm_p99 else None},
         "register": reg,
@@ -200,7 +207,7 @@ def main():
     print(
         f"VERDICT {verdict} shape={a.shape} n={a.n} inc={a.inc} enroll={enroll['ok']}/{a.n} wall={enroll['wall_s']:.0f}s "
         f"register={reg['ok']}/{a.register} rss={out['server']['rss_peak_gib']}GiB/{out['server']['vm_mem_gib']}GiB "
-        f"cpu={out['server']['cpu_cores_avg_enroll']}c div={div:g} bytes={out['bytes_sent_total']} blocker={blocker}"
+        f"cpu={out['server']['cpu_cores_avg_enroll']}c div={div:g}/rec={reconciles:g} bytes={out['bytes_sent_total']} blocker={blocker}"
     )
 
 
