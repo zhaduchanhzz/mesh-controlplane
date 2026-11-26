@@ -133,7 +133,7 @@ func TestSharedPeerEntryRenderedOnce(t *testing.T) {
 
 	resp := peerMap(t, m, td.Nodes[1].n.ID)
 	for _, p := range resp.Peers {
-		if p.ID == tailcfg.NodeID(n0) {
+		if p.ID == tailcfg.NodeID(n0) { //nolint:gosec // test node IDs are small
 			require.NotSame(t, entries[p.ID], p, "renamed node served from the old entry")
 			require.Contains(t, p.Name, "renamed-zero")
 
@@ -166,7 +166,7 @@ func TestSharedPeerEntryRenderedOnce(t *testing.T) {
 
 	resp = peerMap(t, m, td.Nodes[2].n.ID)
 	for _, p := range resp.Peers {
-		if p.ID == tailcfg.NodeID(td.Nodes[3].n.ID) {
+		if p.ID == tailcfg.NodeID(td.Nodes[3].n.ID) { //nolint:gosec // test node IDs are small
 			require.NotNil(t, p.Online)
 			require.False(t, *p.Online, "disconnected peer served from its online entry")
 		}
@@ -283,7 +283,6 @@ func TestSharedPeersProperty(t *testing.T) {
 	connectAllShared(t, td)
 
 	rapid.Check(t, func(rt *rapid.T) {
-
 		steps := rapid.IntRange(1, 12).Draw(rt, "steps")
 		for s := range steps {
 			i := rapid.IntRange(0, len(td.Nodes)-1).Draw(rt, "node")
