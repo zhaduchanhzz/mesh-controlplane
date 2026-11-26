@@ -219,7 +219,7 @@ Hai writer mỗi 2 ms ghi một thiết bị ngẫu nhiên: một trên tenant �
 - Vì việc đếm nằm sau `LockOwnership`, writer của **chính tenant đang chuyển** (fence thật) bị chặn gần bằng cả `MoveOwner`: 94–153 ms. Writer của **tenant khác** không bị chặn (≤ 9,2 ms).
 - So với ghi lại mọi dòng: nhanh hơn 4–7 lần ở 5.000/10.000; ở 1.000 thì chậm hơn (113 so với 90 ms) khi đích lớn.
 - So với 2026-11-22: CAS mô phỏng nhanh hơn (1,8–2,0 so với 2,3–4,8 ms; lần này VM không có tải nền). Ghi lại mọi dòng chậm hơn và WAL gấp ~2 lần (5.000: 427 ms / 30,7 MB so với 292 ms / 15,8 MB): lần này `pg_locks` cho thấy 8 index trên `blogsim.nodes`; số index lúc 2026-11-22 không được ghi, nên nguyên nhân (nhiều khả năng là schema đã thêm index) **chưa xác minh**. Hai lần đo không cùng schema, không so thẳng được.
-- Đề xuất (chưa làm, cần chủ dự án quyết): đếm sức chứa **trước** `LockOwnership` (hoặc trong transaction riêng, chấp nhận sai số nhỏ), hoặc giữ bộ đếm thiết bị mỗi cluster, rồi đo lại. Không phải lỗi isolation; thời gian chặn ~0,1–0,15 s mỗi move, xảy ra một lần mỗi move.
+- **Quyết định của chủ dự án (2026-11-26): chấp nhận, ghi giới hạn.** Giữ nguyên code của P12b. Tối ưu (bộ đếm thiết bị theo cluster, hoặc đếm sức chứa trước `LockOwnership`) để sang P14. Không phải lỗi isolation; thời gian chặn ~0,1–0,15 s mỗi move, xảy ra một lần mỗi move.
 
 ## Known limitations / security blockers
 
