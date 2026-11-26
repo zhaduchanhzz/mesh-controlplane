@@ -16,6 +16,18 @@
 //
 // Only the database clock decides expiry; process clocks are never compared
 // with stored times.
+//
+// On PostgreSQL a fenced write and a takeover exclude each other with a
+// transaction-scoped advisory lock per cluster (P12c B1), not with a row
+// lock on cluster_leases: a fenced write takes it shared ([PostgresSharedLock])
+// before it reads the row, and [Store.Acquire] takes it exclusive before it
+// takes an expired lease over. The lock manager queues fairly, so a takeover
+// waits only for the writes already past their check, and later writes wait
+// behind it and then read the new holder. [Store.Renew] and
+// [Store.Release] change neither holder nor epoch and take no advisory lock:
+// a write never holds the row, so the active process's renewal never waits
+// for its own writers (row share locks do not queue: a FOR SHARE read in
+// every write starved the renewal, P12c review B1).
 package lease
 
 import (
@@ -83,6 +95,16 @@ const SQLiteNow = `strftime('%Y-%m-%d %H:%M:%f','now')`
 // PostgresNow is the database clock on PostgreSQL (see Store.now).
 const PostgresNow = `clock_timestamp()`
 
+// lockPrefix namespaces the per-cluster advisory lock of the lease.
+const lockPrefix = "lease/cluster/"
+
+// PostgresSharedLock takes the shared advisory lock of the lease of cluster
+// $1 until the end of the transaction. A fenced write runs it as a statement
+// of its own before it reads the lease row, so that read starts (and takes
+// its snapshot and its clock) only once no takeover is in progress: a
+// takeover holds the lock exclusive from before its check until it commits.
+const PostgresSharedLock = `SELECT pg_advisory_xact_lock_shared(hashtextextended('` + lockPrefix + `' || $1, 0))`
+
 // Lease is a lease held by this process.
 type Lease struct {
 	Cluster string
@@ -132,7 +154,60 @@ func (s *Store) now() string {
 // Acquire takes the lease of cluster for holder with ttl: a first lease has
 // epoch 1; an expired lease (whoever held it) is taken over at epoch+1. A
 // lease that has not expired is never taken: [ErrHeld].
+//
+// On PostgreSQL a live lease is answered from a plain read, without locking
+// anything (a standby polls every AcquireInterval). Otherwise the takeover
+// runs under the exclusive advisory lock of the cluster (see the package
+// documentation), its wait bounded by ctx's deadline (lock_timeout), else
+// by ttl.
 func (s *Store) Acquire(ctx context.Context, cluster, holder string, ttl time.Duration) (Lease, error) {
+	if !s.postgres {
+		return s.acquire(s.db.WithContext(ctx), cluster, holder, ttl)
+	}
+
+	var l Lease
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var live []bool
+
+		err := tx.Raw(`SELECT expires_at > `+s.now()+` FROM cluster_leases WHERE cluster_id = ?`, cluster).Scan(&live).Error
+		if err != nil {
+			return fmt.Errorf("acquiring cluster lease %s: %w", cluster, err)
+		}
+
+		if len(live) == 1 && live[0] {
+			return ErrHeld
+		}
+
+		wait := ttl
+		if d, ok := ctx.Deadline(); ok {
+			wait = max(time.Until(d), time.Millisecond)
+		}
+
+		err = tx.Exec(fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", max(wait.Milliseconds(), 1))).Error
+		if err != nil {
+			return fmt.Errorf("acquiring cluster lease %s: setting lock_timeout: %w", cluster, err)
+		}
+
+		err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(? || ?, 0))`, lockPrefix, cluster).Error
+		if err != nil {
+			return fmt.Errorf("acquiring cluster lease %s: waiting for writes in flight: %w", cluster, err)
+		}
+
+		l, err = s.acquire(tx, cluster, holder, ttl)
+
+		return err
+	})
+	if err != nil {
+		return Lease{}, err
+	}
+
+	return l, nil
+}
+
+// acquire is the takeover statement of Acquire, on db (a transaction under
+// the cluster's exclusive advisory lock on PostgreSQL).
+func (s *Store) acquire(db *gorm.DB, cluster, holder string, ttl time.Duration) (Lease, error) {
 	q := `INSERT INTO cluster_leases(cluster_id, holder, epoch, expires_at, updated_at)
 VALUES (?, ?, 1, ` + s.nowPlus(ttl) + `, ` + s.now() + `)
 ON CONFLICT (cluster_id) DO UPDATE SET
@@ -145,7 +220,7 @@ RETURNING epoch`
 
 	var epochs []int64
 
-	err := s.db.WithContext(ctx).Raw(q, cluster, holder).Scan(&epochs).Error
+	err := db.Raw(q, cluster, holder).Scan(&epochs).Error
 	if err != nil {
 		return Lease{}, fmt.Errorf("acquiring cluster lease %s: %w", cluster, err)
 	}

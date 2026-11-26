@@ -369,11 +369,18 @@ func checkFence(db *gorm.DB) {
 }
 
 // checkLease (P11b): a cluster process writes only while the cluster lease it
-// claims is still its own and live by the database clock. The row is read
-// FOR SHARE on PostgreSQL, so a standby's takeover (an UPDATE of that row)
-// waits for this transaction, and every write after the takeover sees the
-// new holder. Lock order: tailnet advisory lock, tailnets row, cluster_leases
-// row.
+// claims is still its own and live by the database clock.
+//
+// On PostgreSQL (P12c B1) the transaction first takes the cluster's shared
+// advisory lock (lease.PostgresSharedLock), in a statement of its own, and
+// keeps it until it ends; the row is then read without a row lock. A
+// takeover (lease.Store.Acquire) holds that lock exclusive from before its
+// check until it commits, so it waits for this transaction, and a write that
+// reaches this point after the takeover reads the new holder. The row is no
+// longer read FOR SHARE: share lockers do not queue, so a write load starved
+// the active process's renewal (an UPDATE of that row) past its self-fence
+// deadline. Renewals change neither holder nor epoch and need no lock. Lock
+// order: tailnet advisory lock, tailnets row, cluster advisory lock.
 func checkLease(db *gorm.DB, f tailnet.Fence) {
 	holder, epoch, ok := f.Lease()
 	if !ok {
@@ -382,7 +389,14 @@ func checkLease(db *gorm.DB, f tailnet.Fence) {
 
 	q := `SELECT holder, epoch, expires_at > ` + lease.SQLiteNow + ` FROM cluster_leases WHERE cluster_id = ?`
 	if db.Name() == "postgres" {
-		q = `SELECT holder, epoch, expires_at > ` + lease.PostgresNow + ` FROM cluster_leases WHERE cluster_id = $1 FOR SHARE`
+		_, err := db.Statement.ConnPool.ExecContext(db.Statement.Context, lease.PostgresSharedLock, f.Cluster())
+		if err != nil {
+			_ = db.AddError(fmt.Errorf("%w: locking cluster lease of %s: %w", ErrFenced, f.Cluster(), err))
+
+			return
+		}
+
+		q = `SELECT holder, epoch, expires_at > ` + lease.PostgresNow + ` FROM cluster_leases WHERE cluster_id = $1`
 	}
 
 	var (
