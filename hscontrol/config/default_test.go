@@ -555,6 +555,8 @@ func sharedKeys(noise, derp string) func(*types.Config) {
 // while the incremental netmap is enabled.
 func TestValidateIncrementalNetmapBounds(t *testing.T) {
 	cfg := validConfig()
+	// On by default since P14f (ADR 0015); the disabled case is explicit.
+	cfg.Tuning.IncrementalNetmap.Enabled = false
 	cfg.Tuning.IncrementalNetmap.ReconcileInterval = time.Second
 	cfg.Tuning.IncrementalNetmap.FullMapInterval = time.Second
 	require.NoError(t, Validate(&cfg), "bounds are not checked while disabled")
