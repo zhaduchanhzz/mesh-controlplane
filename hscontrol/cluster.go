@@ -1511,12 +1511,14 @@ func misdirectedCluster(w http.ResponseWriter, r *http.Request, why string) {
 // MetricsHandler is the cluster's private metrics listener
 // (metrics_listen_addr): /metrics only, operators only ([operatorOnly]:
 // loopback or metrics_operator_cidrs, never the Tailscale range). No debug
-// pages: they would show state of every tailnet of the cluster.
+// pages: they would show state of every tailnet of the cluster. A benchmark
+// build (tag benchpprof, never a release) adds /debug/pprof/ for loopback
+// peers only (pprof_bench.go).
 func (c *Cluster) MetricsHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	return securityHeaders(operatorOnly(c.cfg.MetricsOperatorCIDRs, mux))
+	return securityHeaders(withBenchPprof(operatorOnly(c.cfg.MetricsOperatorCIDRs, mux)))
 }
 
 // HTTPHandler is the public handler of the cluster listener. It serves only
@@ -1626,6 +1628,7 @@ func (c *Cluster) Serve(ctx context.Context) error {
 
 		errorGroup.Go(serveHTTP(metricsSrv, mln))
 		log.Info().Msgf("cluster metrics (operators only) on %s", mln.Addr())
+		logBenchPprof(mln.Addr().String())
 	}
 
 	// P08b: live operator administration, on the unix socket only.

@@ -137,7 +137,15 @@ func dialector(tb testing.TB) gorm.Dialector {
 func openDB(tb testing.TB) *gorm.DB {
 	tb.Helper()
 
-	db, err := gorm.Open(dialector(tb), &gorm.Config{Logger: logger.Discard})
+	return openDBWith(tb, dialector(tb))
+}
+
+// openDBWith is openDB on a given dialector (P14b: a PostgreSQL connection
+// with a statement-counting tracer).
+func openDBWith(tb testing.TB, dial gorm.Dialector) *gorm.DB {
+	tb.Helper()
+
+	db, err := gorm.Open(dial, &gorm.Config{Logger: logger.Discard})
 	if err != nil {
 		tb.Fatal(err)
 	}

@@ -137,7 +137,7 @@ func TestP08ClusterMetricsOperatorsOnly(t *testing.T) {
 		{"[fd7a:115c:a1e0::7]:5000", "/metrics", http.StatusForbidden},
 		{"203.0.113.9:5000", "/metrics", http.StatusForbidden},
 		{"127.0.0.1:5000", "/debug/", http.StatusNotFound},
-		{"127.0.0.1:5000", "/debug/pprof/", http.StatusNotFound},
+		{"127.0.0.1:5000", "/debug/pprof/", pprofLoopbackStatus()}, // 200 only in a benchpprof build
 		{"127.0.0.1:5000", "/debug/statsviz/", http.StatusNotFound},
 		{"127.0.0.1:5000", "/api/v1/node", http.StatusNotFound},
 	}
