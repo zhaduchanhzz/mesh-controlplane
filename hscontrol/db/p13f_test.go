@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -17,7 +18,8 @@ import (
 func TestOpenReadOnlySQLiteEveryConnectionQueryOnly(t *testing.T) {
 	cfg := sqliteTestConfig(filepath.Join(t.TempDir(), "ro.db"))
 
-	p, err := OpenPlatform(cfg)
+	// The schema is created by the explicit migrate step (ADR 0013).
+	p, err := MigrateAndOpenPlatform(cfg)
 	require.NoError(t, err)
 	require.NoError(t, p.Close())
 
@@ -57,6 +59,11 @@ func TestDefaultTailnetOnlyFromSingleTenantOpener(t *testing.T) {
 	for _, b := range backends(t) {
 		t.Run(b.name, func(t *testing.T) {
 			cfg := b.cfg(t, "", "c-p13f")
+
+			// The operator migrate step (ADR 0013) creates the schema; it
+			// creates no tailnet either.
+			_, err := Migrate(context.Background(), cfg)
+			require.NoError(t, err)
 
 			p, err := OpenPlatform(cfg)
 			require.NoError(t, err)
