@@ -64,3 +64,26 @@ Harness ghi `TS`, `TC`, `S0`, `S1`, `G1`, `W1` vào `timings.txt` cho mỗi lầ
 - Đóng stream sớm, khi còn `SafetyMargin` trước deadline, chỉ thu hẹp xác suất. Nó **không** chặn được trường hợp bị dừng đúng giữa lần kiểm và lúc ghi.
 - **Bảo đảm thật hiện có:** fence ở DB theo owner/epoch và lease. Process cũ không **ghi** được gì; frame lọt ra chỉ mang trạng thái đã có khi process còn giữ lease.
 - **Muốn client tự loại frame cũ:** phải gắn epoch vào luồng map để client kiểm. Đó là thay đổi giao thức và thiết kế (ADR 0005, AGENTS 12), cần chủ dự án duyệt.
+
+## Benchmark hot path (2026-11-26)
+
+Bản sửa S17 thêm vào mỗi frame của `writeMap`:
+- một lần kiểm `servable()` thứ hai;
+- hai lần `time.Now()`;
+- `recordFrameWritten`, chạy dưới một mutex chung cả process.
+
+Benchmark nằm trong `hscontrol/p09_frame_gate_bench_test.go`.
+
+**Lệnh** (chạy trên mc-ci: Intel Xeon E5-2696 v3, 16 vCPU, Go 1.27.4; exit 0):
+`go test -run XXX -bench BenchmarkS17 -benchmem -count 5 -cpu 1,4 ./hscontrol/`
+
+| Đo | -cpu 1 | -cpu 4 (song song) |
+|---|---|---|
+| Phần S17 thêm vào mỗi frame (`BenchmarkS17FrameGate`) | 155 ns/op, 0 alloc | 197–206 ns/op, 0 alloc |
+| Mã hóa frame 10 peer, zstd (`BenchmarkS17EncodeFrame`) | 77 µs/op | 26 µs/op |
+| Mã hóa frame 100 peer, zstd | 549–557 µs/op | 156–162 µs/op |
+
+Nhận xét:
+- Phần thêm bằng 0,1–0,8 % chi phí mã hóa frame mà nó chặn.
+- Mutex chung làm phần này chạy tuần tự, nên trần là khoảng 5 triệu frame/s cho cả process. Mức đó cao hơn nhiều so với số frame mã hóa được, nên không phải nút cổ chai.
+- Không có số "trước": phần đo chỉ gồm đúng code mới thêm, vì đường cũ không có các bước này.
