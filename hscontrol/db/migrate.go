@@ -77,7 +77,7 @@ func Migrate(ctx context.Context, cfg *types.Config) (MigrateResult, error) {
 // single-tenant option of ADR 0013 §Hệ quả: never used by a cluster process,
 // mesh-placement serve or the cluster admin CLI.
 func MigrateAndOpenPlatform(cfg *types.Config) (*Platform, error) {
-	return openPlatform(cfg, currentChain(), true)
+	return openPlatformChain(cfg, currentChain(), true)
 }
 
 func migrateChain(ctx context.Context, cfg *types.Config, ch chain) (MigrateResult, error) {

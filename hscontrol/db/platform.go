@@ -125,12 +125,12 @@ func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.db) }
 // migrations, validates the schema (SQLite) and registers tenantscope on the
 // pool. It never creates a tailnet.
 func OpenPlatform(cfg *types.Config) (*Platform, error) {
-	return openPlatform(cfg, currentChain(), false)
+	return openPlatformChain(cfg, currentChain(), false)
 }
 
-// openPlatform is OpenPlatform for binary chain ch; migrate is the explicit
+// openPlatformChain is OpenPlatform for binary chain ch; migrate is the explicit
 // development option ([MigrateAndOpenPlatform]).
-func openPlatform(cfg *types.Config, ch chain, _ bool) (_ *Platform, retErr error) {
+func openPlatformChain(cfg *types.Config, ch chain, _ bool) (_ *Platform, retErr error) {
 	dbConn, err := openDB(cfg.Database, cfg.SQLitePath())
 	if err != nil {
 		return nil, err
