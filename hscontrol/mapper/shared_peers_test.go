@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -241,11 +242,14 @@ func TestSharedPeersProperty(t *testing.T) {
 		names = append(names, n)
 	}
 
-	rapid.Check(t, func(rt *rapid.T) {
-		td, cleanup := newSharedTailnet(t, 3, 4, allowAllPolicyJSON)
-		defer cleanup()
+	slices.Sort(names)
 
-		connectAllShared(rt, td)
+	// One tailnet for every check: setting one up costs far more than a
+	// step, and the property holds after every step whatever came before.
+	td := setupSharedTailnet(t, 3, 4, allowAllPolicyJSON)
+	connectAllShared(t, td)
+
+	rapid.Check(t, func(rt *rapid.T) {
 
 		steps := rapid.IntRange(1, 12).Draw(rt, "steps")
 		for s := range steps {
