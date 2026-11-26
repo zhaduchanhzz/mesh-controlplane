@@ -415,7 +415,7 @@ set_policy() { # SLUG JSON
   local o=c1 pf=/var/lib/headscale/cluster/n1-policy.hujson
   [ "$1" = c ] && o=c2
   if [ $o = c1 ]; then printf '%s\n' "$2" | cp_ "sudo install -o headscale -g headscale -m 0640 /dev/stdin $pf && $CLI1 tailnet policy --slug $1 --file $pf; rc=\$?; sudo rm -f $pf; exit \$rc"
-  else printf '%s\n' "$2" | on c2 "sudo install -o headscale -g headscale -m 0640 /dev/stdin $pf && $CLI2 tailnet policy --slug $1 --file $pf; rc=\$?; sudo rm -f $pf; exit \$rc"; fi >/dev/null
+  else printf '%s\n' "$2" | on c2 "sudo install -o headscale -g headscale -m 0640 /dev/stdin $pf && $CLI2 tailnet policy --slug $1 --file $pf; rc=\$?; sudo rm -f $pf; exit \$rc"; fi > >(redact >>"$ART_DIR/logs/policy.log") 2>&1
 }
 
 # ------------------------------------------------------------------- cases ---
@@ -530,6 +530,8 @@ NFT" || p="$p; nft on a2"
 . "$(dirname "$0")/cases2.sh"
 # shellcheck source=cases3.sh
 . "$(dirname "$0")/cases3.sh"
+# shellcheck source=cases4.sh
+. "$(dirname "$0")/cases4.sh"
 
 # --------------------------------------------------------------------- main ---
 T0=$(date +%s)
@@ -548,6 +550,7 @@ t_s11
 t_s15
 t_s07
 t_s08
+t_s08b
 t_s10
 t_s12
 t_s14
