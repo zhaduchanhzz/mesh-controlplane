@@ -65,8 +65,8 @@ func TestReviewR1SharedEntriesFreedWithMapper(t *testing.T) {
 	assert.Zero(t, alive, "%d of %d shared entries of a stopped mapper are still reachable", alive, len(entries))
 }
 
-// baselineBytesPerPeer measures the heap a connection's delta-first
-// baseline of n peers holds.
+// baselineBytesPerPeer measures the bytes a connection's delta-first
+// baseline of n peers allocates.
 func baselineBytesPerPeer(t *testing.T, n int) float64 {
 	t.Helper()
 
@@ -92,7 +92,8 @@ func baselineBytesPerPeer(t *testing.T, n int) float64 {
 	require.Len(t, s.peers, n)
 	runtime.KeepAlive(s)
 
-	return float64(after.HeapAlloc-before.HeapAlloc) / float64(n)
+	// Bytes allocated by record: the baseline map (sized for n up front).
+	return float64(after.TotalAlloc-before.TotalAlloc) / float64(n)
 }
 
 // TestReviewR2BaselineBytesPerPeer: a baseline is one entry per peer per
