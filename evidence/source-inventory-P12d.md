@@ -60,3 +60,26 @@
 - G2: Cập nhật dòng `tailnets` từ handle runtime (bảng platform, không phải bảng tenant) không bị plugin chặn; đây là đường mới — trước đây chỉ code platform ghi `tailnets`. Chấp nhận vì điều kiện WHERE lặp lại đúng fence (owner/epoch/ACTIVE) và cùng transaction với ghi có fence.
 - G3: Tailscale trả 412 khi `If-Match` lệch (ticket ghi 409/412); giữ 412 như hiện có.
 - G4: `preferences` của Tailscale chỉ có `magicDNS`; `override_local_dns` (ADR 0008) không có endpoint Tailscale tương ứng ngoài `dns/configuration` (alpha). Thêm trường tùy chọn `overrideLocalDNS` vào `preferences` (bỏ qua khi vắng) và ghi khác biệt trong tài liệu.
+
+## 5. Sửa theo review bảo mật P12d (nhánh `feat/P12d-review-fixes`)
+
+- **Commit gốc:** `7cacbc1` (`feat/P12d-subnet-api`), ngày 2026-11-26. Reviewer độc lập: không BLOCKER; 2 MEDIUM/LOW-MEDIUM, 4 LOW, 2 Info, thêm một test thiếu (lease mất khi owner/epoch còn khớp → 503). Mọi phát hiện chỉ chạm dữ liệu của chính tenant.
+- **Trạng thái khi viết mục này:** `Planned` (chưa đổi code).
+
+| Nguồn đã đọc | Liên quan tới phát hiện |
+|---|---|
+| `hscontrol/cluster.go` `load` (`policyRev`/`configRev`, `ObserveRevisions`), `reconcile:436-530` (đọc DNS qua `c.tailnetDNS` = handle platform, rồi `rt.h.cfg.ReplaceTenantDNS` **không** giữ `tenantDNSMu`; ghi revision trước khi nạp; `ReloadPolicy` luôn trả `PolicyChange`), `tailnetDNS:586` | 1 (DNS cũ cài đè DNS mới, không tự lành vì `configRev` = DB), 8 (reconcile gửi lại `PolicyChange` cho revision mà ghi qua API đã cài: thứ tự commit → reconcile so revision → observer) |
+| `hscontrol/state/state.go` `UpdateTenantPolicyIf:2063-2126` (validate **ngoài** `policyMu`; `If-Match` đọc `GetPolicy` ngoài transaction; lưu; `reloadPolicyLocked` đọc lại DB và chạy `polMan.SetPolicy` — test của policy chạy lần hai; lỗi sau commit → trả lỗi, không audit), `UpdateTenantDNS:2140-2157`, `ValidatePolicy:2025`, `ReloadPolicy:658`, `reloadPolicyLocked:680`, `SetNodeKeyExpiryDisabled:1413` | 1, 2, 3, 6, 8 |
+| `hscontrol/policy/pm.go` (interface `PolicyManager`, một hiện thực), `policy/v2/policy.go:761` `SetPolicy` (parse → `validateUserReferences` → `evaluateTestsFor`/`evaluateSSHTests` → `updateLocked`; lỗi thì giữ policy cũ), `policy/v2/test.go:826` `ValidatePolicy` (sandbox `NewPolicyManager` + `SetPolicy` + kiểm SSH) | 2, 8 (test chạy hai lần mỗi ghi) |
+| `hscontrol/db/tenant_config.go` (`bumpTailnetRevision`: `LockOwnership` → `UPDATE tailnets` có điều kiện fence; `SetPolicyRevised`; `tenantDNSRow`: lỗi parse bọc `ErrInvalidTenantDNS`), `db/policy.go` (`GetPolicy`, `PolicyBytes`), `db/tenantscope/tenantscope.go:408-454` (`LockOwnership`: advisory exclusive, no-op SQLite), `checkFence`/`checkLease:518` | 1, 3 (kiểm `If-Match` trong transaction sau `LockOwnership`: ghi có fence giữ advisory shared nên bị xếp sau), 4 (lỗi stored DNS hỏng thành 400 có nội dung parse) |
+| `hscontrol/db/platform_admin.go:210` `BumpPolicyRevision`, `cmd/headscale/cli/cluster.go:245` `setTailnetPolicyCLI` (operator: `hs.SetPolicy` rồi bump, hai transaction), `db/tailnet_settings.go:76` `SetTailnetDNS` | 3 (ghi của operator xen giữa kiểm và lưu) |
+| `hscontrol/api/v2/acl.go` (`setACL`/`validateACL`: `MaxBodyBytes` 1 MiB cố định, kích thước + bucket kiểm **sau** khi Huma đã đọc hết body), `dns.go` (`writeDNS`, `readDNS` 500 kèm lỗi), `tenant.go` (`tenantWriteGate`, `auditTenantWrite`), `errors.go:61-85` (transformer đưa `ErrorModel.Errors` vào `data`), `errors.go:198-199` (503 kèm lỗi fence: cluster, holder, epoch), `devices.go:425` `setDeviceKey` (không audit, không bucket), `api.go` (`authMiddleware`, `requireTailnet`, `NewAPI`: middleware chụp lúc đăng ký) | 4, 5, 6 |
+| Huma v2.40.0 (`huma.go:909` middleware của API rồi của operation chạy **trước** khi đọc body; `huma.go:1158` `readBody` với `MaxBodyBytes`, vượt → 413; `ensureMaxBodyBytes` mặc định 1 MiB) | 5 |
+| `hscontrol/types/tenant_dns.go` (`Validate`: search domain chỉ kiểm cú pháp; split domain chỉ cấm trong miền cluster; split rỗng không tính; nameserver nhận mọi IP), `design/adr/0008-per-tailnet-dns.md` §3 (record chỉ dưới miền của chính tailnet hoặc ngoài miền cluster; hạ giới hạn: dữ liệu cũ vẫn nạp, có cảnh báo; DNS lưu không validate được → không nạp runtime) | 7 |
+| `hscontrol/servertest/cluster_p05.go` (`ClusterOptions.Lease`), `cluster_p11b.go` (`ExpireLease`), `cluster_p06.go` (`SetTailnetDNS`, `StoreRawTailnetDNSForTest`), `cluster_p12d_api_test.go` | Test |
+
+Ràng buộc giữ nguyên: mục 2 ở trên; raw SQL guard và allowlist không đổi (không thêm raw SQL); inventory endpoint và ma trận OAuth không đổi (không route mới).
+
+Giả định:
+- R1: Trên PostgreSQL, ghi policy của operator qua handle có fence (`hs.SetPolicy`) lấy advisory shared của tailnet nên bị chặn khi ghi của tenant đang giữ `LockOwnership` (exclusive); trên SQLite người ghi được tuần tự hóa. Vì vậy kiểm `If-Match` trong transaction sau `LockOwnership` thấy mọi ghi đã commit trước nó. Kiểm bằng test DB trên cả hai backend.
+- R2: Luật mới cho DNS (search domain trong miền cluster, split là miền cha của miền cluster, nameserver loopback/link-local/unspecified, số split domain) áp cho mọi lần **ghi** (tenant và operator); khi **nạp** dữ liệu đã lưu trước đó, chúng chỉ cảnh báo như giới hạn bị hạ (ADR 0008 §3), không chặn runtime.
