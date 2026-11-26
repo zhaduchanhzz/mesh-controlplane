@@ -92,7 +92,8 @@ PY=${PY:-python}
 REASON="p12b-e2e rebalance"
 NOTICE="moves to another control cluster"
 
-REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
+HERE=$(cd "$(dirname "$0")" && pwd)
+REPO=$(cd "$HERE/../../../.." && pwd)
 SHA=$(git -C "$REPO" rev-parse --short HEAD)
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
 PG_DB=e2e_p12b$(tr 'A-Z' 'a-z' <<<"$RUN_ID")
@@ -108,6 +109,8 @@ PLUNIT=mesh-placement-p12b
 BOOTUNIT=mesh-bootstrap-p12b
 PLDIR=/run/p12b-placement
 CIDIR=/dev/shm/p12b
+# Transient units on mc-ci (jobs.sh): p12b-ping-<slug>, p12b-rb-<slug>.
+CIRUN="sudo systemd-run --quiet --collect --uid=mesh --gid=mesh -p SupplementaryGroups=docker -p RuntimeMaxSec=1200"
 VMUNIT=p12b-ts
 VMSOCK=/run/p12b-ts/tailscaled.sock
 CLI1="sudo -u headscale timeout 60 $HS -c $CFG cluster --cluster-id $C1_ID"
@@ -270,8 +273,13 @@ CLEAN_OK=1
 cleanup() {
   [ "$KEEP" = 1 ] && { log "KEEP=1: leaving everything running"; return; }
   log "cleanup"
+  # Jobs left running on mc-ci (pinger, mesh-rebootstrap) are stopped before
+  # their containers and files go.
+  ci_ "touch $CIDIR/stop-ping 2>/dev/null; sudo systemctl stop 'p12b-ping-*' 'p12b-rb-*' 2>/dev/null; \
+       sudo systemctl reset-failed 'p12b-ping-*' 'p12b-rb-*' 2>/dev/null; \
+       ! pgrep -f '$CIDIR/(mesh-rebootstrap|jobs.sh)' >/dev/null" || { log "mc-ci jobs not stopped"; CLEAN_OK=0; }
   for c in $(ci_ "docker ps -a --filter label=$LABEL --format '{{.Names}}'" 2>/dev/null); do save_logs "$c"; done
-  ci_ "touch $CIDIR/stop-ping 2>/dev/null; sleep 1; docker ps -aq --filter label=$LABEL | xargs -r docker rm -f >/dev/null; \
+  ci_ "docker ps -aq --filter label=$LABEL | xargs -r docker rm -f >/dev/null; \
        docker volume ls -q --filter label=$LABEL | xargs -r docker volume rm >/dev/null; rm -rf $CIDIR; \
        test -z \"\$(docker ps -aq --filter label=$LABEL)\" && ! test -e $CIDIR" || { log "mc-ci clients/files not removed"; CLEAN_OK=0; }
   local t; for t in $VM_TARGETS; do vm_stop "$t" || { log "$t: p12b tailscaled not removed"; CLEAN_OK=0; }; done
@@ -397,7 +405,8 @@ EOF
   log "mesh-rebootstrap and images on mc-ci"
   ci_ "rm -rf $CIDIR; install -d -m 0700 $CIDIR" || return 1
   scp_ "$RB_BIN" "$CI_SSH:$CIDIR/mesh-rebootstrap" || return 1
-  ci_ "chmod 0700 $CIDIR/mesh-rebootstrap" || return 1
+  tr -d '\r' <"$HERE/jobs.sh" | ci_ "cat >$CIDIR/jobs.sh && chmod 0700 $CIDIR/mesh-rebootstrap $CIDIR/jobs.sh && bash -n $CIDIR/jobs.sh" || return 1
+  ci_ "sudo -n systemd-run --version >/dev/null" || { log "mc-ci: no passwordless systemd-run"; return 1; }
   local img; for img in $IMAGES; do ci_ "docker image inspect $img >/dev/null 2>&1 || docker pull -q $img >/dev/null" || return 1; done
 }
 
@@ -413,15 +422,17 @@ t_m00() {
   [ -z "$p" ] && record M00 PASS "control tailnet o on $(owner o) ($O_ROW): o1<->o2" || record M00 FAIL "${p#; }"
 }
 
-# pinger A IPB: host-side loop on mc-ci, one ICMP echo every 200 ms through
-# A's tun, until $CIDIR/stop-ping (or 15 min). Lines: "<ms> <rc>".
+# pinger SLUG A IPB: on mc-ci, transient unit p12b-ping-SLUG (jobs.sh ping),
+# one ICMP echo every 200 ms through A's tun, until $CIDIR/stop-ping (or
+# 15 min). Lines: "<ms> <rc>".
 start_pinger() {
-  ci_ "rm -f $CIDIR/stop-ping $CIDIR/ping-$1; nohup bash -c 'end=\$((\$(date +%s) + 900)); \
-    while [ ! -e $CIDIR/stop-ping ] && [ \$(date +%s) -lt \$end ]; do \
-      t=\$(date +%s%3N); docker exec $1 ping -c 1 -W 1 $2 >/dev/null 2>&1; echo \"\$t \$?\"; sleep 0.2; \
-    done' >$CIDIR/ping-$1 2>&1 </dev/null &"
+  ci_ "rm -f $CIDIR/stop-ping $CIDIR/ping-$1; sudo systemctl reset-failed p12b-ping-$1 2>/dev/null; \
+    $CIRUN --unit=p12b-ping-$1 bash $CIDIR/jobs.sh ping $2 $3 $CIDIR/ping-$1 $CIDIR/stop-ping 900"
 }
-stop_pinger() { ci_ "touch $CIDIR/stop-ping; sleep 2; cat $CIDIR/ping-$1; rm -f $CIDIR/ping-$1 $CIDIR/stop-ping"; }
+stop_pinger() {
+  ci_ "touch $CIDIR/stop-ping; for i in \$(seq 1 20); do systemctl is-active -q p12b-ping-$1 || break; sleep 0.5; done; \
+    sudo systemctl stop p12b-ping-$1 2>/dev/null; cat $CIDIR/ping-$1; rm -f $CIDIR/ping-$1 $CIDIR/stop-ping"
+}
 # ping_gap FILE -> "<longest gap ms> <failed samples>/<samples>"
 ping_gap() { py 'import sys
 s=[tuple(map(int,l.split())) for l in open(sys.argv[1]) if len(l.split())==2]
@@ -482,13 +493,11 @@ t_round() {
 
   # M03 + M04: pinger, then mesh-rebootstrap waiting for a URL other than the source's.
   p=""; local since; since=$(date +%s)
-  start_pinger "$a" "$(selfip "$b")"
+  start_pinger "$s" "$a" "$(selfip "$b")" || p="$p; pinger not started"
   printf '%s\n' "${names[@]}" | ci_ "cat >$CIDIR/targets-$s"
   ci_ "umask 077; cat >$CIDIR/key-$s" <"$TMPD/key-$s"
-  ci_ "rm -f $CIDIR/rb-$s.done; nohup bash -c '$CIDIR/mesh-rebootstrap -bootstrap $BOOT_URL -authkey-file $CIDIR/key-$s -tenant $s \
-      -targets $CIDIR/targets-$s -concurrency $PAR -timeout 120s -max-wait 5m -poll 1s -from $(urlof "$from") -out $CIDIR/rb-$s.json \
-      -cmd \"docker exec -i {target} timeout 100 tailscale up --login-server={login_server} --auth-key=file:/dev/stdin --hostname={target} --force-reauth <$CIDIR/key-$s\" \
-      >$CIDIR/rb-$s.log 2>&1; echo \$? >$CIDIR/rb-$s.done' >/dev/null 2>&1 </dev/null &"
+  ci_ "rm -f $CIDIR/rb-$s.done; sudo systemctl reset-failed p12b-rb-$s 2>/dev/null; \
+    $CIRUN --unit=p12b-rb-$s bash $CIDIR/jobs.sh rb-docker $CIDIR $s $BOOT_URL $(urlof "$from") $PAR" || p="$p; mesh-rebootstrap not started"
   if [ "$r" = 1 ] && [ -n "$VM_TARGETS" ]; then
     printf '%s\n' $VM_TARGETS >"$TMPD/vm-targets"
     "$RB_LOCAL_BIN" -bootstrap "$BOOT_URL" -authkey-file "$TMPD/key-$s" -tenant "$s" -targets "$TMPD/vm-targets" -concurrency 2 -timeout 120s \
@@ -496,9 +505,13 @@ t_round() {
       -cmd "ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes {target} 'sudo timeout 100 tailscale --socket=$VMSOCK up --login-server={login_server} --auth-key=file:/run/p12b-ts/key --hostname=\$(hostname -s)-p12b --force-reauth'" \
       2>&1 | redact >"$ART_DIR/logs/rebootstrap-$s-vms.log" &
   fi
-  for i in $(seq 1 $((LEAD + 420))); do ci_ "test -e $CIDIR/rb-$s.done" && break; sleep 1; done
+  # Bounded by wall time (each check is an ssh round trip): the tool waits
+  # up to LEAD for scheduled_at, then at most 3 batches x 120 s.
+  local end=$(( $(date +%s) + LEAD + 480 ))
+  while [ "$(date +%s)" -lt "$end" ]; do ci_ "test -e $CIDIR/rb-$s.done" && break; sleep 2; done
   wait
-  local rbrc; rbrc=$(ci_ "cat $CIDIR/rb-$s.done 2>/dev/null")
+  local rbrc; rbrc=$(ci_ "cat $CIDIR/rb-$s.done 2>/dev/null" | strip_cr)
+  [ -n "$rbrc" ] || ci_ "sudo systemctl stop p12b-rb-$s 2>/dev/null"
   ci_ "cat $CIDIR/rb-$s.json 2>/dev/null" | redact >"$ART_DIR/logs/rebootstrap-$s.json"
   ci_ "cat $CIDIR/rb-$s.log; rm -f $CIDIR/key-$s $CIDIR/rb-$s.* $CIDIR/targets-$s" | redact >"$ART_DIR/logs/rebootstrap-$s.log"
   [ "$rbrc" = 0 ] || p="$p; mesh-rebootstrap rc=${rbrc:-none}"
