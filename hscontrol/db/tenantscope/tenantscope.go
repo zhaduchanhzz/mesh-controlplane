@@ -247,18 +247,40 @@ func hasPrimaryKey(db *gorm.DB) bool {
 		return false
 	}
 
-	rv := reflect.Indirect(db.Statement.ReflectValue)
-	switch rv.Kind() { //nolint:exhaustive // the kinds gorm statements carry; default has no primary key
-	case reflect.Struct:
+	keyed := func(row reflect.Value) bool {
+		row = reflect.Indirect(row)
+		if row.Kind() != reflect.Struct {
+			return false
+		}
+
 		for _, pf := range sch.PrimaryFields {
-			if _, zero := pf.ValueOf(db.Statement.Context, rv); zero {
+			if _, zero := pf.ValueOf(db.Statement.Context, row); zero {
 				return false
 			}
 		}
 
 		return true
+	}
+
+	rv := reflect.Indirect(db.Statement.ReflectValue)
+	switch rv.Kind() { //nolint:exhaustive // the kinds gorm statements carry; default has no primary key
+	case reflect.Struct:
+		return keyed(rv)
 	case reflect.Slice, reflect.Array:
-		return rv.Len() > 0
+		// GORM adds no condition for a row without a key, so one such row
+		// must not count as keyed (P12c L10): Delete(&[]Node{{}}) would hit
+		// every row of the tenant.
+		if rv.Len() == 0 {
+			return false
+		}
+
+		for i := range rv.Len() {
+			if !keyed(rv.Index(i)) {
+				return false
+			}
+		}
+
+		return true
 	default:
 		return false
 	}
@@ -295,7 +317,25 @@ func (p *plugin) stampCreate(db *gorm.DB) {
 		stampOne(db, f, rv, id)
 	case reflect.Slice, reflect.Array:
 		for i := range rv.Len() {
-			stampOne(db, f, reflect.Indirect(rv.Index(i)), id)
+			elem := rv.Index(i)
+			for elem.Kind() == reflect.Interface || elem.Kind() == reflect.Pointer {
+				elem = elem.Elem()
+			}
+
+			// A batch of maps is stamped like one map (P12c L10: stampOne
+			// on a map panicked).
+			switch elem.Kind() { //nolint:exhaustive // rows are structs or maps; anything else fails the create
+			case reflect.Struct:
+				stampOne(db, f, elem, id)
+			case reflect.Map:
+				stampMap(db, f, elem, id)
+			default:
+				_ = db.AddError(fmt.Errorf("%s: %w %s in a batch", name, errUnsupportedCreate, elem.Kind()))
+			}
+
+			if db.Error != nil {
+				return
+			}
 		}
 	case reflect.Map:
 		stampMap(db, f, rv, id)
