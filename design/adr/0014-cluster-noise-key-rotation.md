@@ -1,6 +1,6 @@
 # ADR 0014 — Xoay Noise key của cluster: xoay "lạnh" qua switchover, không chồng lấn hai key
 
-- **Trạng thái:** **Proposed** (2026-11-26). Chờ chủ dự án chọn: quyết định D8 trong `tickets/P13.md`. **Không đổi mô hình Noise** (AGENTS rule 12, ADR 0005): vẫn một key cho mỗi cluster, `/key` trả một key.
+- **Trạng thái:** **Accepted** (2026-11-26). Chủ dự án duyệt toàn bộ khuyến nghị D1–D13 trong `tickets/P13.md` (gói quyết định ngày 2026-11-26).
 - **Ticket:** P13e.
 - **Liên quan:** ADR 0005 (Bổ sung quyết định §5: lộ/xoay key ảnh hưởng mọi tenant của cluster), P12 (registry ghi Noise key, lệch thì fail closed), threat model `03-isolation-threat-model.md:84, 103`, `evidence/P02-noise-client-research.md` Q1.
 

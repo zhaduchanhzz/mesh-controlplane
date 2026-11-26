@@ -1,6 +1,6 @@
 # ADR 0013 — Upgrade canary theo cluster: migration là bước riêng của operator, binary chấp nhận migration "mở rộng" mới hơn nó
 
-- **Trạng thái:** **Proposed** (2026-11-26). Chờ chủ dự án chọn: quyết định D6 trong `tickets/P13.md`.
+- **Trạng thái:** **Accepted** (2026-11-26). Chủ dự án duyệt toàn bộ khuyến nghị D1–D13 trong `tickets/P13.md` (gói quyết định ngày 2026-11-26).
 - **Ticket:** P13d. Sửa luôn L7 (`evidence/REVIEW-2026-11-26-tickets.md`).
 - **Liên quan:** ADR 0002 (fresh schema v0.1), ADR 0005 (PG dùng chung), ADR 0006 §4 (migration đi đường trực tiếp), AGENTS rule 11, PLAN §7 N3 ("upgrade có canary tại cấp cluster, nâng standby trước").
 

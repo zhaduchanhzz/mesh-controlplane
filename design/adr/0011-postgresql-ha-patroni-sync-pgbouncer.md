@@ -1,6 +1,6 @@
 # ADR 0011 — HA PostgreSQL dùng chung: Patroni + etcd, sao chép đồng bộ; PgBouncer trên mỗi node PG, client dùng danh sách host
 
-- **Trạng thái:** **Proposed** (2026-11-26). Chờ chủ dự án chọn: quyết định D1, D2, D3 trong `tickets/P13.md`.
+- **Trạng thái:** **Accepted** (2026-11-26). Chủ dự án duyệt toàn bộ khuyến nghị D1–D13 trong `tickets/P13.md` (gói quyết định ngày 2026-11-26).
 - **Ticket:** P13a (HA PostgreSQL, F05), P13b (HA PgBouncer).
 - **Liên quan:** ADR 0005 (PG dùng chung, lease trong DB, Bổ sung 2 §2), ADR 0006 §3.4–3.7, §5 (PgBouncer), ADR 0012 (epoch floor / restore fence), PLAN §7 N3, `06-tests-benchmarks.md` F05.
 - **Inventory:** `evidence/source-inventory-P13.md` §2.1–2.2, §3.

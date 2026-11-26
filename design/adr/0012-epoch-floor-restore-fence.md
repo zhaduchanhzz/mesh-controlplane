@@ -1,6 +1,6 @@
 # ADR 0012 — Epoch không bao giờ lùi sau restore hoặc promote mất dữ liệu: epoch floor theo thời gian + phát hiện trong process
 
-- **Trạng thái:** **Proposed** (2026-11-26). Chờ chủ dự án chọn: quyết định D4 trong `tickets/P13.md`.
+- **Trạng thái:** **Accepted** (2026-11-26). Chủ dự án duyệt toàn bộ khuyến nghị D1–D13 trong `tickets/P13.md` (gói quyết định ngày 2026-11-26).
 - **Ticket:** P13c (backup/restore, F08); dùng lại ở P13a (promote cưỡng bức).
 - **Liên quan:** ADR 0005 Bổ sung 2 §2, ADR 0010, ADR 0011 §B, PLAN §4 ("`owner_epoch` tăng đơn điệu, không bao giờ giảm, kể cả sau restore; giữ high-water mark ngoài backup"), `05-data-api-contract.md:110`, threat model I14, `06-tests-benchmarks.md` F08.
 
