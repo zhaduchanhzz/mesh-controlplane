@@ -24,8 +24,13 @@ import (
 //     gets everything: unknown means send.
 //   - A full peer list (Peers) is never stripped: it is the safety net of
 //     ADR 0015 D3 and resets the baseline.
-//   - Patches (PeersChangedPatch, OnlineChange, PeerSeenChange) and removals
-//     drop the peer's hash, so the next PeersChanged for it is sent whole.
+//   - A peer's hash leaves out Online and LastSeen: presence moves by
+//     patches (NodeOnline/NodeOffline), and a lost patch means a full map
+//     anyway (no connection, or a backlog collapsed to full). Every other
+//     field, keys, endpoints, expiry and capabilities included, is hashed.
+//   - A patch touching any other field (PeersChangedPatch with endpoints,
+//     key, DERP region, capabilities, expiry) and a removal drop the peer's
+//     hash, so the next PeersChanged for it is sent whole.
 //   - Removals are not decided here: computePeerDiff and removalsFromSent
 //     (per node, from what was sent) still produce them.
 
@@ -55,6 +60,40 @@ func hashJSON(v any) (uint64, bool) {
 	return maphash.Bytes(deltaHashSeed, b), true
 }
 
+// hashPeer hashes a peer entry without its presence fields (Online,
+// LastSeen), see the safety rules above.
+func hashPeer(p *tailcfg.Node) (uint64, bool) {
+	c := *p
+	c.Online = nil
+	c.LastSeen = nil
+
+	return hashJSON(&c)
+}
+
+// patchKeepsHash reports whether pc changes nothing a peer hash covers:
+// only presence (Online, LastSeen). Compared through JSON so a field added
+// to [tailcfg.PeerChange] later counts as a change.
+func patchKeepsHash(pc *tailcfg.PeerChange) bool {
+	c := *pc
+	c.NodeID = 0
+	c.Online = nil
+	c.LastSeen = nil
+
+	got, err := json.Marshal(&c)
+	if err != nil {
+		return false
+	}
+
+	return string(got) == emptyPeerChangeJSON
+}
+
+// emptyPeerChangeJSON is the encoding of a patch that changes nothing.
+var emptyPeerChangeJSON = func() string {
+	b, _ := json.Marshal(&tailcfg.PeerChange{})
+
+	return string(b)
+}()
+
 // hashResponse computes the hashes delta-first needs for data. Parts that
 // fail to hash are left out, which makes them count as changed.
 func hashResponse(data *tailcfg.MapResponse) *responseHashes {
@@ -69,7 +108,7 @@ func hashResponse(data *tailcfg.MapResponse) *responseHashes {
 					continue
 				}
 
-				if v, ok := hashJSON(p); ok {
+				if v, ok := hashPeer(p); ok {
 					h.peers[p.ID] = v
 				}
 			}
@@ -222,18 +261,13 @@ func (s *sentState) record(data *tailcfg.MapResponse, h *responseHashes, initial
 		}
 
 		for _, pc := range data.PeersChangedPatch {
-			if pc != nil {
+			if pc != nil && !patchKeepsHash(pc) {
 				delete(s.peers, pc.NodeID)
 			}
 		}
 
-		for id := range data.OnlineChange {
-			delete(s.peers, id)
-		}
-
-		for id := range data.PeerSeenChange {
-			delete(s.peers, id)
-		}
+		// OnlineChange and PeerSeenChange carry presence only, which the
+		// hash leaves out.
 	}
 
 	if initial && s.profiles == nil {
