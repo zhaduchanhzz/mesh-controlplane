@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/frontdoor"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
@@ -211,6 +212,10 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 
 		return nil, fmt.Errorf("cluster lease: %w", err)
 	}
+
+	// P12c B2: a fenced transaction left open (process paused or cut off
+	// before COMMIT) ends within half the self-fence deadline.
+	tenantscope.SetTransactionBound(lc.TTL - lc.SafetyMargin)
 
 	// ADR 0009: the secret of this cluster's external DERP servers (/verify).
 	var verifySecret []byte
