@@ -166,6 +166,13 @@ func closePool(conn *gorm.DB) {
 func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 	dbCfg := writableDatabase(cfg.Database)
 
+	// P13b: a pooler this code cannot work with, or a read-only server, is
+	// refused here with what to change, not later at random.
+	err := checkPooler(dbCfg, true)
+	if err != nil {
+		return nil, err
+	}
+
 	dbConn, err := openDB(dbCfg, cfg.SQLitePath())
 	if err != nil {
 		return nil, err
@@ -233,7 +240,16 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 	leaseConn := dbConn
 
 	if !cfg.Database.IsSQLite() {
-		leaseConn, err = openDB(leaseDatabase(dbCfg), "")
+		leaseCfg := leaseDatabase(dbCfg)
+
+		if leaseCfg.Postgres.Name != dbCfg.Postgres.Name {
+			err = checkPooler(leaseCfg, true) // the alias is a pooler entry of its own
+			if err != nil {
+				return nil, fmt.Errorf("lease pool: %w", err)
+			}
+		}
+
+		leaseConn, err = openDB(leaseCfg, "")
 		if err != nil {
 			return nil, fmt.Errorf("opening the lease pool: %w", err)
 		}

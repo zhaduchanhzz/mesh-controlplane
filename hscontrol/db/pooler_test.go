@@ -244,6 +244,101 @@ func TestOpenPlatformRefusesPoolerWithoutPreparedStatements(t *testing.T) {
 
 	require.Error(t, err, "a pooler without prepared statement support must be refused at open")
 	assert.Contains(t, err.Error(), "max_prepared_statements", "the error names the pooler setting")
+	require.ErrorIs(t, err, ErrPoolerMisconfigured)
+	t.Logf("refused: %v", err)
+
+	// The same pooler with the simple protocol (no prepared statements):
+	// the documented way out, accepted.
+	cfg := p13bConfig(t, name, pgb0)
+	cfg.Database.Postgres.QueryExecMode = types.PostgresQueryExecSimpleProtocol
+
+	p, err = OpenPlatform(cfg)
+	require.NoError(t, err)
+	p.Close()
+}
+
+// TestOpenReadOnlyRefusesPoolerWithoutPreparedStatements: mesh-bootstrap's
+// read-only handle gets the same check (but no read-only one).
+func TestOpenReadOnlyRefusesPoolerWithoutPreparedStatements(t *testing.T) {
+	rw := poolerEnv(t, "MESH_TEST_PG_RW")
+	ro := poolerEnv(t, "MESH_TEST_PG_RO")
+	pgb0 := poolerEnv(t, "MESH_TEST_PGBOUNCER_NOPREP")
+
+	name := p13bDBName()
+	createDBOn(t, name, rw, ro)
+
+	_, err := OpenReadOnly(p13bConfig(t, name, pgb0))
+	require.ErrorIs(t, err, ErrPoolerMisconfigured)
+
+	// A read-only server passes the self-check (no v0.1 schema there).
+	_, err = OpenReadOnly(p13bConfig(t, name, ro))
+	require.ErrorIs(t, err, ErrSchemaNotCurrent)
+	assert.NotErrorIs(t, err, ErrReadOnlyDatabase)
+}
+
+// TestOpenPlatformStatementTimeout: statement_timeout is a startup
+// parameter. PostgreSQL applies it; PgBouncer refuses it unless it tracks
+// it (track_extra_parameters), and the self-check says so.
+func TestOpenPlatformStatementTimeout(t *testing.T) {
+	rw := poolerEnv(t, "MESH_TEST_PG_RW")
+
+	for _, tc := range []struct {
+		name    string
+		via     string
+		wantErr string
+	}{
+		{"direct", rw, ""},
+		{"pgbouncer tracking it", poolerEnv(t, "MESH_TEST_PGBOUNCER_TRACK"), ""},
+		{"pgbouncer not tracking it", poolerEnv(t, "MESH_TEST_PGBOUNCER"), "track_extra_parameters"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := p13bDBName()
+			createDBOn(t, name, rw)
+
+			cfg := p13bConfig(t, name, tc.via)
+			cfg.Database.Postgres.StatementTimeout = 1500 * time.Millisecond
+
+			p, err := OpenPlatform(cfg)
+			if tc.wantErr != "" {
+				require.ErrorIs(t, err, ErrPoolerMisconfigured)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				t.Logf("refused: %v", err)
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			defer p.Close()
+
+			var st string
+			require.NoError(t, p.db.Raw(`SHOW statement_timeout`).Scan(&st).Error)
+			assert.Equal(t, "1500ms", st)
+		})
+	}
+}
+
+// TestOpenPlatformRefusesReadOnlyServer: a writer that reaches only a
+// read-only server is refused at open with ErrReadOnlyDatabase, with the
+// default target (read-write: pgx refuses the server) and with any (the
+// self-check's SHOW transaction_read_only).
+func TestOpenPlatformRefusesReadOnlyServer(t *testing.T) {
+	rw := poolerEnv(t, "MESH_TEST_PG_RW")
+	ro := poolerEnv(t, "MESH_TEST_PG_RO")
+
+	for _, attrs := range []types.PostgresTargetSessionAttrs{"", types.PostgresTargetAny} {
+		t.Run("target="+string(attrs), func(t *testing.T) {
+			name := p13bDBName()
+			createDBOn(t, name, rw, ro)
+
+			cfg := p13bConfig(t, name, poolerEnv(t, "MESH_TEST_PGBOUNCER_RO"))
+			cfg.Database.Postgres.TargetSessionAttrs = attrs
+
+			_, err := OpenPlatform(cfg)
+			require.ErrorIs(t, err, ErrReadOnlyDatabase)
+			t.Logf("refused: %v", err)
+		})
+	}
 }
 
 // TestLeaseStoreHasOwnPool (P13b, ADR 0006 §3.6): lease operations
