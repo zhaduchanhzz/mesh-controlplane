@@ -169,3 +169,19 @@ Raw SQL guard và allowlist: không đổi (không thêm raw SQL; `TailnetRevisi
 - Phát hiện 8: test của policy không còn chạy hai lần; **compile** vẫn hai lần (sandbox của `ValidatePolicy` + cài live).
 - Hook test mới (`SetReconcileDNSHookForTest`, `State.SetPolicyInstallHookForTest`) là biến/trường chỉ cho test, như `SetTenantAuditHookForTest`.
 - Không chạy toàn bộ suite `p05cluster` (mc-ci dùng chung); E2E S08c không chạy lại (không đụng lab). Reviewer approval: chưa.
+
+## 8. Kiểm tra tích hợp trước merge (2026-11-26)
+
+| Kiểm tra | Commit | Lệnh | Kết quả |
+|---|---|---|---|
+| E2E N1 đầy đủ, netmap ON, client 1.104.7 | `7dd8a8a` | `CI_BINDIR=/home/mesh/binp12d MODE=on V=1.104.7 bash infra/lab/e2e/n1/run.sh` | 30 PASS, 1 FAIL (S08c.6: S08b để lại route đã duyệt) → sửa `06c9f7b` |
+| E2E N1 đầy đủ, netmap OFF, client 1.84.3 | `06c9f7b` | `CI_BINDIR=/home/mesh/binp12d MODE=off V=1.84.3 bash infra/lab/e2e/n1/run.sh` | **0 FAIL**, `cleanup_ok=1`, 1564 s (E00, S01–S18, S08b, S08c.0–6, M06, S13/S13b, S99); S08c.2 HA gap 16 212 ms (≤ 20 000) |
+| E2E N1 ON 1.104.7, ca sửa | `d1650fa` | `CASES="t_s01 t_s08b t_s08c" … MODE=on V=1.104.7` | **10 PASS, 0 FAIL**, `cleanup_ok=1`, 629 s |
+| E2E P12b (Q7) | `d1650fa` | `CI_BINDIR=/home/mesh/binp12d N=24 PAR=8 LEAD=60 IMAGES="…v1.104.7 …v1.84.3" VM_TARGETS=… bash infra/lab/e2e/p12b/run.sh` | **13/13 PASS**, `cleanup_ok=1`, 480 s; t100 từ `scheduled_at` 8 008 ms (1.104.7) / 1 273 ms (1.84.3) ≤ 15 000; 0 retry, 0 can thiệp tay |
+| Suite `p05cluster` (shard-test, `nix shell` tscli/tofu) | `06c9f7b` | `shard-test.sh` trên mc-ci | **235/235**, 0 fail, 0 skip, `SHARD_RC=0`, 1588 s |
+| GitHub CI | `06c9f7b` | — | success |
+| Tích hợp thử với P13 | `0f5f363` (`feat/P13-integration`) | build, vet, lint, race toàn repo, servertest P12d + P13c–f | 0 lỗi; 1 xung đột (`cluster.go` reconcile) giải quyết giữ cả hai hành vi; tenant write đi qua fence P13 |
+
+Binary: `/home/mesh/binp12d` trên mc-ci (headscale `b1cd7663d43b3d3e`). Artifact (không commit): `artifacts/06c9f7b/N1/e2e-20261126T151208Z-off-1.84.3`, `artifacts/d1650fa/N1/e2e-20261126T153820Z-on-1.104.7`, `artifacts/d1650fa/P12b/…`. S99/M07: không có key/secret trong artifact.
+
+**Trạng thái sau §8:** `Verified`; merge vào `master` theo lệnh chủ dự án; chưa `Reviewed` (chờ chủ dự án). S08d (exit node, nhánh `feat/P12d-exitnode`) chưa merge: lượt ON bị dừng giữa chừng khi chủ dự án đổi hướng (S08d.1–3 PASS).
