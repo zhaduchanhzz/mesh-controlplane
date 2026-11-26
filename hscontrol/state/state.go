@@ -63,7 +63,7 @@ var ErrInvalidPolicy = errors.New("invalid policy")
 
 // ErrPolicyPrecondition is returned by [State.UpdatePolicyIf] when the stored
 // policy fails the caller's check.
-var ErrPolicyPrecondition = errors.New("policy precondition failed")
+var ErrPolicyPrecondition = hsdb.ErrPolicyPrecondition
 
 // invalidPolicyError marks a refusal as [ErrInvalidPolicy] and keeps the
 // reason's own text, which API answers show as is.
@@ -255,6 +255,10 @@ type State struct {
 	// revisions, when set, learns the tailnet revision a policy or DNS
 	// write stored and installed (see ObserveRevisions).
 	revisions atomic.Pointer[RevisionObservers]
+
+	// policyInstallHook, when set, runs after a policy write was stored
+	// and before it is installed; an error is an install failure (tests).
+	policyInstallHook atomic.Pointer[func() error]
 
 	// authCache holds pending Web, OIDC and SSH authentication requests.
 	// Admission preserves unexpired entries at capacity. Expiry resolves the
@@ -2102,6 +2106,13 @@ func (s *State) UpdateTenantPolicyIf(pol []byte, match func(stored string) bool)
 		return nil, 0, nil, fmt.Errorf("storing policy: %w", err)
 	}
 
+	if fn := s.policyInstallHook.Load(); fn != nil {
+		err = (*fn)()
+		if err != nil {
+			return stored, rev, nil, err
+		}
+	}
+
 	changed, derpChanged, err := s.reloadPolicyLocked()
 	if err != nil {
 		return stored, rev, nil, err
@@ -2164,6 +2175,19 @@ func (s *State) UpdateTenantDNS(
 type RevisionObservers struct {
 	Policy func(rev uint64)
 	Config func(rev uint64)
+}
+
+// SetPolicyInstallHookForTest makes fn run after a policy write was stored
+// and before it is installed; an error from fn is an install failure. nil
+// removes it. For tests.
+func (s *State) SetPolicyInstallHookForTest(fn func() error) {
+	if fn == nil {
+		s.policyInstallHook.Store(nil)
+
+		return
+	}
+
+	s.policyInstallHook.Store(&fn)
 }
 
 // ObserveRevisions installs o (nil removes it).

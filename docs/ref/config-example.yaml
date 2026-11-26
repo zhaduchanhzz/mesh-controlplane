@@ -510,6 +510,9 @@ tuning:
     max_nameservers: 64
     # The most search domains a tailnet may store.
     max_search_domains: 64
+    # The most split DNS domains a tailnet may store, counting a domain mapped
+    # to an empty list of nameservers.
+    max_split_domains: 64
     # The largest a tailnet's DNS settings may be, as stored JSON.
     max_config_bytes: 262144
   # Updates peer relationships for a joining or deleted node without rebuilding

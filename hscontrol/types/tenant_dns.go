@@ -54,6 +54,10 @@ type TenantDNSLimits struct {
 	// MaxSearchDomains is the most search domains a tailnet may store.
 	MaxSearchDomains int `example:"16" koanf:"max_search_domains"`
 
+	// MaxSplitDomains is the most split DNS domains a tailnet may store,
+	// counting a domain mapped to an empty list of nameservers.
+	MaxSplitDomains int `example:"16" koanf:"max_split_domains"`
+
 	// MaxConfigBytes is the largest a tailnet's DNS settings may be, as
 	// stored JSON.
 	MaxConfigBytes int `example:"524288" koanf:"max_config_bytes"`
@@ -61,7 +65,7 @@ type TenantDNSLimits struct {
 
 // DefaultTenantDNSLimits are the limits without configuration.
 var DefaultTenantDNSLimits = TenantDNSLimits{
-	MaxExtraRecords: 1000, MaxNameservers: 64, MaxSearchDomains: 64, MaxConfigBytes: 256 << 10,
+	MaxExtraRecords: 1000, MaxNameservers: 64, MaxSearchDomains: 64, MaxSplitDomains: 64, MaxConfigBytes: 256 << 10,
 }
 
 var (
@@ -150,6 +154,10 @@ func (l TenantDNSLimits) orDefaults() TenantDNSLimits {
 
 	if l.MaxSearchDomains > 0 {
 		d.MaxSearchDomains = l.MaxSearchDomains
+	}
+
+	if l.MaxSplitDomains > 0 {
+		d.MaxSplitDomains = l.MaxSplitDomains
 	}
 
 	if l.MaxConfigBytes > 0 {

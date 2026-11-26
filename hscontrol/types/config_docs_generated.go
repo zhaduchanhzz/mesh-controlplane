@@ -151,6 +151,7 @@ var configFieldDocs = map[string]string{
 	"TenantDNSLimits.MaxExtraRecords":                     "The most extra DNS records a tailnet may store.",
 	"TenantDNSLimits.MaxNameservers":                      "The most nameservers a tailnet may store, global and split together.",
 	"TenantDNSLimits.MaxSearchDomains":                    "The most search domains a tailnet may store.",
+	"TenantDNSLimits.MaxSplitDomains":                     "The most split DNS domains a tailnet may store, counting a domain mapped to an empty list of nameservers.",
 	"Tuning.BatchChangeDelay":                             "How often queued changes are sent to clients as one update; must be positive.",
 	"Tuning.BatcherWorkers":                               "The number of workers building map updates for connected clients. Zero picks the number from the CPU count.",
 	"Tuning.ClusterLease":                                 "Times the lease that elects the one active process of a cluster in cluster mode (P11b): the others stay standby and take over when the lease expires.",

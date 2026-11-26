@@ -499,6 +499,8 @@ func (c *Cluster) reconcile() {
 			continue
 		}
 
+		runReconcileDNSHook(rt.id)
+
 		rt.h.cfg.ReplaceTenantDNS(rt.slug, dns)
 		rt.h.Change(change.DNSConfig())
 		log.Info().Str("tailnet", rt.id.String()).Uint64("config_revision", rev).Msg("reconcile: DNS settings reloaded")
@@ -609,7 +611,8 @@ func (c *Cluster) tailnetDNS(id tailnet.ID, slug string) (*types.TenantDNS, erro
 
 // unlimitedTenantDNS checks form only.
 var unlimitedTenantDNS = types.TenantDNSLimits{
-	MaxExtraRecords: math.MaxInt, MaxNameservers: math.MaxInt, MaxSearchDomains: math.MaxInt, MaxConfigBytes: math.MaxInt,
+	MaxExtraRecords: math.MaxInt, MaxNameservers: math.MaxInt, MaxSearchDomains: math.MaxInt,
+	MaxSplitDomains: math.MaxInt, MaxConfigBytes: math.MaxInt,
 }
 
 func containsRuntime(rts []*tenantRuntime, id string) bool {

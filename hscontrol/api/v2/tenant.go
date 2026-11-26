@@ -41,6 +41,14 @@ type TenantWrite struct {
 	// SHA256 is the hex SHA-256 of what was stored: the policy bytes, or
 	// the DNS settings as stored JSON.
 	SHA256 string
+	// NotInForce is set for a policy that was stored but could not be put
+	// in force yet: the previous policy is still enforced until the
+	// cluster installs the stored one.
+	NotInForce bool
+	// DeviceID and KeyExpiryDisabled describe a device key write
+	// (setDeviceKey): the device and the value set.
+	DeviceID          uint64
+	KeyExpiryDisabled *bool
 }
 
 // errNoTenant answers a tenant write in cluster mode when the cluster did

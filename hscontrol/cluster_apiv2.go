@@ -322,3 +322,27 @@ func (c *Cluster) SetTenantAuditHookForTest(fn func(tailnet.ID, apiv2.TenantWrit
 
 	tenantAuditHook.Store(&fn)
 }
+
+// reconcileDNSHook, when set, runs in the reconcile loop after a runtime's
+// stored DNS settings were read and before they are installed (tests: an
+// interleaving with a tenant write).
+var reconcileDNSHook atomic.Pointer[func(tailnet.ID)]
+
+func runReconcileDNSHook(id tailnet.ID) {
+	if fn := reconcileDNSHook.Load(); fn != nil {
+		(*fn)(id)
+	}
+}
+
+// SetReconcileDNSHookForTest makes fn run in the reconcile loop between
+// reading a runtime's stored DNS settings and installing them; nil removes
+// it. For tests.
+func (c *Cluster) SetReconcileDNSHookForTest(fn func(tailnet.ID)) {
+	if fn == nil {
+		reconcileDNSHook.Store(nil)
+
+		return
+	}
+
+	reconcileDNSHook.Store(&fn)
+}

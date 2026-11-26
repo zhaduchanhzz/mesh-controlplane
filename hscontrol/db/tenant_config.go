@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -88,6 +89,33 @@ func (hsdb *HSDatabase) Fenced() bool {
 	_, ok := tailnet.FenceFromContext(hsdb.DB.Statement.Context)
 
 	return ok
+}
+
+// ErrPolicyPrecondition is returned by a conditional policy write when the
+// stored policy fails the caller's check (If-Match).
+var ErrPolicyPrecondition = errors.New("policy precondition failed")
+
+// SetPolicyRevisedIf is [HSDatabase.SetPolicyRevised] that first passes the
+// stored policy data ("" when none is stored) to match; false is
+// [ErrPolicyPrecondition] and nothing is stored. A nil match always passes.
+func (hsdb *HSDatabase) SetPolicyRevisedIf(policy string, match func(stored string) bool) (*types.Policy, uint64, error) {
+	if match != nil {
+		current, err := hsdb.GetPolicy()
+		if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
+			return nil, 0, fmt.Errorf("loading policy: %w", err)
+		}
+
+		var data string
+		if current != nil {
+			data = current.Data
+		}
+
+		if !match(data) {
+			return nil, 0, ErrPolicyPrecondition
+		}
+	}
+
+	return hsdb.SetPolicyRevised(policy)
 }
 
 // SetPolicyRevised is [HSDatabase.SetPolicy] that also bumps the tailnet's
