@@ -122,20 +122,41 @@ func NewTestCluster(tb testing.TB, seeds ...TailnetSeed) *TestCluster {
 	return NewTestClusterWith(tb, ClusterOptions{}, seeds...)
 }
 
+// NetmapMode is the incremental netmap mode of a [TestCluster].
+type NetmapMode int
+
+const (
+	// NetmapDefault is the configuration default: incremental (ADR 0015).
+	NetmapDefault NetmapMode = iota
+	// NetmapIncremental names the incremental mode explicitly.
+	NetmapIncremental
+	// NetmapFull turns tuning.incremental_netmap off: the kill switch,
+	// which behaves as before the incremental netmap.
+	NetmapFull
+)
+
+// NetmapModeOf is NetmapIncremental for true, NetmapFull for false.
+func NetmapModeOf(incremental bool) NetmapMode {
+	if incremental {
+		return NetmapIncremental
+	}
+
+	return NetmapFull
+}
+
 // ClusterOptions are cluster-wide settings of a [TestCluster].
 type ClusterOptions struct {
-	// IncrementalNetmap is kept for tests that name the mode: the
-	// incremental netmap is on by default (ADR 0015) unless
-	// IncrementalNetmapOff is set. While on, the
-	// reconciliation runs every hour and the periodic full map every 24h
-	// (it sends one share of nodes per interval/60, so even 1h would send
-	// a full map every minute), so a test sees only the frames its own
-	// steps cause; tests run a reconciliation with
+	// Netmap is the mode of tuning.incremental_netmap (P14f review R5: an
+	// explicit mode, since the default flipped to on with ADR 0015 and a
+	// bool "IncrementalNetmap: false" would have meant on). While
+	// incremental, the reconciliation runs every hour and the periodic full
+	// map every 24h (it sends one share of nodes per interval/60, so even
+	// 1h would send a full map every minute), so a test sees only the
+	// frames its own steps cause; tests run a reconciliation with
 	// [hscontrol.Headscale.ReconcileNetmap].
-	IncrementalNetmap bool
-	// IncrementalNetmapOff turns tuning.incremental_netmap off: the kill
-	// switch, which behaves as before the incremental netmap.
-	IncrementalNetmapOff bool
+	Netmap NetmapMode
+	// MaxPeerEntries, when set, replaces tuning.max_peer_entries (P10d).
+	MaxPeerEntries int64
 	// FullMapInterval, when set, replaces the 24h for the periodic full
 	// map (minimum 1m).
 	FullMapInterval time.Duration
@@ -288,7 +309,11 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 		front:     front,
 	}
 
-	if o.IncrementalNetmapOff {
+	if o.MaxPeerEntries > 0 {
+		cfg.Tuning.MaxPeerEntries = o.MaxPeerEntries
+	}
+
+	if o.Netmap == NetmapFull {
 		cfg.Tuning.IncrementalNetmap.Enabled = false
 	} else {
 		cfg.Tuning.IncrementalNetmap = types.IncrementalNetmapConfig{

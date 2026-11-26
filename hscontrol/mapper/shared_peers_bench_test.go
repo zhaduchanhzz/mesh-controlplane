@@ -76,7 +76,7 @@ func BenchmarkSharedPeersFullMaps(b *testing.B) {
 								b.Fatal(err)
 							}
 
-							_ = hashResponse(resp)
+							_ = hashResponse(resp, m.sharedPeerCache())
 							peerEntries += len(resp.Peers)
 						}
 					}
@@ -89,18 +89,7 @@ func BenchmarkSharedPeersFullMaps(b *testing.B) {
 	}
 }
 
-// dropSharedPeers empties m's shared cache and forgets its memoised hashes.
+// dropSharedPeers empties m's shared cache; its memoised hashes go with it.
 func dropSharedPeers(m *mapper) {
-	c := m.shared.Swap(nil)
-	if c == nil {
-		return
-	}
-
-	c.entries.Range(func(_, v any) bool {
-		if e, _ := v.(*sharedPeerEntry); e != nil {
-			forgetPeerHash(e.node)
-		}
-
-		return true
-	})
+	m.shared.Store(nil)
 }

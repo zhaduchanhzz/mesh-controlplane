@@ -6,8 +6,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"tailscale.com/tailcfg"
 )
+
+// deltaBaselineDropped counts connections whose delta-first baseline was
+// dropped for being over [maxBaselinePeers] (P14f review R2): they are then
+// sent everything.
+var deltaBaselineDropped = promauto.NewCounter(prometheus.CounterOpts{
+	Namespace: "headscale",
+	Name:      "mapper_delta_baseline_dropped_total",
+	Help:      "Connections whose delta-first baseline was dropped for its size; they are sent every part again.",
+})
 
 // Delta-first sending (P14f F3, ADR 0015 D2). With the incremental netmap
 // on, every connection remembers, per peer, per user profile and for its
@@ -64,41 +75,76 @@ func hashJSON(v any) (uint64, bool) {
 	return maphash.Bytes(deltaHashSeed, b), true
 }
 
-// peerSent is what a client holds of one peer: the hash of the entry
-// without presence, and the presence itself.
-type peerSent struct {
-	hash     uint64
-	online   int8  // -1: nil, 0: false, 1: true
-	lastSeen int64 // UnixNano; 0: nil
-}
+// peerSent is what a client holds of one peer, packed into one word so a
+// connection's baseline costs one 16-byte map slot per peer (P14f review
+// R2): the top 48 bits are the hash of the entry without presence, the low
+// 16 bits its presence: Online (2 bits, exact) and a 14-bit fingerprint of
+// LastSeen. Presence is kept apart from the entry hash because presence
+// patches move it (see the safety rules above). A fingerprint collision can
+// only hide a change of LastSeen, never of another field: presence is not
+// access.
+type peerSent uint64
 
-func onlineOf(b *bool) int8 {
+const (
+	onlineShift  = 14
+	seenMask     = 1<<onlineShift - 1
+	presenceMask = 1<<16 - 1
+	onlineMask   = presenceMask &^ seenMask
+)
+
+// onlineOf encodes Online: 0 nil, 1 false, 2 true.
+func onlineOf(b *bool) uint64 {
 	switch {
 	case b == nil:
-		return -1
-	case *b:
-		return 1
-	default:
 		return 0
+	case *b:
+		return 2 //nolint:mnd
+	default:
+		return 1
 	}
 }
 
-func seenOf(t *time.Time) int64 {
+// seenOf fingerprints LastSeen in 14 bits: 0 for nil, never 0 otherwise.
+func seenOf(t *time.Time) uint64 {
 	if t == nil {
 		return 0
 	}
 
-	return t.UnixNano()
+	return mix64(uint64(t.UnixNano()))&seenMask | 1 //nolint:gosec // bits, not a quantity
+}
+
+// mix64 is the splitmix64 finaliser.
+func mix64(x uint64) uint64 {
+	x ^= x >> 30 //nolint:mnd
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27 //nolint:mnd
+	x *= 0x94d049bb133111eb
+	x ^= x >> 31 //nolint:mnd
+
+	return x
+}
+
+func packPeer(hash, online, seen uint64) peerSent {
+	return peerSent(hash&^presenceMask | online<<onlineShift | seen)
+}
+
+func (p peerSent) withOnline(online uint64) peerSent {
+	return peerSent(uint64(p)&^onlineMask | online<<onlineShift)
+}
+
+func (p peerSent) withSeen(seen uint64) peerSent {
+	return peerSent(uint64(p)&^seenMask | seen)
 }
 
 // hashPeer returns what a client holding p holds of it, see the safety
-// rules above. A shared entry's value is computed once, when it is stored
-// (P14f F4); entries are never modified, so the memo includes presence.
-func hashPeer(p *tailcfg.Node) (peerSent, bool) {
-	if v, ok := sharedPeerHashes.Load(p); ok {
-		ps, _ := v.(peerSent)
-
-		return ps, true
+// rules above. memo, when not nil, is the mapper's shared-entry cache: a
+// shared entry's value is computed once, when it is stored (P14f F4), and
+// lives as long as the entry in that mapper's cache (P14f review R1).
+func hashPeer(p *tailcfg.Node, memo *sharedPeers) (peerSent, bool) {
+	if memo != nil {
+		if v, ok := memo.hashOf(p); ok {
+			return v, true
+		}
 	}
 
 	return hashPeerUncached(p)
@@ -112,7 +158,7 @@ func hashPeerUncached(p *tailcfg.Node) (peerSent, bool) {
 
 	v, ok := hashJSON(&c)
 
-	return peerSent{hash: v, online: onlineOf(p.Online), lastSeen: seenOf(p.LastSeen)}, ok
+	return packPeer(v, onlineOf(p.Online), seenOf(p.LastSeen)), ok
 }
 
 // patchKeepsHash reports whether pc changes nothing a peer hash covers:
@@ -145,8 +191,9 @@ var emptyPeerChangeJSON = func() string {
 }()
 
 // hashResponse computes the hashes delta-first needs for data. Parts that
-// fail to hash are left out, which makes them count as changed.
-func hashResponse(data *tailcfg.MapResponse) *responseHashes {
+// fail to hash are left out, which makes them count as changed. memo is the
+// mapper's shared-entry cache, or nil.
+func hashResponse(data *tailcfg.MapResponse, memo *sharedPeers) *responseHashes {
 	h := &responseHashes{}
 
 	if n := len(data.Peers) + len(data.PeersChanged); n > 0 {
@@ -158,7 +205,7 @@ func hashResponse(data *tailcfg.MapResponse) *responseHashes {
 					continue
 				}
 
-				if v, ok := hashPeer(p); ok {
+				if v, ok := hashPeer(p, memo); ok {
 					h.peers[p.ID] = v
 				}
 			}
@@ -181,6 +228,13 @@ func hashResponse(data *tailcfg.MapResponse) *responseHashes {
 
 	return h
 }
+
+// maxBaselinePeers bounds one connection's baseline (P14f review R2): a
+// connection whose client holds more peers keeps no baseline and is sent
+// everything, which is always safe; [deltaBaselineDropped] counts it. The
+// tailnet-wide bound is tuning.max_peer_entries, enforced on joins and on
+// policy writes.
+const maxBaselinePeers = 100_000
 
 // sentState is what one connection's client holds, as far as delta-first
 // compares it. The zero value has no baseline.
@@ -227,7 +281,12 @@ func (s *sentState) strip(data *tailcfg.MapResponse, h *responseHashes) *tailcfg
 		}
 	}
 
-	if s.profiles != nil && len(data.UserProfiles) > 0 {
+	// A frame with a full peer list is the safety net (ADR 0015 D3): its
+	// profiles and filter go out whole too and reset the baseline (P14f
+	// review R3), so a client holding anything else heals there.
+	full := data.Peers != nil
+
+	if !full && s.profiles != nil && len(data.UserProfiles) > 0 {
 		profiles = make([]tailcfg.UserProfile, 0, len(data.UserProfiles))
 
 		for _, up := range data.UserProfiles {
@@ -241,7 +300,7 @@ func (s *sentState) strip(data *tailcfg.MapResponse, h *responseHashes) *tailcfg
 		}
 	}
 
-	if data.PacketFilters != nil && s.filterKnown && h.hasFilter && h.filter == s.filter {
+	if !full && data.PacketFilters != nil && s.filterKnown && h.hasFilter && h.filter == s.filter {
 		dropFilter = true
 		changed = true
 	}
@@ -259,7 +318,7 @@ func (s *sentState) strip(data *tailcfg.MapResponse, h *responseHashes) *tailcfg
 		}
 	}
 
-	if s.profiles != nil && len(data.UserProfiles) > 0 {
+	if !full && s.profiles != nil && len(data.UserProfiles) > 0 {
 		out.UserProfiles = nil
 		if len(profiles) > 0 {
 			out.UserProfiles = profiles
@@ -280,6 +339,12 @@ func (s *sentState) record(data *tailcfg.MapResponse, h *responseHashes, initial
 	defer s.mu.Unlock()
 
 	if initial || data.Peers != nil {
+		if len(data.Peers) > maxBaselinePeers {
+			s.dropBaselineLocked()
+
+			return
+		}
+
 		s.peers = make(map[tailcfg.NodeID]peerSent, len(data.Peers))
 
 		for _, p := range data.Peers {
@@ -326,11 +391,11 @@ func (s *sentState) record(data *tailcfg.MapResponse, h *responseHashes, initial
 			}
 
 			if pc.Online != nil {
-				cur.online = onlineOf(pc.Online)
+				cur = cur.withOnline(onlineOf(pc.Online))
 			}
 
 			if pc.LastSeen != nil {
-				cur.lastSeen = seenOf(pc.LastSeen)
+				cur = cur.withSeen(seenOf(pc.LastSeen))
 			}
 
 			s.peers[pc.NodeID] = cur
@@ -338,8 +403,7 @@ func (s *sentState) record(data *tailcfg.MapResponse, h *responseHashes, initial
 
 		for id, online := range data.OnlineChange {
 			if cur, ok := s.peers[id]; ok {
-				cur.online = onlineOf(&online)
-				s.peers[id] = cur
+				s.peers[id] = cur.withOnline(onlineOf(&online))
 			}
 		}
 
@@ -350,7 +414,13 @@ func (s *sentState) record(data *tailcfg.MapResponse, h *responseHashes, initial
 		}
 	}
 
-	if initial && s.profiles == nil {
+	if len(s.peers) > maxBaselinePeers {
+		s.dropBaselineLocked()
+
+		return
+	}
+
+	if (initial && s.profiles == nil) || data.Peers != nil {
 		s.profiles = make(map[tailcfg.UserID]uint64, len(data.UserProfiles))
 	}
 
@@ -367,6 +437,15 @@ func (s *sentState) record(data *tailcfg.MapResponse, h *responseHashes, initial
 	if data.PacketFilters != nil {
 		s.filter, s.filterKnown = h.filter, h.hasFilter
 	}
+}
+
+// dropBaselineLocked forgets everything known of the client: until the next
+// full peer list within [maxBaselinePeers], the connection is sent
+// everything.
+func (s *sentState) dropBaselineLocked() {
+	s.peers, s.profiles, s.filter, s.filterKnown = nil, nil, 0, false
+
+	deltaBaselineDropped.Inc()
 }
 
 // deltaFirst reports whether delta-first sending is on: it follows the

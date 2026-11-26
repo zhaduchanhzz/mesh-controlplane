@@ -76,7 +76,7 @@ func baselineBytesPerPeer(t *testing.T, n int) float64 {
 	}
 
 	r := &tailcfg.MapResponse{Peers: peers}
-	h := hashResponse(r)
+	h := hashResponse(r, nil)
 
 	var before, after runtime.MemStats
 
@@ -109,7 +109,7 @@ func TestReviewR2BaselineBytesPerPeer(t *testing.T) {
 // TestReviewR2BaselineCap: a connection holding more peers than the cap
 // keeps no baseline (it is sent everything, which is safe).
 func TestReviewR2BaselineCap(t *testing.T) {
-	const n = 100_001
+	n := maxBaselinePeers + 1
 
 	peers := make([]*tailcfg.Node, n)
 	for i := range peers {
@@ -119,11 +119,11 @@ func TestReviewR2BaselineCap(t *testing.T) {
 	r := &tailcfg.MapResponse{Peers: peers}
 
 	var s sentState
-	s.record(r, hashResponse(r), true)
+	s.record(r, hashResponse(r, nil), true)
 	assert.Nil(t, s.peers, "a baseline over the cap is dropped")
 
 	d := &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{dfPeer(1, "p")}}
-	assert.Same(t, d, s.strip(d, hashResponse(d)), "no baseline: nothing stripped")
+	assert.Same(t, d, s.strip(d, hashResponse(d, nil)), "no baseline: nothing stripped")
 }
 
 // TestReviewR3FullMapCarriesFilterAndProfiles: a frame with a full peer
@@ -149,7 +149,7 @@ func TestReviewR3FullMapCarriesFilterAndProfiles(t *testing.T) {
 		PacketFilters: map[string][]tailcfg.FilterRule{"base": filterF},
 		UserProfiles:  []tailcfg.UserProfile{profile},
 	}
-	got := s.strip(d, hashResponse(d))
+	got := s.strip(d, hashResponse(d, nil))
 	assert.Nil(t, got.PacketFilters, "delta: equal filter stripped")
 
 	// ...but a full map carries them whole.
@@ -158,7 +158,7 @@ func TestReviewR3FullMapCarriesFilterAndProfiles(t *testing.T) {
 		PacketFilters: map[string][]tailcfg.FilterRule{"base": filterF},
 		UserProfiles:  []tailcfg.UserProfile{profile},
 	}
-	got = s.strip(full, hashResponse(full))
+	got = s.strip(full, hashResponse(full, nil))
 	assert.NotNil(t, got.PacketFilters, "full map: filter sent even if believed held")
 	assert.Len(t, got.UserProfiles, 1, "full map: profiles sent even if believed held")
 	assert.Len(t, got.Peers, 1)
@@ -225,4 +225,30 @@ func TestReviewR6TwoConnectionsUnderBackpressure(t *testing.T) {
 
 	assert.Equal(t, filter("A"), held[free], "free stream ends with A")
 	assert.Equal(t, filter("A"), held[blocked], "blocked stream ends with A (it never held B)")
+}
+
+// TestReviewR8SweepsBoundedByTailnetSize: the shared cache sweeps, each a
+// pass over every entry, once per tailnet-size puts, not once per viewer's
+// peer count (which is small under isolating policies).
+func TestReviewR8SweepsBoundedByTailnetSize(t *testing.T) {
+	td := setupSharedTailnet(t, 20, 10, `{"acls":[{"action":"accept","src":["autogroup:member"],"dst":["autogroup:self:*"]}]}`)
+	connectAllShared(t, td)
+
+	m := td.Batcher.mapper
+
+	for range 3 {
+		dropSharedPeers(m)
+
+		for i := range td.Nodes {
+			_ = peerMap(t, m, td.Nodes[i].n.ID)
+		}
+	}
+
+	c := m.sharedPeerCache()
+	require.NotNil(t, c)
+
+	live := len(td.Nodes)
+	puts := live * 9 // one full map per node, 9 same-user peers each (last round)
+	assert.LessOrEqual(t, c.sweeps.Load(), int64(puts/live+1),
+		"%d sweeps for %d puts in a tailnet of %d", c.sweeps.Load(), puts, live)
 }

@@ -169,6 +169,11 @@ type multiChannelNodeConn struct {
 	closeOnce   sync.Once
 	updateCount atomic.Int64
 
+	// delivered counts the frames handed to this node's streams (each
+	// stream counts once), for tests asserting how many frames a change
+	// produced (P14f review R4).
+	delivered atomic.Int64
+
 	// disconnectedAt records when the last connection was removed.
 	// nil means the node is considered connected (or newly created);
 	// non-nil means the node disconnected at the stored timestamp.
@@ -522,7 +527,7 @@ func (mc *multiChannelNodeConn) send(data *tailcfg.MapResponse) error {
 	// Delta-first (P14f F3): hashed once, compared per connection.
 	var hashes *responseHashes
 	if mc.mapper.deltaFirst() {
-		hashes = hashResponse(data)
+		hashes = hashResponse(data, mc.mapper.sharedPeerCache())
 	}
 
 	for _, conn := range snapshot {
@@ -554,6 +559,10 @@ func (mc *multiChannelNodeConn) send(data *tailcfg.MapResponse) error {
 		} else {
 			successCount++
 			newestAccepted = conn == snapshot[len(snapshot)-1]
+
+			if stripped != nil {
+				mc.delivered.Add(1)
+			}
 
 			if data.Node != nil {
 				conn.lastSelf.Store(data.Node)

@@ -17,9 +17,19 @@ import (
 func TestTenantDefaultDeny(t *testing.T) {
 	t.Parallel()
 
+	// Both netmap modes (P14f review R5): the kill switch must deny as well.
+	for _, mode := range netmapModes {
+		t.Run(mode.name, func(t *testing.T) {
+			t.Parallel()
+			testTenantDefaultDeny(t, mode.incremental)
+		})
+	}
+}
+
+func testTenantDefaultDeny(t *testing.T, incremental bool) {
 	const timeout = 15 * time.Second
 
-	srv := servertest.NewServer(t, servertest.WithPolicyEmptyDenies())
+	srv := servertest.NewServer(t, servertest.WithPolicyEmptyDenies(), servertest.WithIncrementalNetmap(incremental))
 	alice := srv.CreateUser(t, "alice")
 	bob := srv.CreateUser(t, "bob")
 
@@ -80,11 +90,15 @@ func TestTenantDefaultDeny(t *testing.T) {
 
 	// Barrier: an explicit empty grant list changes the policy (nil to
 	// {"grants":[]}) after all three nodes exist. It must still deny
-	// everything. Deny to deny changes nothing a client holds, so with delta-first
-	// (ADR 0015 D2) no client gets a frame: wait for the server to have
-	// handed out the change instead, then for every client to be denied.
+	// everything. Deny to deny changes nothing a client holds, so with
+	// delta-first (ADR 0015 D2) no client gets a frame, which the server's
+	// own count shows (P14f review R4); with the kill switch every client
+	// gets the policy response. Then every client must be denied.
+	frames := framesOf(t, srv, clients)
+
 	updatePolicy(t, `{"grants":[]}`)
 	srv.WaitMapsDelivered(t, timeout)
+	assertNoopChangeFrames(t, srv, clients, frames, `nil to {"grants":[]}`)
 
 	for _, c := range clients {
 		c.WaitForCondition(t, "denied after {\"grants\":[]}", timeout, denied)

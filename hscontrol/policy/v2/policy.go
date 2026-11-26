@@ -34,6 +34,10 @@ var ErrInvalidTagOwner = errors.New("tag owner is not an Alias")
 // ErrPolicyEmpty is returned by [PolicyManager.SetPolicy] for a zero-length policy.
 var ErrPolicyEmpty = errors.New(`policy is empty, use "{}" to allow all`)
 
+// ErrPeerEntriesBound refuses a policy that would give the tailnet more
+// peer entries than tuning.max_peer_entries (P14f review R2).
+var ErrPeerEntriesBound = errors.New("policy over the tailnet's peer relationship limit")
+
 type PolicyManager struct {
 	// RWMutex, not Mutex, so concurrent map generation does not serialise on
 	// reads. The per-node caches are xsync.Maps so a read can fill them without
@@ -134,6 +138,10 @@ type PolicyManager struct {
 	// emptyDenies is set by [WithEmptyPolicyDenies] and never changes after
 	// construction. denyAll is derived from it and pol by updateLocked.
 	emptyDenies bool
+
+	// peerBound and peerBoundNow are [WithPeerEntriesBound]'s, read by
+	// [ValidatePolicy] only.
+	peerBound, peerBoundNow int64
 	denyAll     bool
 }
 
@@ -149,6 +157,19 @@ type Option func(*PolicyManager)
 // in both modes; it never falls back to either.
 func WithEmptyPolicyDenies(on bool) Option {
 	return func(pm *PolicyManager) { pm.emptyDenies = on }
+}
+
+// WithPeerEntriesBound makes [ValidatePolicy] refuse a policy that gives
+// the nodes more than limit peer entries (the sum, over nodes, of the
+// peers each is sent: tuning.max_peer_entries, P10d), unless that is no
+// more than now, the tailnet's entries under its current policy: a write
+// that does not grow a tailnet already past the bound stays possible.
+// limit 0 means no bound. Joins are bounded by the NodeStore; this bounds
+// policy writes (P14f review R2), which otherwise let a tenant register
+// many nodes under an isolating policy, then link them all, growing every
+// process's per-connection state with the square of the tailnet.
+func WithPeerEntriesBound(limit, now int64) Option {
+	return func(pm *PolicyManager) { pm.peerBound, pm.peerBoundNow = limit, now }
 }
 
 // filterAndPolicy combines the compiled filter rules with policy content for hashing.

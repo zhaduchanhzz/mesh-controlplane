@@ -50,7 +50,7 @@ func TestCLITailnetPolicyValidates(t *testing.T) {
 		"empty file":      "",
 		"whitespace only": " \n\t",
 	} {
-		err := setTailnetPolicyCLI(p, "a", []byte(data), false)
+		err := setTailnetPolicyCLI(p, "a", []byte(data), false, 0)
 		require.Error(t, err, "%s: refused", name)
 
 		got, gotRev := stored()
@@ -59,19 +59,19 @@ func TestCLITailnetPolicyValidates(t *testing.T) {
 	}
 
 	allow := `{"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]}`
-	require.NoError(t, setTailnetPolicyCLI(p, "a", []byte(allow), false))
+	require.NoError(t, setTailnetPolicyCLI(p, "a", []byte(allow), false, 0))
 
 	got, gotRev := stored()
 	assert.Equal(t, allow, got)
 	assert.Equal(t, rev+1, gotRev)
 
 	// An explicit empty policy (deny all) is stored as such.
-	require.NoError(t, setTailnetPolicyCLI(p, "a", nil, true))
+	require.NoError(t, setTailnetPolicyCLI(p, "a", nil, true, 0))
 
 	got, gotRev = stored()
 	assert.Empty(t, got)
 	assert.Equal(t, rev+2, gotRev)
 
 	// --empty with content is a contradiction.
-	require.Error(t, setTailnetPolicyCLI(p, "a", []byte(allow), true))
+	require.Error(t, setTailnetPolicyCLI(p, "a", []byte(allow), true, 0))
 }

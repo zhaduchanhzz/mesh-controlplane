@@ -51,6 +51,16 @@ type sharedPeerEntry struct {
 type sharedPeers struct {
 	entries sync.Map // types.NodeID -> *sharedPeerEntry
 	puts    atomic.Int64
+	sweeps  atomic.Int64
+
+	// hashes memoises [hashPeer] (the entry's hash and its presence, which
+	// is part of the entry and of the node revision it was rendered from)
+	// for the cache's entries: a shared entry is in every full map of the
+	// tailnet, and delta-first hashes every entry of every response it
+	// sends. Keyed by the entry's address; entries are never modified, and
+	// are dropped here when the cache drops them. It belongs to the cache,
+	// so it goes with the mapper when the runtime stops (P14f review R1).
+	hashes sync.Map // *tailcfg.Node -> peerSent
 }
 
 // sharedPeerCache returns the mapper's cache, or nil when the incremental
@@ -102,15 +112,17 @@ func (c *sharedPeers) get(peer types.NodeView, ipv4Off bool, baseDomain string) 
 }
 
 // put stores node as peer's shared entry. live is the number of nodes in
-// the tailnet, used to bound the cache: entries of deleted nodes are swept
-// once the puts since the last sweep exceed it.
+// the tailnet (not the viewer's peer count, P14f review R8), used to bound
+// the cache: entries of deleted nodes are swept once the puts since the
+// last sweep exceed it, so a sweep, which visits every entry, costs O(1)
+// per put.
 func (c *sharedPeers) put(peer types.NodeView, ipv4Off bool, baseDomain string, node *tailcfg.Node, live int, exists func(types.NodeID) bool) {
 	e := &sharedPeerEntry{view: peer, ipv4Off: ipv4Off, baseDomain: baseDomain, node: node}
-	rememberPeerHash(node)
+	c.remember(node)
 
 	if old, loaded := c.entries.Swap(peer.ID(), e); loaded {
 		if oe, _ := old.(*sharedPeerEntry); oe != nil && oe.node != node {
-			forgetPeerHash(oe.node)
+			c.hashes.Delete(oe.node)
 		}
 	}
 
@@ -122,12 +134,14 @@ func (c *sharedPeers) put(peer types.NodeView, ipv4Off bool, baseDomain string, 
 
 // sweep drops the entries of nodes that no longer exist.
 func (c *sharedPeers) sweep(exists func(types.NodeID) bool) {
+	c.sweeps.Add(1)
+
 	c.entries.Range(func(k, v any) bool {
 		id, _ := k.(types.NodeID)
 		if !exists(id) {
 			if c.entries.CompareAndDelete(k, v) {
 				if e, _ := v.(*sharedPeerEntry); e != nil {
-					forgetPeerHash(e.node)
+					c.hashes.Delete(e.node)
 				}
 			}
 		}
@@ -136,20 +150,22 @@ func (c *sharedPeers) sweep(exists func(types.NodeID) bool) {
 	})
 }
 
-// sharedPeerHashes memoises [hashPeer] (the entry's hash and its presence,
-// which is part of the entry and of the node revision it was rendered from)
-// for shared entries: a shared entry is
-// in every full map of the tailnet, and delta-first hashes every entry of
-// every response it sends. Keyed by the entry's address; entries are never
-// modified, and are dropped here when the cache drops them.
-var sharedPeerHashes sync.Map // *tailcfg.Node -> peerSent (hash and presence)
-
-func rememberPeerHash(node *tailcfg.Node) {
+// remember memoises node's [hashPeer] value.
+func (c *sharedPeers) remember(node *tailcfg.Node) {
 	if v, ok := hashPeerUncached(node); ok {
-		sharedPeerHashes.Store(node, v)
+		c.hashes.Store(node, v)
 	}
 }
 
-func forgetPeerHash(node *tailcfg.Node) {
-	sharedPeerHashes.Delete(node)
+// hashOf returns the memoised [hashPeer] value of one of the cache's
+// entries.
+func (c *sharedPeers) hashOf(node *tailcfg.Node) (peerSent, bool) {
+	v, ok := c.hashes.Load(node)
+	if !ok {
+		return 0, false
+	}
+
+	ps, ok := v.(peerSent)
+
+	return ps, ok
 }

@@ -26,17 +26,28 @@ import (
 func TestPolicyChanges(t *testing.T) {
 	t.Parallel()
 
+	// Both netmap modes (P14f review R5).
+	for _, mode := range netmapModes {
+		t.Run(mode.name, func(t *testing.T) {
+			t.Parallel()
+			testPolicyChanges(t, servertest.WithServerOptions(servertest.WithIncrementalNetmap(mode.incremental)))
+		})
+	}
+}
+
+func testPolicyChanges(t *testing.T, mode servertest.HarnessOption) {
+
 	t.Run("default_allow_all", func(t *testing.T) {
 		t.Parallel()
 		// With no explicit policy (database mode), the default
 		// is to allow all traffic. All nodes should see each other.
-		h := servertest.NewHarness(t, 3)
+		h := servertest.NewHarness(t, 3, mode)
 		servertest.AssertMeshComplete(t, h.Clients())
 	})
 
 	t.Run("explicit_allow_all_policy", func(t *testing.T) {
 		t.Parallel()
-		h := servertest.NewHarness(t, 2)
+		h := servertest.NewHarness(t, 2, mode)
 
 		// Set an allow-all policy explicitly. It compiles to what the
 		// default already gave the clients, so with delta-first (ADR 0015
@@ -91,7 +102,7 @@ func TestPolicyChanges(t *testing.T) {
 
 	t.Run("policy_change_triggers_update_on_all_nodes", func(t *testing.T) {
 		t.Parallel()
-		h := servertest.NewHarness(t, 3)
+		h := servertest.NewHarness(t, 3, mode)
 
 		counts := make([]int, len(h.Clients()))
 		for i, c := range h.Clients() {
@@ -120,7 +131,7 @@ func TestPolicyChanges(t *testing.T) {
 
 	t.Run("multiple_policy_changes", func(t *testing.T) {
 		t.Parallel()
-		h := servertest.NewHarness(t, 2)
+		h := servertest.NewHarness(t, 2, mode)
 
 		// Two different policies in a row: each one is a change, so each
 		// one must reach the client. Re-applying the same bytes is not a
@@ -164,7 +175,7 @@ func TestPolicyChanges(t *testing.T) {
 	// https://github.com/juanfont/headscale/issues/3508
 	t.Run("ssh_removal_clears_client_ssh_policy", func(t *testing.T) {
 		t.Parallel()
-		h := servertest.NewHarness(t, 2)
+		h := servertest.NewHarness(t, 2, mode)
 
 		h.ChangePolicy(t, []byte(`{
 			"acls": [],
@@ -193,7 +204,7 @@ func TestPolicyChanges(t *testing.T) {
 	// must keep the rules it holds.
 	t.Run("unrelated_policy_change_keeps_client_ssh_rules", func(t *testing.T) {
 		t.Parallel()
-		h := servertest.NewHarness(t, 2)
+		h := servertest.NewHarness(t, 2, mode)
 
 		withSSH := func(group string) []byte {
 			return fmt.Appendf(nil, `{
@@ -215,10 +226,15 @@ func TestPolicyChanges(t *testing.T) {
 			})
 
 		// The group change alters neither filter nor SSH rules, so with
-		// delta-first no frame goes out; wait for the server to have
-		// handed out the change, then the client must still hold its rules.
+		// delta-first no frame goes out (counted on the server, P14f review
+		// R4); the kill switch sends the policy response. Either way the
+		// client must still hold its rules.
+		h.Server.WaitMapsDelivered(t, 10*time.Second)
+		frames := framesOf(t, h.Server, h.Clients())
+
 		h.ChangePolicy(t, withSSH("b"))
 		h.Server.WaitMapsDelivered(t, 10*time.Second)
+		assertNoopChangeFrames(t, h.Server, h.Clients(), frames, "unrelated group change")
 		h.Client(0).WaitForCondition(t, "SSH rules kept after unrelated policy change", 10*time.Second,
 			func(nm *netmap.NetworkMap) bool {
 				return nm.SSHPolicy != nil && len(nm.SSHPolicy.Rules) > 0

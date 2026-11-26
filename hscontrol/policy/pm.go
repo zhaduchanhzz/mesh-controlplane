@@ -136,6 +136,11 @@ func WithEmptyPolicyDenies(on bool) Option {
 	return policyv2.WithEmptyPolicyDenies(on)
 }
 
+// WithPeerEntriesBound is [policyv2.WithPeerEntriesBound].
+func WithPeerEntriesBound(limit, now int64) Option {
+	return policyv2.WithPeerEntriesBound(limit, now)
+}
+
 // WithLocalNodeChanges reports local node joins and removals as no policy
 // change; see [policyv2.WithLocalNodeChanges] (P00d).
 func WithLocalNodeChanges(on bool) Option {

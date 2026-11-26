@@ -153,9 +153,9 @@ func TestSharedPeerEntryRenderedOnce(t *testing.T) {
 		t.Helper()
 
 		for _, p := range peerMap(t, m, td.Nodes[2].n.ID).Peers {
-			memo, ok1 := hashPeer(p)
+			memo, ok1 := m.sharedPeerCache().hashOf(p)
 			direct, ok2 := hashPeerUncached(p)
-			require.True(t, ok1 && ok2)
+			require.True(t, ok1 && ok2, "%s: peer %d: shared entry memoised", step, p.ID)
 			require.Equal(t, direct, memo, "%s: peer %d", step, p.ID)
 		}
 	}

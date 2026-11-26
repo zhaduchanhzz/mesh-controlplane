@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"testing"
 	"time"
 
@@ -61,6 +62,7 @@ type serverConfig struct {
 	prefixV4              netip.Prefix
 	policyEmptyDenies     bool
 	maxPeerEntries        int64
+	incremental           bool
 }
 
 func defaultServerConfig() *serverConfig {
@@ -71,7 +73,16 @@ func defaultServerConfig() *serverConfig {
 		ephemeralTimeout: 30 * time.Second,
 		taildropEnabled:  true,
 		prefixV4:         netip.MustParsePrefix("100.64.0.0/10"),
+		incremental:      os.Getenv("SERVERTEST_INCREMENTAL_NETMAP") != "off",
 	}
+}
+
+// WithIncrementalNetmap sets tuning.incremental_netmap.enabled (P14f review
+// R5). The default is the configuration default (on, ADR 0015), or off
+// when SERVERTEST_INCREMENTAL_NETMAP=off, so the whole package can be run
+// with the kill switch.
+func WithIncrementalNetmap(on bool) ServerOption {
+	return func(c *serverConfig) { c.incremental = on }
 }
 
 // WithBatchDelay sets the batcher's change coalescing delay.
@@ -197,6 +208,7 @@ func NewServer(tb testing.TB, opts ...ServerOption) *TestServer {
 	cfg.Tuning.BatcherWorkers = sc.batcherWorkers
 	cfg.Tuning.NodeMapSessionBufferedChanSize = sc.bufferedChanSize
 	cfg.PolicyEmptyDenies = sc.policyEmptyDenies
+	cfg.Tuning.IncrementalNetmap.Enabled = sc.incremental
 
 	if sc.nodeStoreBatchTimeout > 0 {
 		cfg.Tuning.NodeStoreBatchTimeout = sc.nodeStoreBatchTimeout
@@ -253,12 +265,39 @@ func (s *TestServer) WaitMapsDelivered(tb testing.TB, timeout time.Duration) {
 
 		<-tick.C
 
-		if s.App.MapBatcher().Idle() {
+		// Idle: nothing pending or being rendered; drained: every frame
+		// handed to a stream was taken by it (P14f review R4).
+		if b := s.App.MapBatcher(); b.Idle() && b.Drained() {
 			idle++
 		} else {
 			idle = 0
 		}
 	}
+}
+
+// IncrementalNetmap reports whether the server runs the incremental
+// netmap (and so delta-first, ADR 0015).
+func (s *TestServer) IncrementalNetmap() bool {
+	return s.cfg.Tuning.IncrementalNetmap.Enabled
+}
+
+// FramesDelivered returns the number of map frames the server handed to
+// c's streams so far: a server-side count that does not race the client's
+// reads (P14f review R4).
+func (s *TestServer) FramesDelivered(tb testing.TB, c *TestClient) int64 {
+	tb.Helper()
+
+	nm := c.Netmap()
+	if nm == nil {
+		tb.Fatalf("servertest: %s has no netmap", c.Name)
+	}
+
+	nv, ok := s.st.GetNodeByNodeKey(nm.NodeKey)
+	if !ok {
+		tb.Fatalf("servertest: %s is not a node", c.Name)
+	}
+
+	return s.App.MapBatcher().FramesDelivered(nv.ID())
 }
 
 // NewServerFromConfig starts cfg, as loaded, as a test server. Only the

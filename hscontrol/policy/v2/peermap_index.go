@@ -33,12 +33,47 @@ import (
 // the order the pair scan appends them in.
 //
 // Must be called with pm.mu held.
+func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeView]) map[types.NodeID][]types.NodeID {
+	ret, _ := pm.peerMapIndexedLocked(nodes, 0)
+
+	return ret
+}
+
+// countPeerEntriesLocked returns the number of peer entries (the sum, over
+// nodes, of the peers each is sent) the build would give nodes, without
+// building the map, stopping once it passes limit (> 0): the cost is then
+// bounded by limit, not by the square of the tailnet (P14f review R2).
+// Must be called with pm.mu held.
+func (pm *PolicyManager) countPeerEntriesLocked(nodes views.Slice[types.NodeView], limit int64) int64 {
+	_, n := pm.peerMapIndexedLocked(nodes, limit)
+
+	return n
+}
+
+// peerMapIndexedLocked is [PolicyManager.buildPeerMapIndexedLocked]; with
+// countOver > 0 it builds no map and only counts the entries, stopping once
+// the count passes countOver.
 //
 //nolint:gocyclo // one pass per rule above
-func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeView]) map[types.NodeID][]types.NodeID {
+func (pm *PolicyManager) peerMapIndexedLocked(nodes views.Slice[types.NodeView], countOver int64) (map[types.NodeID][]types.NodeID, int64) {
 	// Deny all, as in the pair scan: no peers, not even same-user ones.
 	if pm.denyAll {
-		return make(map[types.NodeID][]types.NodeID)
+		return make(map[types.NodeID][]types.NodeID), 0
+	}
+
+	pairwise := func() (map[types.NodeID][]types.NodeID, int64) {
+		ret := pm.buildPeerMapPairwiseLocked(nodes)
+
+		var n int64
+		for _, peers := range ret {
+			n += int64(len(peers))
+		}
+
+		if countOver > 0 {
+			return nil, n
+		}
+
+		return ret, n
 	}
 
 	n := nodes.Len()
@@ -49,12 +84,12 @@ func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeV
 		// The pair scan defines the result for these; they do not come
 		// from a NodeStore snapshot, which is keyed by ID.
 		if !nv.Valid() {
-			return pm.buildPeerMapPairwiseLocked(nodes)
+			return pairwise()
 		}
 
 		id := nv.ID()
 		if _, dup := seen[id]; dup {
-			return pm.buildPeerMapPairwiseLocked(nodes)
+			return pairwise()
 		}
 
 		seen[id] = struct{}{}
@@ -194,7 +229,15 @@ func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeV
 		}
 	}
 
-	ret := make(map[types.NodeID][]types.NodeID, n)
+	var (
+		ret     map[types.NodeID][]types.NodeID
+		entries int64
+	)
+
+	if countOver <= 0 {
+		ret = make(map[types.NodeID][]types.NodeID, n)
+	}
+
 	mark := make([]int32, n)
 	buf := make([]int32, 0, n)
 
@@ -243,6 +286,16 @@ func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeV
 			continue
 		}
 
+		entries += int64(len(buf))
+
+		if countOver > 0 {
+			if entries > countOver {
+				return nil, entries
+			}
+
+			continue
+		}
+
 		if !sorted {
 			slices.Sort(buf)
 		}
@@ -255,7 +308,7 @@ func (pm *PolicyManager) buildPeerMapIndexedLocked(nodes views.Slice[types.NodeV
 		ret[ids[i]] = peers
 	}
 
-	return ret
+	return ret, entries
 }
 
 // peerNode is what the indexed build needs of one node, computed once.

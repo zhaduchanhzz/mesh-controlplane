@@ -229,8 +229,13 @@ var tailnetPolicyCmd = &cobra.Command{
 			}
 		}
 
+		cfg, err := clusterConfig()
+		if err != nil {
+			return err
+		}
+
 		return withPlatform(func(p *db.Platform) error {
-			return setTailnetPolicyCLI(p, clusterSlug, data, clusterPolicyEmpty)
+			return setTailnetPolicyCLI(p, clusterSlug, data, clusterPolicyEmpty, cfg.Tuning.MaxPeerEntries)
 		})
 	},
 }
@@ -241,8 +246,11 @@ var tailnetPolicyCmd = &cobra.Command{
 // without rules denies): one that does not parse would make the tailnet
 // fail to load at its next failover or move. An empty policy revokes every
 // access of the tailnet; it is stored only when empty asks for it, and then
-// data must be empty.
-func setTailnetPolicyCLI(p *db.Platform, slug string, data []byte, empty bool) error {
+// data must be empty. maxPeerEntries is tuning.max_peer_entries: a policy
+// giving the tailnet more peer entries is refused, as a tenant's own write
+// is (P14f review R2); without the running tailnet's current count, the
+// operator path holds the bound strictly.
+func setTailnetPolicyCLI(p *db.Platform, slug string, data []byte, empty bool, maxPeerEntries int64) error {
 	blank := len(bytes.TrimSpace(data)) == 0
 
 	switch {
@@ -268,7 +276,7 @@ func setTailnetPolicyCLI(p *db.Platform, slug string, data []byte, empty bool) e
 	}
 
 	if !empty {
-		err = validateTailnetPolicy(hs, data)
+		err = validateTailnetPolicy(hs, data, maxPeerEntries)
 		if err != nil {
 			return fmt.Errorf("refusing to store the policy of tailnet %s: %w", slug, err)
 		}
@@ -284,8 +292,9 @@ func setTailnetPolicyCLI(p *db.Platform, slug string, data []byte, empty bool) e
 }
 
 // validateTailnetPolicy checks data against the tailnet's users and nodes
-// with the semantics a cluster runtime installs it with.
-func validateTailnetPolicy(hs *db.HSDatabase, data []byte) error {
+// with the semantics a cluster runtime installs it with, and the peer
+// bound maxPeerEntries (0: none).
+func validateTailnetPolicy(hs *db.HSDatabase, data []byte, maxPeerEntries int64) error {
 	users, err := hs.ListUsers(nil)
 	if err != nil {
 		return fmt.Errorf("loading users for policy validation: %w", err)
@@ -296,7 +305,8 @@ func validateTailnetPolicy(hs *db.HSDatabase, data []byte) error {
 		return fmt.Errorf("loading nodes for policy validation: %w", err)
 	}
 
-	return policy.ValidatePolicy(data, users, nodes.ViewSlice(), policy.WithEmptyPolicyDenies(true))
+	return policy.ValidatePolicy(data, users, nodes.ViewSlice(), policy.WithEmptyPolicyDenies(true),
+		policy.WithPeerEntriesBound(maxPeerEntries, 0))
 }
 
 var (

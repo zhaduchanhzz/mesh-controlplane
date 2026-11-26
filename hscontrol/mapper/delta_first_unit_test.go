@@ -20,7 +20,7 @@ func dfPeer(id tailcfg.NodeID, name string) *tailcfg.Node {
 }
 
 func dfDeliver(s *sentState, r *tailcfg.MapResponse, initial bool) *tailcfg.MapResponse {
-	h := hashResponse(r)
+	h := hashResponse(r, nil)
 	out := s.strip(r, h)
 	s.record(r, h, initial)
 
@@ -31,7 +31,7 @@ func TestSentStateNoBaselineSendsEverything(t *testing.T) {
 	var s sentState
 
 	r := &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{dfPeer(1, "a")}}
-	assert.Same(t, r, s.strip(r, hashResponse(r)), "no baseline: unchanged")
+	assert.Same(t, r, s.strip(r, hashResponse(r, nil)), "no baseline: unchanged")
 }
 
 func TestSentStateFullPeersNeverStripped(t *testing.T) {
@@ -41,7 +41,7 @@ func TestSentStateFullPeersNeverStripped(t *testing.T) {
 	dfDeliver(&s, init, true)
 
 	full := &tailcfg.MapResponse{Peers: []*tailcfg.Node{dfPeer(1, "a"), dfPeer(2, "b")}}
-	got := s.strip(full, hashResponse(full))
+	got := s.strip(full, hashResponse(full, nil))
 	assert.Len(t, got.Peers, 2, "a full peer list is the safety net, never stripped")
 }
 
@@ -74,25 +74,25 @@ func TestSentStatePresenceTrackedOtherFieldsSent(t *testing.T) {
 	f := false
 	offline.Online = &f
 	r := &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{offline}}
-	assert.Len(t, s.strip(r, hashResponse(r)).PeersChanged, 1,
+	assert.Len(t, s.strip(r, hashResponse(r, nil)).PeersChanged, 1,
 		"presence the client does not hold yet must be sent")
 
 	// Once a presence patch told the client, the same entry is redundant.
 	dfDeliver(&s, &tailcfg.MapResponse{OnlineChange: map[tailcfg.NodeID]bool{1: false}}, false)
-	assert.Nil(t, s.strip(r, hashResponse(r)).PeersChanged, "presence already held via patch")
+	assert.Nil(t, s.strip(r, hashResponse(r, nil)).PeersChanged, "presence already held via patch")
 
 	expiry := dfPeer(1, "a")
 	expiry.Online = &f
 	expiry.KeyExpiry = time.Unix(1_800_000_000, 0)
 	r = &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{expiry}}
-	assert.Len(t, s.strip(r, hashResponse(r)).PeersChanged, 1, "key expiry must be sent")
+	assert.Len(t, s.strip(r, hashResponse(r, nil)).PeersChanged, 1, "key expiry must be sent")
 
 	k := key.NewNode().Public()
 	rekey := dfPeer(1, "a")
 	rekey.Online = &f
 	rekey.Key = k
 	r = &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{rekey}}
-	assert.Len(t, s.strip(r, hashResponse(r)).PeersChanged, 1, "a new node key must be sent")
+	assert.Len(t, s.strip(r, hashResponse(r, nil)).PeersChanged, 1, "a new node key must be sent")
 }
 
 func TestSentStatePatchAndRemovalInvalidate(t *testing.T) {
@@ -108,7 +108,7 @@ func TestSentStatePatchAndRemovalInvalidate(t *testing.T) {
 	dfDeliver(&s, &tailcfg.MapResponse{PeersRemoved: []tailcfg.NodeID{3}}, false)
 
 	r := &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{dfPeer(1, "a"), dfPeer(2, "b"), dfPeer(3, "c")}}
-	got := s.strip(r, hashResponse(r))
+	got := s.strip(r, hashResponse(r, nil))
 
 	ids := make([]tailcfg.NodeID, 0, len(got.PeersChanged))
 	for _, p := range got.PeersChanged {

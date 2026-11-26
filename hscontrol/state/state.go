@@ -2062,7 +2062,12 @@ func (s *State) ValidatePolicy(pol []byte) error {
 		return fmt.Errorf("loading users: %w", err)
 	}
 
-	err = policy.ValidatePolicy(pol, users, s.ListNodes(), policyOptions(s.cfg)...)
+	// The tailnet's peer bound holds for policy writes as for joins (P14f
+	// review R2).
+	opts := append(policyOptions(s.cfg),
+		policy.WithPeerEntriesBound(s.cfg.Tuning.MaxPeerEntries, s.nodeStore.PeerEntries()))
+
+	err = policy.ValidatePolicy(pol, users, s.ListNodes(), opts...)
 	if err != nil {
 		return invalidPolicyError{err}
 	}

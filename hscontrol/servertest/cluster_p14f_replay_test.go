@@ -123,7 +123,7 @@ func TestClusterP14fReplayEqualsFullMap(t *testing.T) {
 func p14fRun(t *testing.T, tb *checkTB, rt *rapid.T, off bool, steps int) {
 	t.Helper()
 
-	tc := servertest.NewTestClusterWith(tb, servertest.ClusterOptions{IncrementalNetmapOff: off},
+	tc := servertest.NewTestClusterWith(tb, servertest.ClusterOptions{Netmap: servertest.NetmapModeOf(!off)},
 		servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
 
 	nets := map[string]*p14fTailnet{}
@@ -651,7 +651,7 @@ func p14fJSON(v any) string {
 func TestClusterP14fSelfTagProfile(t *testing.T) {
 	for _, off := range []bool{false, true} {
 		t.Run(fmt.Sprintf("incremental=%t", !off), func(t *testing.T) {
-			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{IncrementalNetmapOff: off},
+			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{Netmap: servertest.NetmapModeOf(!off)},
 				servertest.TailnetSeed{Slug: tenantA})
 			srv := tc.Tenant(t, tenantA)
 			alice := srv.CreateUser(t, "alice")
@@ -692,7 +692,7 @@ func TestClusterP14fSelfTagProfile(t *testing.T) {
 func TestClusterP14fTaggedRenameProfile(t *testing.T) {
 	for _, off := range []bool{false, true} {
 		t.Run(fmt.Sprintf("incremental=%t", !off), func(t *testing.T) {
-			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{IncrementalNetmapOff: off},
+			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{Netmap: servertest.NetmapModeOf(!off)},
 				servertest.TailnetSeed{Slug: tenantA})
 			srv := tc.Tenant(t, tenantA)
 			alice := srv.CreateUser(t, "alice")

@@ -847,6 +847,17 @@ func ValidatePolicy(b []byte, users types.Users, nodes views.Slice[types.NodeVie
 		}
 	}
 
+	if limit := pm.peerBound; limit > 0 {
+		pm.mu.RLock()
+		n := pm.countPeerEntriesLocked(nodes, max(limit, pm.peerBoundNow))
+		pm.mu.RUnlock()
+
+		if n > limit && n > pm.peerBoundNow {
+			return fmt.Errorf("%w: it gives the tailnet's %d nodes more than %d peer entries (the sum over nodes of the peers each is sent; tuning.max_peer_entries)",
+				ErrPeerEntriesBound, nodes.Len(), limit)
+		}
+	}
+
 	return nil
 }
 

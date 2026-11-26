@@ -378,10 +378,11 @@ func (b *Batcher) AddNode(
 	case c <- initialMap:
 		// Still pendingInitial, so no broadcast can race this.
 		newEntry.lastSSHPolicy.Store(initialMap.SSHPolicy)
+		nodeConn.delivered.Add(1)
 
 		// The initial map is this connection's delta-first baseline.
 		if b.mapper.deltaFirst() {
-			newEntry.sent.record(initialMap, hashResponse(initialMap), true)
+			newEntry.sent.record(initialMap, hashResponse(initialMap, b.mapper.sharedPeerCache()), true)
 		}
 
 		// Record sent peers only after confirmed delivery, mirroring the async
@@ -1001,6 +1002,44 @@ func (b *Batcher) Idle() bool {
 	})
 
 	return idle
+}
+
+// Drained reports whether every stream has taken every frame handed to it:
+// no frame waits in a connection's channel. With [Batcher.Idle] it is the
+// point after which a change has reached the streams (P14f review R4).
+func (b *Batcher) Drained() bool {
+	drained := true
+
+	b.nodes.Range(func(_ types.NodeID, nc *multiChannelNodeConn) bool {
+		if nc == nil {
+			return true
+		}
+
+		nc.mutex.RLock()
+
+		for _, conn := range nc.connections {
+			if len(conn.c) > 0 {
+				drained = false
+			}
+		}
+
+		nc.mutex.RUnlock()
+
+		return drained
+	})
+
+	return drained
+}
+
+// FramesDelivered returns the number of frames handed to node id's
+// streams so far (each stream counts once); for tests.
+func (b *Batcher) FramesDelivered(id types.NodeID) int64 {
+	nc, ok := b.nodes.Load(id)
+	if !ok || nc == nil {
+		return 0
+	}
+
+	return nc.delivered.Load()
 }
 
 // WorkErrors returns the count of work errors encountered.

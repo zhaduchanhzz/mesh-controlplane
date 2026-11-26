@@ -28,7 +28,7 @@ import (
 func p07Modes(t *testing.T, fn func(t *testing.T, tc *servertest.TestCluster)) {
 	for _, inc := range []bool{false, true} {
 		t.Run(fmt.Sprintf("incremental=%t", inc), func(t *testing.T) {
-			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{IncrementalNetmap: inc, IncrementalNetmapOff: !inc},
+			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{Netmap: servertest.NetmapModeOf(inc)},
 				servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
 			tc.SetPolicy(t, tenantA, allowAll)
 			tc.SetPolicy(t, tenantB, allowAll)
@@ -231,7 +231,7 @@ func TestClusterP07IncrementalAcrossTenants(t *testing.T) {
 
 	rng := rand.New(rand.NewPCG(seed, 0x9e3779b97f4a7c15)) //nolint:gosec // test
 
-	tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{IncrementalNetmap: true},
+	tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{Netmap: servertest.NetmapIncremental},
 		servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
 	tc.SetPolicy(t, tenantA, allowAll)
 	tc.SetPolicy(t, tenantB, allowAll)
@@ -294,7 +294,7 @@ func TestClusterP07IncrementalAcrossTenants(t *testing.T) {
 // P00d M03 across tenants: a divergence injected into A's adjacency is
 // found by A's reconciliation, repaired, and sent to A's nodes only.
 func TestClusterP07ReconcileStaysInTailnet(t *testing.T) {
-	tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{IncrementalNetmap: true},
+	tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{Netmap: servertest.NetmapIncremental},
 		servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
 	tc.SetPolicy(t, tenantA, allowAll)
 	tc.SetPolicy(t, tenantB, allowAll)

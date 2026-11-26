@@ -313,9 +313,17 @@ func (b *MapResponseBuilder) buildTailPeers(peers views.Slice[types.NodeView]) (
 	// Entries that are the same for every viewer come from, and go to, the
 	// tailnet's shared cache (P14f F4). A disable-ipv4 viewer rewrites its
 	// entries, so it renders its own.
-	var shared *sharedPeers
+	var (
+		shared *sharedPeers
+		live   int // nodes in the tailnet, bounds the cache's sweeps
+	)
+
 	if !ipv4Disabled {
 		shared = b.mapper.sharedPeerCache()
+	}
+
+	if shared != nil {
+		live = b.mapper.state.ListNodes().Len()
 	}
 
 	baseDomain := b.mapper.cfg.DNSConfig.BaseDomain
@@ -397,7 +405,7 @@ func (b *MapResponseBuilder) buildTailPeers(peers views.Slice[types.NodeView]) (
 		}
 
 		if shared != nil && peerShareable(peer, b.mapper.state.GetNodePrimaryRoutes(peer.ID())) {
-			shared.put(peer, peerIPv4Off, baseDomain, tn, peers.Len()+1, b.mapper.nodeExists)
+			shared.put(peer, peerIPv4Off, baseDomain, tn, live, b.mapper.nodeExists)
 		}
 
 		tailPeers = append(tailPeers, tn)
