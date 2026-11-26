@@ -62,16 +62,19 @@ var (
 	errUnsupportedCreate = errors.New("unsupported create value")
 )
 
-// Register installs the plugin's callbacks on db.
-func Register(db *gorm.DB) error {
+// Register installs the plugin's callbacks on db. Statements may name the
+// [TenantTables] and extraTenantTables only through a model carrying
+// TailnetID (P12c A2); tests add the tables of their own models.
+func Register(db *gorm.DB, extraTenantTables ...string) error {
+	p := newPlugin(extraTenantTables)
 	cb := db.Callback()
 
 	steps := []error{
-		cb.Query().Before("gorm:query").Register(name+":query", scopeWhere),
-		cb.Row().Before("gorm:row").Register(name+":row", scopeWhere),
-		cb.Update().Before("gorm:update").Register(name+":update", scopeMutation),
-		cb.Delete().Before("gorm:delete").Register(name+":delete", scopeMutation),
-		cb.Create().Before("gorm:create").Register(name+":create", stampCreate),
+		cb.Query().Before("gorm:query").Register(name+":query", p.scopeWhere),
+		cb.Row().Before("gorm:row").Register(name+":row", p.scopeWhere),
+		cb.Update().Before("gorm:update").Register(name+":update", p.scopeMutation),
+		cb.Delete().Before("gorm:delete").Register(name+":delete", p.scopeMutation),
+		cb.Create().Before("gorm:create").Register(name+":create", p.stampCreate),
 		// After the scope callbacks, inside the default transaction.
 		cb.Create().After(name+":create").After("gorm:begin_transaction").Before("gorm:create").
 			Register(name+":fence_create", checkFence),
@@ -114,12 +117,20 @@ func whereTailnet(db *gorm.DB, f *schema.Field, id tailnet.ID) clause.Expression
 	}
 }
 
-func scopeWhere(db *gorm.DB) {
+func (p *plugin) scopeWhere(db *gorm.DB) {
 	if db.Error != nil {
 		return
 	}
 
 	f := tenantField(db)
+
+	err := p.checkTables(db, f != nil)
+	if err != nil {
+		_ = db.AddError(err)
+
+		return
+	}
+
 	if f == nil {
 		return
 	}
@@ -181,12 +192,20 @@ func (w callerWhere) Build(b clause.Builder) {
 // GORM's guard against accidental table-wide writes, so the guard is
 // re-applied here: without a caller condition, a primary key, or
 // AllowGlobalUpdate, the statement is refused.
-func scopeMutation(db *gorm.DB) {
+func (p *plugin) scopeMutation(db *gorm.DB) {
 	if db.Error != nil {
 		return
 	}
 
 	f := tenantField(db)
+
+	err := p.checkTables(db, f != nil)
+	if err != nil {
+		_ = db.AddError(err)
+
+		return
+	}
+
 	if f == nil {
 		return
 	}
@@ -197,7 +216,12 @@ func scopeMutation(db *gorm.DB) {
 		return
 	}
 
-	scopeWhere(db)
+	s, ok := scopeOf(db)
+	if !ok {
+		return
+	}
+
+	confineWhere(db, whereTailnet(db, f, s.ID()))
 }
 
 func hasPrimaryKey(db *gorm.DB) bool {
@@ -223,12 +247,20 @@ func hasPrimaryKey(db *gorm.DB) bool {
 	}
 }
 
-func stampCreate(db *gorm.DB) {
+func (p *plugin) stampCreate(db *gorm.DB) {
 	if db.Error != nil {
 		return
 	}
 
 	f := tenantField(db)
+
+	err := p.checkTables(db, f != nil)
+	if err != nil {
+		_ = db.AddError(err)
+
+		return
+	}
+
 	if f == nil {
 		return
 	}
