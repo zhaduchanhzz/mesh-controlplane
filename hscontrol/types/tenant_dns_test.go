@@ -146,3 +146,62 @@ func TestConfigForTailnet(t *testing.T) {
 	require.NotContains(t, fmt.Sprint(b.CloneTailcfgDNSConfig().Domains), "other.example")
 	require.NotContains(t, fmt.Sprint(base.CloneTailcfgDNSConfig().Domains), "other.example")
 }
+
+// P12d review 7: search domains stay outside the cluster's MagicDNS domain
+// except the tailnet's own subtree; split domains may not be parents of
+// the cluster's domain and count toward max_split_domains even mapped to
+// no nameserver; nameservers (global, split, a DoH URL's host) are never
+// loopback, link-local, unspecified or zoned addresses.
+func TestTenantDNSValidateReviewRules(t *testing.T) {
+	lim := testLimits
+	lim.MaxSplitDomains = 2
+
+	ns := func(global ...string) TenantDNS {
+		return TenantDNS{Nameservers: TenantNameservers{Global: global}}
+	}
+
+	split := func(m map[string][]string) TenantDNS {
+		return TenantDNS{Nameservers: TenantNameservers{Split: m}}
+	}
+
+	for _, tc := range []struct {
+		name string
+		dns  TenantDNS
+		ok   bool
+	}{
+		{"search domain outside the cluster", TenantDNS{SearchDomains: []string{"corp.example"}}, true},
+		{"search domain: own base", TenantDNS{SearchDomains: []string{"a.mesh.test"}}, true},
+		{"search domain: own subtree", TenantDNS{SearchDomains: []string{"svc.a.mesh.test"}}, true},
+		{"private and public nameservers", ns("10.0.0.53", "fd00::53"), true},
+		{"DoH with an IP host", ns("https://9.9.9.9/dns-query"), true},
+		{"two split domains, one empty", split(map[string][]string{"corp.example": {"10.0.0.53"}, "lab.example": {}}), true},
+
+		{"search domain: the cluster base", TenantDNS{SearchDomains: []string{"mesh.test"}}, false},
+		{"search domain: in the cluster", TenantDNS{SearchDomains: []string{"x.mesh.test"}}, false},
+		{"search domain: another tailnet", TenantDNS{SearchDomains: []string{"b.mesh.test"}}, false},
+		{"search domain: below another tailnet", TenantDNS{SearchDomains: []string{"svc.b.mesh.test"}}, false},
+		{"split domain: parent of the cluster base", split(map[string][]string{"test": {"10.0.0.53"}}), false},
+		{"split domains over the limit, empty lists", split(map[string][]string{"a.example": {}, "b.example": {}, "c.example": {}}), false},
+		{"nameserver: IPv4 loopback", ns("127.0.0.1"), false},
+		{"nameserver: IPv6 loopback", ns("::1"), false},
+		{"nameserver: mapped loopback", ns("::ffff:127.0.0.1"), false},
+		{"nameserver: IPv4 link-local", ns("169.254.169.254"), false},
+		{"nameserver: IPv6 link-local", ns("fe80::1"), false},
+		{"nameserver: IPv4 unspecified", ns("0.0.0.0"), false},
+		{"nameserver: IPv6 unspecified", ns("::"), false},
+		{"nameserver: zoned", ns("2001:db8::53%eth0"), false},
+		{"nameserver: DoH on loopback", ns("https://127.0.0.1/dns-query"), false},
+		{"nameserver: DoH on IPv6 loopback", ns("https://[::1]/dns-query"), false},
+		{"split nameserver: loopback", split(map[string][]string{"corp.example": {"127.0.0.53"}}), false},
+		{"split nameserver: link-local", split(map[string][]string{"corp.example": {"fe80::53"}}), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.dns.Validate("a", "mesh.test", lim)
+			if tc.ok {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, ErrInvalidTenantDNS)
+			}
+		})
+	}
+}
