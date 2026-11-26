@@ -64,7 +64,7 @@ func main() {
 	flag.StringVar(&co.clusterID, "cluster-id", "", "cluster: ID of the (running) cluster that owns the tailnets")
 	flag.IntVar(&co.tailnets, "tailnets", 1, "cluster: number of tailnets")
 	flag.IntVar(&co.devices, "devices", 100, "cluster: devices per tailnet")
-	flag.StringVar(&co.shape, "policy", shapePersonalDevices, "cluster: allow_all, isolated, personal_devices, tag_heavy or mix (70/20/10)")
+	flag.StringVar(&co.shape, "policy", shapePersonalDevices, "cluster: allow_all, isolated, personal_devices, shared_service, tag_heavy or mix (70/20/10)")
 	flag.IntVar(&co.big, "big", 0, "cluster: also one large tailnet <prefix>-big with this many devices (mixed shared cell)")
 	flag.StringVar(&co.bigShape, "big-policy", shapePersonalDevices, "cluster: policy of the large tailnet")
 	flag.IntVar(&co.extra, "extra", 0, "cluster: register-phase devices, round-robin over the tailnets (user keys)")

@@ -16,6 +16,7 @@ const (
 	shapeIsolated        = "isolated"
 	shapePersonalDevices = "personal_devices"
 	shapeTagHeavy        = "tag_heavy"
+	shapeSharedService   = "shared_service"
 	shapeMix             = "mix"
 )
 
@@ -37,7 +38,7 @@ var errShape = errors.New("unknown policy shape")
 
 func validShape(s string, mixOK bool) error {
 	switch s {
-	case shapeAllowAll, shapeIsolated, shapePersonalDevices, shapeTagHeavy:
+	case shapeAllowAll, shapeIsolated, shapePersonalDevices, shapeTagHeavy, shapeSharedService:
 		return nil
 	case shapeMix:
 		if mixOK {
@@ -125,6 +126,14 @@ func policyFor(shape string, users int, r *rand.Rand) ([]byte, error) {
 		doc.Grants = []grant{{Src: []string{"autogroup:member"}, Dst: []string{"autogroup:self"}, IP: []string{"tcp:443"}}}
 	case shapeTagHeavy:
 		doc = tagHeavyPolicy(users, r)
+	case shapeSharedService:
+		// P00b shared_service (P14f F5): each user reaches its own devices,
+		// and every member reaches one shared service, the devices of user
+		// u0000.
+		doc.Grants = []grant{
+			{Src: []string{"autogroup:member"}, Dst: []string{"autogroup:self"}, IP: []string{"tcp:443"}},
+			{Src: []string{"autogroup:member"}, Dst: []string{userName(0) + "@"}, IP: []string{"tcp:443"}},
+		}
 	default:
 		return nil, fmt.Errorf("%w %q", errShape, shape)
 	}

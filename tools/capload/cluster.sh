@@ -19,7 +19,7 @@
 #   PG_PASSFILE   file holding the password (0600; referenced as pass: file:…, never copied)
 #   METRICS       loopback metrics listener (default 127.0.0.1:9090; a standby on the same host needs another)
 #   NOISE_KEY     Noise private key path, shared by active and standby (default RUNDIR/../noise_private.key)
-#   MAX_PEER_ENTRIES (default 1000000), INCREMENTAL=1 (+RECONCILE_INTERVAL, FULL_MAP_INTERVAL)
+#   MAX_PEER_ENTRIES (default 1000000), INCREMENTAL=1|0 (+RECONCILE_INTERVAL, FULL_MAP_INTERVAL; 0 writes enabled: false)
 #   PG_MAX_OPEN   database.postgres.max_open_conns (default 10, as production)
 #   GOMAXPROCS    default: all CPUs of the host
 #   HEADSCALE_BENCH_MUTEX_FRACTION / HEADSCALE_BENCH_BLOCK_RATE  passed through (benchpprof builds)
@@ -113,12 +113,19 @@ cli:
 tuning:
   max_peer_entries: ${MAX_PEER_ENTRIES:-1000000}
 EOF
+	# The switch is written either way: its default changed to ON in P14f
+	# (ADR 0015), so INCREMENTAL=0 must say off explicitly.
 	if [ "${INCREMENTAL:-0}" = 1 ]; then
 		cat >>"$cfg" <<EOF
   incremental_netmap:
     enabled: true
     reconcile_interval: ${RECONCILE_INTERVAL:-1m}
     full_map_interval: ${FULL_MAP_INTERVAL:-15m}
+EOF
+	else
+		cat >>"$cfg" <<EOF
+  incremental_netmap:
+    enabled: false
 EOF
 	fi
 	echo "config $cfg (server_url http://$hostport, listen $listen, metrics ${METRICS:-127.0.0.1:9090})"

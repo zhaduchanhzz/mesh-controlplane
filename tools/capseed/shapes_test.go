@@ -14,7 +14,7 @@ import (
 // the tailnet sizes of the benchmark matrix, and the policy probe grant
 // keeps it valid.
 func TestShapesValidateAsTenantPolicies(t *testing.T) {
-	for _, shape := range []string{shapeAllowAll, shapeIsolated, shapePersonalDevices, shapeTagHeavy} {
+	for _, shape := range []string{shapeAllowAll, shapeIsolated, shapePersonalDevices, shapeTagHeavy, shapeSharedService} {
 		for _, devices := range []int{1, 10, 50, 200, 5000} {
 			l := layoutFor(shape, devices, 10)
 
