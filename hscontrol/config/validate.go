@@ -283,6 +283,22 @@ func Validate(c *types.Config) error {
 		})
 	}
 
+	// P12d: a tenant's policy and DNS writes have a bucket of their own
+	// and a policy size limit below the 1 MiB request body limit.
+	if ta := c.Tuning.TenantAPI; ta.ConfigWriteRate < 1 || ta.ConfigWriteBurst < 1 ||
+		ta.MaxPolicyBytes < 1 || ta.MaxPolicyBytes > types.MaxTenantPolicyBytes {
+		v.Add(&types.ConfigError{
+			Reason: "tuning.tenant_api: config_write_rate and config_write_burst must be at least 1, " +
+				"max_policy_bytes between 1 and " + strconv.Itoa(types.MaxTenantPolicyBytes),
+			Current: []types.KV{
+				{Key: "tuning.tenant_api.config_write_rate", Value: strconv.Itoa(ta.ConfigWriteRate)},
+				{Key: "tuning.tenant_api.config_write_burst", Value: strconv.Itoa(ta.ConfigWriteBurst)},
+				{Key: "tuning.tenant_api.max_policy_bytes", Value: strconv.Itoa(ta.MaxPolicyBytes)},
+			},
+			Hint: "defaults: config writes 30 per minute burst 10, policy at most 262144 bytes",
+		})
+	}
+
 	if c.Tuning.TailnetMetricLabelLimit < 1 {
 		v.Add(&types.ConfigError{
 			Reason:  "tuning.tailnet_metric_label_limit must be at least 1",

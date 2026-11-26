@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -274,4 +275,21 @@ func (c *Cluster) APIv2Handler(w http.ResponseWriter, r *http.Request) {
 	// routing context of its own.
 	r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, nil))
 	rt.apiV2().ServeHTTP(w, r)
+}
+
+// tenantAuditHook, when set, also receives every audit record of a
+// tenant's policy or DNS write (tests).
+var tenantAuditHook atomic.Pointer[func(tailnet.ID, apiv2.TenantWrite)]
+
+// SetTenantAuditHookForTest makes fn receive every audit record of a
+// tenant's policy or DNS write (P12d), in addition to the log line; nil
+// removes it. For tests.
+func (c *Cluster) SetTenantAuditHookForTest(fn func(tailnet.ID, apiv2.TenantWrite)) {
+	if fn == nil {
+		tenantAuditHook.Store(nil)
+
+		return
+	}
+
+	tenantAuditHook.Store(&fn)
 }

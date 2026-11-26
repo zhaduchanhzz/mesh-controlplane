@@ -49,6 +49,9 @@ type Backend struct {
 	// refused, since the policy, DNS and device trust settings of a tenant
 	// tailnet belong to the platform operator (owner decision Q3).
 	Tailnet string
+	// Tenant is set in cluster mode (P12d): the tailnet's own policy and
+	// DNS writes.
+	Tenant *Tenant
 }
 
 // clusterForbidden are the operations a tenant API key may not call in
