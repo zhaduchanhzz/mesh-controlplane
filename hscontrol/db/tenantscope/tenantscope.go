@@ -72,7 +72,7 @@ func Register(db *gorm.DB, extraTenantTables ...string) error {
 	steps := []error{
 		cb.Query().Before("gorm:query").Register(name+":query", p.scopeWhere),
 		cb.Row().Before("gorm:row").Register(name+":row", p.scopeWhere),
-		cb.Update().Before("gorm:update").Register(name+":update", p.scopeMutation),
+		cb.Update().Before("gorm:update").Register(name+":update", p.scopeUpdate),
 		cb.Delete().Before("gorm:delete").Register(name+":delete", p.scopeMutation),
 		cb.Create().Before("gorm:create").Register(name+":create", p.stampCreate),
 		// After the scope callbacks, inside the default transaction.
@@ -193,8 +193,23 @@ func (w callerWhere) Build(b clause.Builder) {
 // re-applied here: without a caller condition, a primary key, or
 // AllowGlobalUpdate, the statement is refused.
 func (p *plugin) scopeMutation(db *gorm.DB) {
+	p.scopeMutationOf(db)
+}
+
+// scopeUpdate is scopeMutation plus the check that the UPDATE assigns no
+// other tailnet_id (P12c A3).
+func (p *plugin) scopeUpdate(db *gorm.DB) {
+	f, s, ok := p.scopeMutationOf(db)
+	if ok {
+		confineAssignments(db, f, s.ID().String())
+	}
+}
+
+// scopeMutationOf confines an UPDATE/DELETE and returns the tenant field
+// and scope when the statement is on a tenant table and still valid.
+func (p *plugin) scopeMutationOf(db *gorm.DB) (*schema.Field, tailnet.Scope, bool) {
 	if db.Error != nil {
-		return
+		return nil, tailnet.Scope{}, false
 	}
 
 	f := tenantField(db)
@@ -203,25 +218,27 @@ func (p *plugin) scopeMutation(db *gorm.DB) {
 	if err != nil {
 		_ = db.AddError(err)
 
-		return
+		return nil, tailnet.Scope{}, false
 	}
 
 	if f == nil {
-		return
+		return nil, tailnet.Scope{}, false
 	}
 
 	if _, hasWhere := db.Statement.Clauses["WHERE"]; !hasWhere && !db.AllowGlobalUpdate && !hasPrimaryKey(db) {
 		_ = db.AddError(gorm.ErrMissingWhereClause)
 
-		return
+		return nil, tailnet.Scope{}, false
 	}
 
 	s, ok := scopeOf(db)
 	if !ok {
-		return
+		return nil, tailnet.Scope{}, false
 	}
 
 	confineWhere(db, whereTailnet(db, f, s.ID()))
+
+	return f, s, db.Error == nil
 }
 
 func hasPrimaryKey(db *gorm.DB) bool {
