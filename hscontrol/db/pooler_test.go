@@ -84,6 +84,15 @@ func createDBOn(t *testing.T, name string, hostports ...string) {
 
 func p13bDBName() string { return fmt.Sprintf("mesh_p13b_%d", time.Now().UnixNano()) }
 
+// migrateP13b runs the operator migrate step (ADR 0013) with cfg: since
+// P13d OpenPlatform never creates the schema of a fresh database.
+func migrateP13b(t *testing.T, cfg *types.Config) {
+	t.Helper()
+
+	_, err := Migrate(t.Context(), cfg)
+	require.NoError(t, err, "migrate step")
+}
+
 // p13bConfig is a platform config on database name; hosts is written as
 // database.postgres.host in the libpq list form "a:1,b:2".
 // A single host:port is split into host and port, the only form a single
@@ -172,7 +181,13 @@ func TestOpenPlatformMultiHostSkipsReadOnly(t *testing.T) {
 			name := p13bDBName()
 			createDBOn(t, name, rw, ro)
 
-			p, err := OpenPlatform(p13bConfig(t, name, tc.first+","+tc.second))
+			cfg := p13bConfig(t, name, tc.first+","+tc.second)
+
+			// The migrate step writes too: it must skip the read-only
+			// first host as well.
+			migrateP13b(t, cfg)
+
+			p, err := OpenPlatform(cfg)
 			require.NoError(t, err, "a read-only first host must be skipped, not used")
 
 			defer p.Close()
@@ -194,7 +209,10 @@ func TestOpenPlatformMultiHostSkipsDeadHost(t *testing.T) {
 	name := p13bDBName()
 	createDBOn(t, name, rw)
 
-	p, err := OpenPlatform(p13bConfig(t, name, closedPort(t)+","+pgb))
+	cfg := p13bConfig(t, name, closedPort(t)+","+pgb)
+	migrateP13b(t, cfg)
+
+	p, err := OpenPlatform(cfg)
 	require.NoError(t, err)
 
 	defer p.Close()
@@ -216,6 +234,7 @@ func TestOpenPlatformHostsKey(t *testing.T) {
 	cfg := p13bConfig(t, name, pgb)
 	cfg.Database.Postgres.Host, cfg.Database.Postgres.Port = "", 0
 	cfg.Database.Postgres.Hosts = []string{"[::1]:" + portOf(t, closedPort(t)), ro, pgb}
+	migrateP13b(t, cfg)
 
 	p, err := OpenPlatform(cfg)
 	require.NoError(t, err)
@@ -236,6 +255,7 @@ func TestOpenPlatformRefusesPoolerWithoutPreparedStatements(t *testing.T) {
 
 	name := p13bDBName()
 	createDBOn(t, name, rw)
+	migrateP13b(t, p13bConfig(t, name, rw)) // the operator step, direct (ADR 0006 §4)
 
 	p, err := OpenPlatform(p13bConfig(t, name, pgb0))
 	if err == nil {
@@ -294,6 +314,7 @@ func TestOpenPlatformStatementTimeout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			name := p13bDBName()
 			createDBOn(t, name, rw)
+			migrateP13b(t, p13bConfig(t, name, rw))
 
 			cfg := p13bConfig(t, name, tc.via)
 			cfg.Database.Postgres.StatementTimeout = 1500 * time.Millisecond
@@ -364,6 +385,8 @@ func TestLeaseStoreHasOwnPool(t *testing.T) {
 		},
 		Policy: types.PolicyConfig{Mode: types.PolicyModeDB},
 	}
+
+	migrateP13b(t, cfg)
 
 	p, err := OpenPlatform(cfg)
 	require.NoError(t, err)
