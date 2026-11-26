@@ -31,6 +31,8 @@ After the switch, a `mesh-bootstrap` on `10.99.77.2:8444` **must** run the P13f 
 
 Recommended order: (1) merge P13f; (2) run the harnesses with `BOOT_PROXY_PROTOCOL_FROM=10.99.77.1/32` from then on; (3) owner approves; (4) `apply.sh`; (5) run one bootstrap E2E case through the VPS.
 
+**Owner decision 2026-11-26:** apply only **after** the P13 integration branch (`feat/P13-integration`) is green, in a short window, with the harness toggle in place (`BOOT_PROXY_PROTOCOL_FROM`, default off); right after applying, run N1 S13b over the new path. An agent does not apply it on its own.
+
 ## Apply (owner-approved only)
 
 ```bash

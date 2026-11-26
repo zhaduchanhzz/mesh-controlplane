@@ -35,6 +35,10 @@ Hệ quả nếu nâng standby của cluster c2 lên bản N+1 có migration:
    Rollback: binary về N được khi DB chỉ có `expand` mới; sau `contract` chỉ restore (kèm fence ADR 0012).
 6. `versioncheck` (major/minor) giữ nguyên, chạy trước kiểm tương thích.
 
+   **Quyết định của chủ dự án 2026-11-26:** giữ `versioncheck` như hiện tại (không nới cho hạ minor). Quy ước phát hành thay cho việc đổi code:
+   - thay đổi schema cần upgrade **canary** (migration `expand`, quy trình §5) chỉ phát hành trong bản **PATCH** của cùng minor, nên binary N và N+1 cùng minor chạy song song trên một DB được;
+   - **tăng minor** là upgrade dừng toàn bộ (stop-the-world): dừng mọi process (cluster, `mesh-placement`, `mesh-bootstrap`) → backup + kiểm backup → `mesh-placement migrate` (kết nối trực tiếp tới primary) → khởi động `mesh-bootstrap` → `mesh-placement` → các cluster, standby trước rồi active. Không canary giữa hai minor.
+
 ## Hệ quả
 
 - Canary thật theo cluster: hai bản binary cùng chạy trên một DB trong cửa sổ upgrade.

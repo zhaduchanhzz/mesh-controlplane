@@ -72,13 +72,14 @@ Không đổi đường dữ liệu tenant. Raw SQL guard xanh: SQL mới ở `h
 2. `mesh-placement migrate -config <config kết nối trực tiếp tới primary>` (hoặc `headscale cluster migrate`). Hai lần chạy đồng thời an toàn (một bên chờ rồi không làm gì).
 3. Khởi động binary mới: mesh-bootstrap, mesh-placement, rồi các cluster (standby trước). Process nào gặp DB chưa migrate sẽ thoát với thông báo chỉ lệnh migrate.
 4. Các bản sau (theo ADR 0013 §5): backup → `migrate` (chỉ expand) → bootstrap/placement → mỗi cluster: standby → switchover → active; canary = c2; contract chỉ ở bản phát hành sau khi mọi binary đã mới.
+   - **Quy ước phát hành (chủ dự án quyết 2026-11-26, ADR 0013 §6):** upgrade canary ở bước 4 chỉ áp cho bản **PATCH** trong cùng minor (thay đổi schema cần canary chỉ phát hành ở PATCH). Bản **tăng minor** đi theo bước 1–3: dừng toàn bộ → backup + kiểm → `migrate` (trực tiếp tới primary) → khởi động bootstrap → placement → các cluster (standby trước, rồi active).
 5. Sau restore hoặc promote cưỡng bức (ADR 0012 §4): PAUSE/DISABLE PgBouncer → restore → `mesh-placement epoch-fence -config <trực tiếp> -reason "<điểm restore>" -operator <tên> [-external-hwm N]` → kiểm `SELECT max(epoch) FROM cluster_leases` > HWM ghi trước restore → RESUME. Fence hủy mọi move đang chờ: operator lên lịch lại.
 
 ## Benchmark before/after
 Không đo. Đường nóng bị chạm: standby poll `AcquireAbove` vẫn **một** câu đọc không khóa (đọc thêm `holder, epoch`); reconcile thêm một tra map trong bộ nhớ mỗi tailnet chưa nạp. Không có truy vấn mới trên đường ghi tenant.
 
 ## Known limitations / security blockers
-1. **versioncheck chặn hạ minor** (giữ nguyên theo ADR 0013 §6): bước migrate của bản N+1 (không phải dev) ghi version N+1; process bản N **khác minor** khởi động lại sẽ bị từ chối → canary giữa hai minor bị chặn. Cùng minor hoặc build dev không bị. Cần chủ dự án quyết (đổi ADR 0013 §6 hoặc quy ước phát hành) — **không tự đổi**.
+1. **versioncheck chặn hạ minor** (giữ nguyên theo ADR 0013 §6): bước migrate của bản N+1 (không phải dev) ghi version N+1; process bản N **khác minor** khởi động lại sẽ bị từ chối → canary giữa hai minor bị chặn. Cùng minor hoặc build dev không bị. Cần chủ dự án quyết (đổi ADR 0013 §6 hoặc quy ước phát hành) — **không tự đổi**. **Đã quyết 2026-11-26:** giữ versioncheck; schema cần canary chỉ phát hành ở PATCH cùng minor, tăng minor = upgrade dừng toàn bộ (ADR 0013 §6, quy trình bước 4 ở trên).
 2. HWM chỉ trong bộ nhớ; file `cluster_lease.epoch_hwm_path` (ADR 0012 §3, tùy chọn) chưa làm vì cần option config ở vùng P13b/P13f sửa chung. Process khởi động lại sau restore không có HWM: fence bắt buộc là lớp bảo vệ chính (như ADR).
 3. HWM của owner_epoch cho phép **bằng** (tailnet SUSPENDED → ACTIVE cùng epoch), chỉ từ chối **nhỏ hơn**. Restore về đúng epoch process đã phục vụ (không thấy epoch sau) không bị phát hiện trong process; fence xử lý.
 4. Metric cho regression chưa có (P13f); hiện là log `CRITICAL` (một lần mỗi epoch DB với tailnet; lần đầu và mỗi 30 lần với lease) + `Manager.Regressions()`.
