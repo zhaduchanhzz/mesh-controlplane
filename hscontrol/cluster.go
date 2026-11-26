@@ -421,6 +421,37 @@ func (c *Cluster) Runtime(id tailnet.ID) (*Headscale, bool) {
 	return rt.h, true
 }
 
+// noiseKeyRotated re-checks, on every reconcile tick, the Noise key the
+// registry names for this cluster (P13e, ADR 0014 §3, owner D8). Checked
+// only when the lease was taken, a rotation in the registry (an emergency:
+// the old key is considered leaked) left this process serving with the old
+// key until its next takeover. On a mismatch it stops serving at once (not
+// ready, no new tenant handle) and steps down: onLeaseLost retires every
+// runtime, the lease is released for a process with the registered key,
+// and this one stays standby. Any other error is logged only: writes are
+// fenced in the database regardless. Callers hold leaseMu.
+func (c *Cluster) noiseKeyRotated() bool {
+	err := c.platform.RecordNoiseKey(c.noiseKey.Public().String()) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
+
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, db.ErrNoiseKeyMismatch):
+		log.Error().Err(err).Str("cluster", c.platform.ClusterID()).
+			Msg("the registry names another Noise key for this cluster: stepping down")
+
+		c.ready.Store(false)
+		c.platform.ClearLease()
+		c.lease.StepDown("the registry names another Noise key")
+
+		return true
+	default:
+		log.Warn().Err(err).Msg("reconcile: checking the registered Noise key")
+
+		return false
+	}
+}
+
 // reconcile loads the ACTIVE tailnets this cluster owns and does not serve
 // yet, and retires runtimes whose tailnet is no longer owned by this cluster
 // at the epoch they were loaded with (moved, epoch bumped, not ACTIVE,
@@ -431,6 +462,10 @@ func (c *Cluster) reconcile() {
 
 	if !c.ready.Load() || !c.leaseHeld() {
 		return // standby, or the lease is ending: onLeaseLost retires
+	}
+
+	if c.noiseKeyRotated() {
+		return
 	}
 
 	// ADR 0010: first give away the tailnets with a move requested (they
