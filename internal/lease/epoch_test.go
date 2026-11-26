@@ -43,7 +43,12 @@ func rewriteLease(t *testing.T, s *Store, holder string, epoch uint64, expired b
 		return
 	}
 
-	trigger := SQLiteDDL[strings.Index(SQLiteDDL, "CREATE TRIGGER"):]
+	at := strings.Index(SQLiteDDL, "CREATE TRIGGER")
+	if at < 0 {
+		t.Fatal("no trigger in SQLiteDDL")
+	}
+
+	trigger := SQLiteDDL[at:]
 
 	if err := s.db.Exec(`DROP TRIGGER trg_cluster_leases_epoch_monotonic`).Error; err != nil { //nolint:noinlineerr
 		t.Fatal(err)
@@ -108,6 +113,7 @@ func TestAcquireAboveRefusesRegression(t *testing.T) {
 // the epoch above what it saw.
 func TestManagerRefusesEpochRegression(t *testing.T) {
 	s := openStore(t)
+
 	m, err := newManager(s, "c1", "b", fast)
 	if err != nil {
 		t.Fatal(err)

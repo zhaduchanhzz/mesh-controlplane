@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -49,7 +51,7 @@ func p13dExpand(delay time.Duration) *gormigrate.Migration {
 			return db.Transaction(func(tx *gorm.DB) error {
 				err := tx.Exec(p13dExpandDDL).Error
 				if err == nil && delay > 0 {
-					time.Sleep(delay)
+					time.Sleep(delay) //nolint:forbidigo // holds the migration transaction open so concurrent runs overlap
 				}
 
 				return err
@@ -78,14 +80,8 @@ func p13dChain(extra []*gormigrate.Migration, minReader map[string]string, sqlit
 	ch.migrations = append(ch.migrations, extra...)
 	ch.sqliteSchema += "\n" + sqliteDDL
 
-	compat := map[string]string{}
-	for k, v := range ch.compat {
-		compat[k] = v
-	}
-
-	for k, v := range minReader {
-		compat[k] = v
-	}
+	compat := maps.Clone(ch.compat)
+	maps.Copy(compat, minReader)
 
 	ch.compat = compat
 
@@ -162,7 +158,7 @@ func TestP13dHelperProcess(t *testing.T) {
 	}
 
 	if ns, err := strconv.ParseInt(os.Getenv(p13dStartEnv), 10, 64); err == nil { //nolint:noinlineerr
-		time.Sleep(time.Until(time.Unix(0, ns)))
+		time.Sleep(time.Until(time.Unix(0, ns))) //nolint:forbidigo // start barrier shared by two helper processes
 	}
 
 	res, err := migrateChain(context.Background(), spec.config(), p13dHelperChain(mode))
@@ -171,7 +167,10 @@ func TestP13dHelperProcess(t *testing.T) {
 		os.Exit(1)
 	}
 
-	_ = json.NewEncoder(os.Stdout).Encode(res)
+	err = json.NewEncoder(os.Stdout).Encode(res)
+	if err != nil {
+		os.Exit(3)
+	}
 
 	os.Exit(0)
 }
@@ -187,10 +186,11 @@ type p13dRun struct {
 func p13dSpawn(t *testing.T, cfg *types.Config, mode string, start time.Time) func() p13dRun {
 	t.Helper()
 
-	spec, err := json.Marshal(p13dSpecOf(cfg))
+	spec, err := json.Marshal(p13dSpecOf(cfg)) //nolint:gosec // G117: password of the throwaway test server, to a child test process
 	require.NoError(t, err)
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestP13dHelperProcess$", "-test.count=1") //nolint:gosec // the test binary itself
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestP13dHelperProcess$", "-test.count=1") //nolint:gosec // the test binary itself
+
 	cmd.Env = append(os.Environ(),
 		p13dHelperEnv+"="+mode,
 		p13dDBEnv+"="+string(spec),
@@ -325,7 +325,7 @@ func TestMigrateTwoProcessesAtOnce(t *testing.T) {
 
 			require.NoError(t, a.err, "fresh run A: %s", a.stderr)
 			require.NoError(t, b.err, "fresh run B: %s", b.stderr)
-			assert.True(t, a.res.Fresh != b.res.Fresh, "exactly one run created the schema: A=%+v B=%+v", a.res, b.res)
+			assert.NotEqual(t, a.res.Fresh, b.res.Fresh, "exactly one run created the schema: A=%+v B=%+v", a.res, b.res)
 
 			rows := migrationRows(t, rawConn(t, cfg))
 			for _, m := range v01Migrations() {
@@ -477,13 +477,14 @@ func TestSchemaCompatMigrationUpgrades(t *testing.T) {
 
 			// Rewind every migration from schema_compat on, newest first.
 			ms := v01Migrations()
+
 			require.Contains(t, currentChain().known(), SchemaCompatMigrationID, "schema_compat migration is in the chain")
 
-			for i := len(ms) - 1; i >= 0; i-- {
-				require.NoError(t, ms[i].Rollback(p.db), ms[i].ID)
-				require.NoError(t, p.db.Exec(`DELETE FROM migrations WHERE id = ?`, ms[i].ID).Error)
+			for _, m := range slices.Backward(ms) {
+				require.NoError(t, m.Rollback(p.db), m.ID)
+				require.NoError(t, p.db.Exec(`DELETE FROM migrations WHERE id = ?`, m.ID).Error)
 
-				if ms[i].ID == SchemaCompatMigrationID {
+				if m.ID == SchemaCompatMigrationID {
 					break
 				}
 			}

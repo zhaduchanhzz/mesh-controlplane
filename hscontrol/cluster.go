@@ -611,7 +611,8 @@ func (c *Cluster) reconcile() {
 
 		// P13c: an owner_epoch below what this process saw is not loaded
 		// (load refuses it too); checked here to skip the database reads.
-		if id, err := tailnet.ParseID(tn.ID); err == nil && c.ownerEpochRegressed(id, tn.OwnerEpoch) != nil {
+		id, err := tailnet.ParseID(tn.ID)
+		if err == nil && c.ownerEpochRegressed(id, tn.OwnerEpoch) != nil {
 			continue
 		}
 

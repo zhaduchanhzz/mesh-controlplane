@@ -109,7 +109,7 @@ func migrateChain(ctx context.Context, cfg *types.Config, ch chain) (MigrateResu
 	}
 
 	if exact && cfg.Database.IsSQLite() {
-		err = validateSQLiteSchema(conn, ch.sqliteSchema)
+		err = validateSQLiteSchema(conn, ch.sqliteSchema) //nolint:contextcheck // bounded by contextTimeout inside, as OpenPlatform's
 		if err != nil {
 			return res, err
 		}
