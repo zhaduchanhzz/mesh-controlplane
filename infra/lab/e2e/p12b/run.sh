@@ -47,6 +47,13 @@
 #
 # Usage: BIN=<headscale> PLBIN=<mesh-placement> BOOT_BIN=<mesh-bootstrap> RB_BIN=<mesh-rebootstrap> run.sh
 #        (linux/amd64). N=24 PAR=8 LEAD=60 IMAGES="tailscale/tailscale:v1.104.7 tailscale/tailscale:v1.84.3"
+#    or: CI_BINDIR=<dir on mc-ci holding headscale, mesh-placement,
+#        mesh-bootstrap, mesh-rebootstrap built there> run.sh
+#        The lab hosts then fetch the binaries from mc-ci over the LAN
+#        (transient unit p12b-binsrv: plain HTTP on mc-ci's LAN address,
+#        binaries only, stopped after setup) and check their sha256; nothing
+#        large crosses the laptop's route (runs 20261126T041654Z and
+#        T042420Z failed copying 81 MB from the laptop over Tailscale).
 # Thresholds: none yet (owner Q7: fixed after the first measurement); the
 # measurements are recorded, PASS/FAIL covers correctness only.
 # Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
@@ -86,10 +93,18 @@ N=${N:-24}
 PAR=${PAR:-8}
 LEAD=${LEAD:-60}
 VM_TARGETS=${VM_TARGETS:-}
-BIN=${BIN:?BIN= linux/amd64 cluster binary}
-PLBIN=${PLBIN:?PLBIN= linux/amd64 mesh-placement binary}
-BOOT_BIN=${BOOT_BIN:?BOOT_BIN= linux/amd64 mesh-bootstrap binary}
-RB_BIN=${RB_BIN:?RB_BIN= linux/amd64 mesh-rebootstrap binary}
+CI_BINDIR=${CI_BINDIR:-}
+CI_LAN=${CI_SSH#*@}
+BINPORT=${BINPORT:-18089}
+if [ -n "$CI_BINDIR" ]; then
+  [[ $CI_BINDIR =~ ^/[A-Za-z0-9/_.-]+$ ]] || { echo "CI_BINDIR: absolute path, [A-Za-z0-9/_.-] only" >&2; exit 2; }
+  BIN=- PLBIN=- BOOT_BIN=- RB_BIN=-
+else
+  BIN=${BIN:?BIN= linux/amd64 cluster binary (or CI_BINDIR=)}
+  PLBIN=${PLBIN:?PLBIN= linux/amd64 mesh-placement binary}
+  BOOT_BIN=${BOOT_BIN:?BOOT_BIN= linux/amd64 mesh-bootstrap binary}
+  RB_BIN=${RB_BIN:?RB_BIN= linux/amd64 mesh-rebootstrap binary}
+fi
 KEEP=${KEEP:-0}
 LABEL=mesh-e2e=p12b
 PY=${PY:-python}
@@ -103,7 +118,7 @@ for t in $VM_TARGETS; do [[ $t =~ ^mesh@10\.77\.[0-9]+\.[0-9]+$ ]] || { echo "VM
 [[ $N =~ ^[0-9]+$ ]] && [ "$N" -ge 2 ] && [[ $PAR =~ ^[0-9]+$ ]] && [ "$PAR" -ge 1 ] || { echo "bad N/PAR" >&2; exit 2; }
 # M02 needs ~15 s for its API checks between the last notice poll and scheduled_at.
 [[ $LEAD =~ ^[0-9]+$ ]] && [ "$LEAD" -ge 45 ] || { echo "LEAD must be >= 45 s" >&2; exit 2; }
-for f in "$BIN" "$PLBIN" "$BOOT_BIN" "$RB_BIN"; do [ -s "$f" ] || { echo "missing binary $f" >&2; exit 2; }; done
+[ -n "$CI_BINDIR" ] || for f in "$BIN" "$PLBIN" "$BOOT_BIN" "$RB_BIN"; do [ -s "$f" ] || { echo "missing binary $f" >&2; exit 2; }; done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../../.." && pwd)
@@ -151,6 +166,38 @@ pg_() { ssh_ "$PG_SSH" "$@"; }
 sshof() { case $1 in cp) echo "$CP_SSH";; c2) echo "$C2_SSH";; c2b) echo "$C2B_SSH";; esac; }
 on() { local n=$1; shift; ssh_ "$(sshof "$n")" "$@"; }
 nodeof() { [ "$1" = c1 ] && echo cp || echo c2; }
+# Binaries. binsha NAME: sha256 of NAME (headscale, mesh-placement,
+# mesh-bootstrap, mesh-rebootstrap), from $TMPD/binsha (filled by binsrv_start
+# with CI_BINDIR, else from the local files).
+binlocal() { case $1 in headscale) echo "$BIN";; mesh-placement) echo "$PLBIN";; mesh-bootstrap) echo "$BOOT_BIN";; mesh-rebootstrap) echo "$RB_BIN";; esac; }
+binsha() {
+  if [ -n "$CI_BINDIR" ]; then awk -v n="$1" '$2 == n { print $1 }' "$TMPD/binsha"
+  else sha256sum "$(binlocal "$1")" | cut -d' ' -f1; fi
+}
+binsrv_start() {
+  [ -n "$CI_BINDIR" ] || return 0
+  ci_ "cd $CI_BINDIR && sha256sum headscale mesh-placement mesh-bootstrap mesh-rebootstrap" | strip_cr >"$TMPD/binsha" || return 1
+  [ "$(awk 'length($1) == 64' "$TMPD/binsha" | wc -l)" = 4 ] || { log "CI_BINDIR: missing binaries"; return 1; }
+  ci_ "sudo systemctl stop p12b-binsrv 2>/dev/null; sudo systemctl reset-failed p12b-binsrv 2>/dev/null; \
+    sudo systemd-run --quiet --collect --unit=p12b-binsrv --uid=mesh --gid=mesh -p RuntimeMaxSec=900 \
+      python3 -m http.server $BINPORT --bind $CI_LAN --directory $CI_BINDIR; \
+    for i in \$(seq 1 20); do curl -fsS -o /dev/null -m 2 http://$CI_LAN:$BINPORT/ && exit 0; sleep 0.5; done; exit 1" || { log "p12b-binsrv not answering"; return 1; }
+}
+binsrv_stop() { [ -z "$CI_BINDIR" ] || ci_ "sudo systemctl stop p12b-binsrv 2>/dev/null; sudo systemctl reset-failed p12b-binsrv 2>/dev/null; ! systemctl is-active -q p12b-binsrv"; }
+# put NODE NAME DEST: DEST on NODE (cp, c2, c2b) becomes binary NAME, sha256
+# checked on NODE. With CI_BINDIR NODE fetches it from mc-ci over the LAN.
+put() {
+  local n=$1 name=$2 dst=$3 sum; sum=$(binsha "$2")
+  [ ${#sum} = 64 ] || return 1
+  if [ -n "$CI_BINDIR" ]; then
+    on "$n" "curl -fsS --retry 3 -m 120 -o $dst http://$CI_LAN:$BINPORT/$name" || return 1
+  else
+    scp_ "$(binlocal "$name")" "$(sshof "$n"):$dst" || return 1
+  fi
+  on "$n" "echo '$sum  $dst' | sha256sum -c --quiet" || { log "$n: $name sha256 mismatch"; return 1; }
+}
+# binstdin NAME: the binary on stdout (for an install through ssh stdin).
+binstdin() { if [ -n "$CI_BINDIR" ]; then ci_ "cat $CI_BINDIR/$1"; else cat "$(binlocal "$1")"; fi; }
 urlof() { [ "$1" = c1 ] && echo $URL1 || echo $URL2; }
 idof() { [ "$1" = c1 ] && echo $C1_ID || echo $C2_ID; }
 otherc() { [ "$1" = c1 ] && echo c2 || echo c1; }
@@ -310,7 +357,7 @@ vm_start() {
     for i in \$(seq 1 60); do $VMTS status >/dev/null 2>&1; [ \$? -le 1 ] && exit 0; sleep 0.5; done; exit 1" || return 1
   vm_ "$1" "sudo install -m 0600 /dev/stdin $VMDIR/key" <"$TMPD/key-$2" || return 1
   # /run is noexec on the client VMs: the binary lives under $VMSTATE.
-  vm_ "$1" "sudo install -m 0700 /dev/stdin $VMSTATE/mesh-rebootstrap" <"$RB_BIN" || return 1
+  binstdin mesh-rebootstrap | vm_ "$1" "sudo install -m 0700 /dev/stdin $VMSTATE/mesh-rebootstrap && echo '$(binsha mesh-rebootstrap)  $VMSTATE/mesh-rebootstrap' | sudo sha256sum -c --quiet" || return 1
   tr -d '\r' <"$HERE/jobs.sh" | vm_ "$1" "sudo install -m 0700 /dev/stdin $VMDIR/jobs.sh && sudo bash -n $VMDIR/jobs.sh" || return 1
   vm_ "$1" "sudo timeout 60 /opt/tailscale/$VMVER/tailscale --socket=$VMSOCK up --login-server=$3 --auth-key=file:$VMDIR/key \
     --hostname=\$(hostname -s)-p12b --accept-dns=false --netfilter-mode=off" 2>&1 | redact >>"$ART_DIR/logs/vm-$1.cli.log"
@@ -339,6 +386,7 @@ CLEAN_OK=1
 cleanup() {
   [ "$KEEP" = 1 ] && { log "KEEP=1: leaving everything running"; return; }
   log "cleanup"
+  binsrv_stop || { log "p12b-binsrv not stopped"; CLEAN_OK=0; }
   # Jobs left running on mc-ci (pinger, mesh-rebootstrap) are stopped before
   # their containers and files go.
   ci_ "touch $CIDIR/stop-ping 2>/dev/null; sudo systemctl stop 'p12b-ping-*' 'p12b-rb-*' 2>/dev/null; \
@@ -383,9 +431,10 @@ setup() {
   log "database $PG_DB"
   pg_ "sudo docker exec mc-pg createdb -U postgres -O headscale $PG_DB" || return 1
 
-  log "binary $HS on mc-cp and mc-c2"
+  binsrv_start || return 1
+  log "binary $HS on mc-cp and mc-c2${CI_BINDIR:+ (fetched from mc-ci $CI_BINDIR over the LAN)}"
   for n in cp c2; do
-    scp_ "$BIN" "$(sshof $n):/tmp/p12b-hs" || return 1
+    put $n headscale /tmp/p12b-hs || return 1
     on $n "sudo install -m 0755 /tmp/p12b-hs $HS && rm -f /tmp/p12b-hs" || return 1
   done
 
@@ -428,7 +477,7 @@ EOF
   cp_ "sudo systemctl reset-failed mesh-c1-ha 2>/dev/null; sudo systemd-run --quiet --unit=mesh-c1-ha /usr/sbin/haproxy -Ws -f /etc/haproxy/mesh-c1-p12b.cfg" || return 1
 
   log "mesh-placement on mc-cp loopback (throwaway CA under $PLDIR, scheduler every 2 s)"
-  scp_ "$PLBIN" "$CP_SSH:/tmp/p12b-pl" || return 1
+  put cp mesh-placement /tmp/p12b-pl || return 1
   cp_ "set -e; sudo install -m 0755 /tmp/p12b-pl /usr/local/bin/mesh-placement-p12b; rm -f /tmp/p12b-pl
     sudo install -d -o root -g headscale -m 0751 $PLDIR; cd $PLDIR
     sudo openssl ecparam -name prime256v1 -genkey -noout -out ca.key 2>/dev/null
@@ -459,7 +508,7 @@ EOF
   wait_public_ready c1 40 && wait_public_ready c2 40 || { log "public /ready (c1=$(public_ready c1) c2=$(public_ready c2))"; return 1; }
 
   log "bootstrap on mc-cp ($BOOT_URL)"
-  scp_ "$BOOT_BIN" "$CP_SSH:/tmp/p12b-boot" || return 1
+  put cp mesh-bootstrap /tmp/p12b-boot || return 1
   cp_ "set -e; sudo install -m 0755 /tmp/p12b-boot /usr/local/bin/mesh-bootstrap-p12b; rm -f /tmp/p12b-boot
     sudo systemctl reset-failed $BOOTUNIT 2>/dev/null || true
     sudo systemd-run --quiet --unit=$BOOTUNIT --uid=headscale --gid=headscale \
@@ -470,10 +519,13 @@ EOF
 
   log "mesh-rebootstrap and images on mc-ci"
   ci_ "rm -rf $CIDIR; install -d -m 0700 $CIDIR" || return 1
-  scp_ "$RB_BIN" "$CI_SSH:$CIDIR/mesh-rebootstrap" || return 1
+  if [ -n "$CI_BINDIR" ]; then ci_ "cp $CI_BINDIR/mesh-rebootstrap $CIDIR/mesh-rebootstrap" || return 1
+  else scp_ "$RB_BIN" "$CI_SSH:$CIDIR/mesh-rebootstrap" || return 1; fi
+  ci_ "echo '$(binsha mesh-rebootstrap)  $CIDIR/mesh-rebootstrap' | sha256sum -c --quiet" || { log "mc-ci: mesh-rebootstrap sha256 mismatch"; return 1; }
   tr -d '\r' <"$HERE/jobs.sh" | ci_ "cat >$CIDIR/jobs.sh && chmod 0700 $CIDIR/mesh-rebootstrap $CIDIR/jobs.sh && bash -n $CIDIR/jobs.sh" || return 1
   ci_ "sudo -n systemd-run --version >/dev/null" || { log "mc-ci: no passwordless systemd-run"; return 1; }
   local img; for img in $IMAGES; do ci_ "docker image inspect $img >/dev/null 2>&1 || docker pull -q $img >/dev/null" || return 1; done
+  binsrv_stop || { log "p12b-binsrv not stopped"; return 1; }
 }
 
 # ------------------------------------------------------------------ cases ---
@@ -721,8 +773,9 @@ if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
   log "setup failed (see logs/setup.log)"; cleanup; exit 2
 fi
 { echo "images: $IMAGES"; echo "client VMs: ${VM_TARGETS:-none} (tailscale $VMVER, round 1)"; echo "commit: $SHA"; echo "database: $PG_DB (mc-db via PgBouncer $PG_LISTEN)"; echo "N=$N PAR=$PAR LEAD=$LEAD"
-  echo "cluster binary: $(sha256sum "$BIN" | cut -c1-16)"; echo "mesh-placement: $(sha256sum "$PLBIN" | cut -c1-16)"
-  echo "mesh-bootstrap: $(sha256sum "$BOOT_BIN" | cut -c1-16)"; echo "mesh-rebootstrap: $(sha256sum "$RB_BIN" | cut -c1-16)"; } >>"$ART_DIR/env.txt"
+  echo "binaries: ${CI_BINDIR:+built on mc-ci in $CI_BINDIR, fetched over the LAN}${CI_BINDIR:-copied from the laptop}"
+  echo "cluster binary: $(binsha headscale | cut -c1-16)"; echo "mesh-placement: $(binsha mesh-placement | cut -c1-16)"
+  echo "mesh-bootstrap: $(binsha mesh-bootstrap | cut -c1-16)"; echo "mesh-rebootstrap: $(binsha mesh-rebootstrap | cut -c1-16)"; } >>"$ART_DIR/env.txt"
 if t_m00; then
   R=0; for img in $IMAGES; do R=$((R + 1)); t_round "$R" "$img"; done
   t_m06
