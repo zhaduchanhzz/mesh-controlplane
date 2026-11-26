@@ -125,13 +125,29 @@ func startZoneServer(t *testing.T, provider *dnstest.Provider) string {
 		_ = w.WriteMsg(m)
 	})
 
-	var lc net.ListenConfig
+	var (
+		lc  net.ListenConfig
+		pc  net.PacketConn
+		ln  net.Listener
+		err error
+	)
 
-	pc, err := lc.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
-	require.NoError(t, err)
+	// The resolver needs UDP and TCP on one port. A free UDP port's TCP twin
+	// can be taken by another process (CI flake "bind: address already in
+	// use"): pick another port then.
+	for range 20 {
+		pc, err = lc.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
+		require.NoError(t, err)
 
-	ln, err := lc.Listen(t.Context(), "tcp", pc.LocalAddr().String())
-	require.NoError(t, err)
+		ln, err = lc.Listen(t.Context(), "tcp", pc.LocalAddr().String())
+		if err == nil {
+			break
+		}
+
+		_ = pc.Close()
+	}
+
+	require.NoError(t, err, "no port free for both UDP and TCP")
 
 	for _, srv := range []*dns.Server{
 		{PacketConn: pc, Handler: handler},
