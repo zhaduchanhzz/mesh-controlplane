@@ -424,23 +424,28 @@ func liveLeases(db *gorm.DB) (map[string]bool, error) {
 // table and this is the one cross-tenant read placement makes; it returns
 // counts only.
 func clusterUsage(db *gorm.DB, incoming bool) (map[string]usageRow, error) {
-	var rows []usageRow
+	var (
+		rows []usageRow
+		err  error
+	)
 
-	q := `SELECT t.owner_cluster_id AS cluster_id,
-		count(DISTINCT t.id) AS tailnets, count(n.id) AS devices
-		FROM tailnets t LEFT JOIN nodes n ON n.tailnet_id = t.id AND n.deleted_at IS NULL
-		WHERE t.deleted_at IS NULL
-		GROUP BY t.owner_cluster_id`
+	// Two literal statements (not one built in a variable), so the raw SQL
+	// guard reads each.
 	if incoming {
-		q = `SELECT t.cluster_id, count(DISTINCT t.id) AS tailnets, count(n.id) AS devices
+		err = db.Raw(`SELECT t.cluster_id, count(DISTINCT t.id) AS tailnets, count(n.id) AS devices
 			FROM (SELECT id, owner_cluster_id AS cluster_id FROM tailnets WHERE deleted_at IS NULL
 				UNION ALL
 				SELECT id, moving_to_cluster_id FROM tailnets WHERE deleted_at IS NULL AND moving_to_cluster_id IS NOT NULL) t
 			LEFT JOIN nodes n ON n.tailnet_id = t.id AND n.deleted_at IS NULL
-			GROUP BY t.cluster_id`
+			GROUP BY t.cluster_id`).Scan(&rows).Error
+	} else {
+		err = db.Raw(`SELECT t.owner_cluster_id AS cluster_id,
+			count(DISTINCT t.id) AS tailnets, count(n.id) AS devices
+			FROM tailnets t LEFT JOIN nodes n ON n.tailnet_id = t.id AND n.deleted_at IS NULL
+			WHERE t.deleted_at IS NULL
+			GROUP BY t.owner_cluster_id`).Scan(&rows).Error
 	}
 
-	err := db.Raw(q).Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("counting devices: %w", err)
 	}
