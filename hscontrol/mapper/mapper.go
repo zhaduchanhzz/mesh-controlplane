@@ -282,10 +282,15 @@ func (m *mapper) selfMapResponse(
 	nodeID types.NodeID,
 	capVer tailcfg.CapabilityVersion,
 ) (*tailcfg.MapResponse, error) {
+	// The node's own profiles ride along (F2-2, P14f): a tagged node's
+	// identity profile is named after the node, so a rename changes it.
+	// Clients keep profiles by ID, so resending an equal one is harmless,
+	// and delta-first drops it when unchanged.
 	ma, err := m.NewMapResponseBuilder(nodeID).
 		WithDebugType(selfResponseDebug).
 		WithCapabilityVersion(capVer).
 		WithSelfNode().
+		WithUserProfiles(views.Slice[types.NodeView]{}).
 		Build()
 	if err != nil {
 		return nil, err
@@ -326,12 +331,16 @@ func (m *mapper) policyChangeResponse(
 		WithSSHPolicy().
 		WithSelfNode()
 
+	// Cross-user peers must carry their user profile, otherwise the
+	// client's netmap shows the peer without a UserProfiles[user] entry.
+	// The node's own profiles go out even without peers (F2-1, P14f): a
+	// node tagged while connected gets the profile of its tagged identity
+	// here and nowhere else.
+	builder.WithUserProfiles(currentPeers)
+
 	// Send remaining peers in PeersChanged - their AllowedIPs may have
 	// changed due to the policy update (e.g., different routes allowed).
-	// Cross-user peers must also carry their user profile, otherwise the
-	// client's netmap shows the peer without a UserProfiles[user] entry.
 	if currentPeers.Len() > 0 {
-		builder.WithUserProfiles(currentPeers)
 		builder.WithPeerChanges(currentPeers)
 	}
 
