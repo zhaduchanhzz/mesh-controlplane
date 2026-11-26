@@ -67,6 +67,13 @@ POC_HEALTH=https://a.cp.gta5web.online:8443/health
 BOOT_HOST=boot.cp.gta5web.online
 BOOT_URL=https://$BOOT_HOST:8444
 BOOT_LISTEN=10.99.77.2:8444
+# P13f B7: once the VPS lab-ports HAProxy (infra/lab/vps-haproxy) sends PROXY
+# protocol v2 on 8444, run with BOOT_PROXY_PROTOCOL_FROM=10.99.77.1/32 so that
+# mesh-bootstrap requires the header from the VPS (and refuses it from anyone
+# else). Default off: the forwarder in use today sends no header.
+BOOT_PROXY_PROTOCOL_FROM=${BOOT_PROXY_PROTOCOL_FROM:-}
+case "$BOOT_PROXY_PROTOCOL_FROM" in *[!0-9a-fA-F:./,]*) echo "BOOT_PROXY_PROTOCOL_FROM: CIDRs only" >&2; exit 2 ;; esac
+BOOT_PROXY_ARGS=${BOOT_PROXY_PROTOCOL_FROM:+-proxy-protocol-from $BOOT_PROXY_PROTOCOL_FROM}
 IMAGE=${IMAGE:-tailscale/tailscale:v1.104.7}
 BIN=${BIN:?BIN= linux/amd64 cluster binary}
 PLBIN=${PLBIN:?PLBIN= linux/amd64 mesh-placement binary}
@@ -370,7 +377,7 @@ EOF
     sudo systemctl reset-failed $BOOTUNIT 2>/dev/null || true
     sudo systemd-run --quiet --unit=$BOOTUNIT --uid=headscale --gid=headscale \
       /usr/local/bin/mesh-bootstrap-p12 -config $CFG -listen $BOOT_LISTEN \
-      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST" || return 1
+      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST $BOOT_PROXY_ARGS" || return 1
   for i in $(seq 1 20); do [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$BOOT_URL/health")" = 200 ] && break; sleep 1; done
   [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$BOOT_URL/health")" = 200 ] || { log "bootstrap not healthy"; return 1; }
 

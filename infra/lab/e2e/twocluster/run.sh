@@ -47,6 +47,13 @@ POC_HEALTH=https://a.cp.gta5web.online:8443/health
 BOOT_HOST=boot.cp.gta5web.online
 BOOT_URL=https://$BOOT_HOST:8444
 BOOT_LISTEN=10.99.77.2:8444
+# P13f B7: once the VPS lab-ports HAProxy (infra/lab/vps-haproxy) sends PROXY
+# protocol v2 on 8444, run with BOOT_PROXY_PROTOCOL_FROM=10.99.77.1/32 so that
+# mesh-bootstrap requires the header from the VPS (and refuses it from anyone
+# else). Default off: the forwarder in use today sends no header.
+BOOT_PROXY_PROTOCOL_FROM=${BOOT_PROXY_PROTOCOL_FROM:-}
+case "$BOOT_PROXY_PROTOCOL_FROM" in *[!0-9a-fA-F:./,]*) echo "BOOT_PROXY_PROTOCOL_FROM: CIDRs only" >&2; exit 2 ;; esac
+BOOT_PROXY_ARGS=${BOOT_PROXY_PROTOCOL_FROM:+-proxy-protocol-from $BOOT_PROXY_PROTOCOL_FROM}
 IMAGE=${IMAGE:-tailscale/tailscale:v1.104.7}
 BIN=${BIN:?BIN= linux/amd64 cluster binary}
 BOOT_BIN=${BOOT_BIN:?BOOT_BIN= linux/amd64 mesh-bootstrap binary}
@@ -274,7 +281,7 @@ setup() {
   cp_ "set -e; sudo install -m 0755 /tmp/mesh-bootstrap /usr/local/bin/mesh-bootstrap; rm -f /tmp/mesh-bootstrap
     sudo systemd-run --quiet --unit=mesh-bootstrap-e2e --uid=headscale --gid=headscale \
       /usr/local/bin/mesh-bootstrap -config $CFG -listen $BOOT_LISTEN \
-      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST" || return 1
+      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST $BOOT_PROXY_ARGS" || return 1
   for i in $(seq 1 20); do [ "$(health "$BOOT_URL")" = 200 ] && break; sleep 1; done
   [ "$(health "$BOOT_URL")" = 200 ] || { log "bootstrap not healthy"; return 1; }
 

@@ -27,9 +27,9 @@ After the switch, a `mesh-bootstrap` on `10.99.77.2:8444` **must** run the P13f 
 -proxy-protocol-from 10.99.77.1/32
 ```
 
-(the VPS end of wg-mesh). Without it the header is read as the start of TLS and every bootstrap handshake through the VPS fails; with it but from another peer, a PROXY header is refused (anti-spoofing). The E2E harnesses that start the bootstrap (`infra/lab/e2e/{n1/cases3.sh,p05,p12,p12b,twocluster}/run.sh`, `BOOT_LISTEN=10.99.77.2:8444`) need that flag added at the same time. With the flag, the per-address limit defaults to 10 req/s, burst 20 (`-ip-rate`, `-ip-burst`; IPv6 per /64).
+(the VPS end of wg-mesh). Without it the header is read as the start of TLS and every bootstrap handshake through the VPS fails; with it but from another peer, a PROXY header is refused (anti-spoofing). The E2E harnesses that start the bootstrap (`infra/lab/e2e/{n1/cases3.sh,p05,p12,p12b,twocluster}/run.sh`, `BOOT_LISTEN=10.99.77.2:8444`) take it from the environment: run them with `BOOT_PROXY_PROTOCOL_FROM=10.99.77.1/32` once the HAProxy is applied (default off, as today; P13 integration). With the flag, the per-address limit defaults to 10 req/s, burst 20 (`-ip-rate`, `-ip-burst`; IPv6 per /64).
 
-Recommended order: (1) merge P13f; (2) add the flag to the harnesses; (3) owner approves; (4) `apply.sh`; (5) run one bootstrap E2E case through the VPS.
+Recommended order: (1) merge P13f; (2) run the harnesses with `BOOT_PROXY_PROTOCOL_FROM=10.99.77.1/32` from then on; (3) owner approves; (4) `apply.sh`; (5) run one bootstrap E2E case through the VPS.
 
 ## Apply (owner-approved only)
 
@@ -49,7 +49,7 @@ ssh root@116.118.3.46 'cd /root/mesh-lab-haproxy-p13f && ./rollback.sh'         
 ssh root@116.118.3.46 'cd /root/mesh-lab-haproxy-p13f && ./rollback.sh --purge'  # and remove its two files
 ```
 
-`mesh-bootstrap` with `-proxy-protocol-from` behind the old forwarders refuses every connection from 10.99.77.1 (no header): remove the flag on rollback.
+`mesh-bootstrap` with `-proxy-protocol-from` behind the old forwarders refuses every connection from 10.99.77.1 (no header): remove the flag on rollback (unset `BOOT_PROXY_PROTOCOL_FROM`).
 
 ## Verification after apply (by the operator)
 
