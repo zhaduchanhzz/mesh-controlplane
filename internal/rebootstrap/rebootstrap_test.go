@@ -17,7 +17,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var errExit1 = errors.New("exit status 1")
+var (
+	errExit1     = errors.New("exit status 1")
+	errBNeverRan = errors.New("b never ran while a waited")
+)
 
 const (
 	testKey    = "hskey-auth-0123456789ab-s3cretS3cretS3cret"
@@ -204,6 +207,7 @@ func TestRunRetriesTargetsRefusedBeforeTheTargetLoaded(t *testing.T) {
 
 	retry := Retry{Attempts: 3, Delay: 2 * time.Second, Sleep: func(_ context.Context, d time.Duration) error {
 		slept = append(slept, d)
+
 		loaded.Store(true) // the target cluster loads the tailnet meanwhile
 
 		return nil
@@ -238,6 +242,7 @@ func TestRunGivesUpAfterAttempts(t *testing.T) {
 	noSleep := func(context.Context, time.Duration) error { return nil }
 
 	s := Run(context.Background(), "https://c2", []string{"a", "b"}, 2, time.Second, Retry{Attempts: 3, Sleep: noSleep}, run)
+
 	assert.EqualValues(t, 6, calls.Load())
 	assert.Equal(t, 2, s.Failed)
 	assert.Equal(t, 2, s.Retried)
@@ -250,7 +255,9 @@ func TestRunGivesUpAfterAttempts(t *testing.T) {
 
 	// Without a retry budget a target runs once.
 	calls.Store(0)
+
 	s = Run(context.Background(), "https://c2", []string{"a"}, 1, time.Second, Retry{}, run)
+
 	assert.EqualValues(t, 1, calls.Load())
 	assert.Equal(t, 1, s.Results[0].Attempts)
 	assert.Equal(t, 0, s.Retried)
@@ -270,6 +277,7 @@ func TestRunStopsRetryingWhenCancelled(t *testing.T) {
 	}
 
 	s := Run(ctx, "https://c2", []string{"a"}, 1, time.Second, Retry{Attempts: 5, Delay: time.Hour}, run)
+
 	assert.EqualValues(t, 1, calls.Load())
 	assert.False(t, s.Results[0].OK)
 	assert.Equal(t, 1, s.Results[0].Attempts)
@@ -301,7 +309,7 @@ func TestRunRetryWaitFreesTheSlot(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(5 * time.Second):
-			return errors.New("b never ran while a waited")
+			return errBNeverRan
 		}
 	}
 
