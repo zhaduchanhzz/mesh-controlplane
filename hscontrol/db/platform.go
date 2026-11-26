@@ -124,7 +124,13 @@ func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.db) }
 // refuses databases from Headscale or unknown versions, runs the v0.1
 // migrations, validates the schema (SQLite) and registers tenantscope on the
 // pool. It never creates a tailnet.
-func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
+func OpenPlatform(cfg *types.Config) (*Platform, error) {
+	return openPlatform(cfg, currentChain(), false)
+}
+
+// openPlatform is OpenPlatform for binary chain ch; migrate is the explicit
+// development option ([MigrateAndOpenPlatform]).
+func openPlatform(cfg *types.Config, ch chain, _ bool) (_ *Platform, retErr error) {
 	dbConn, err := openDB(cfg.Database, cfg.SQLitePath())
 	if err != nil {
 		return nil, err
@@ -141,7 +147,7 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 		}
 	}()
 
-	err = checkV01Database(dbConn)
+	err = checkV01Database(dbConn, ch)
 	if err != nil {
 		return nil, fmt.Errorf("version check: %w", err)
 	}
@@ -151,7 +157,7 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 		return nil, fmt.Errorf("version check: %w", err)
 	}
 
-	migrations := gormigrate.New(dbConn, gormigrate.DefaultOptions, v01Migrations())
+	migrations := gormigrate.New(dbConn, gormigrate.DefaultOptions, ch.migrations)
 
 	migrations.InitSchema(func(tx *gorm.DB) error {
 		return tx.Transaction(createSchema)

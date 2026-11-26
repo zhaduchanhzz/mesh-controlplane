@@ -83,7 +83,7 @@ func postgresTestConfig(t *testing.T) *types.Config {
 func openPlatformDB(t *testing.T, cfg *types.Config) *gorm.DB {
 	t.Helper()
 
-	p, err := db.OpenPlatform(cfg)
+	p, err := db.MigrateAndOpenPlatform(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = p.Close() })
 

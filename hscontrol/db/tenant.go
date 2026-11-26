@@ -115,7 +115,7 @@ func tableExists(db *gorm.DB, table string) (bool, error) {
 // database: one without the tailnets table, or with migration IDs this
 // binary does not know (Headscale's chain or a newer release). A failed
 // query is a database error, never a verdict on the database.
-func checkV01Database(db *gorm.DB) error {
+func checkV01Database(db *gorm.DB, ch chain) error {
 	has := map[string]bool{}
 
 	for _, table := range []string{"migrations", "users", "nodes", "tailnets"} {
@@ -146,10 +146,7 @@ func checkV01Database(db *gorm.DB) error {
 		return fmt.Errorf("%w: reading migrations: %w", ErrDatabaseUnavailable, err)
 	}
 
-	known := map[string]bool{schemaInitMigration: true}
-	for _, m := range v01Migrations() {
-		known[m.ID] = true
-	}
+	known := ch.known()
 
 	for _, id := range ids {
 		if !known[id] {

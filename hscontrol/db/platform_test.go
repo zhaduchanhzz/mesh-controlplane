@@ -17,7 +17,8 @@ import (
 func openPlatform(t *testing.T, cfg *types.Config) *Platform {
 	t.Helper()
 
-	p, err := OpenPlatform(cfg)
+	// Tests create and migrate their database explicitly (ADR 0013).
+	p, err := MigrateAndOpenPlatform(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = p.Close() })
 

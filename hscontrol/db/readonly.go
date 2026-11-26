@@ -29,6 +29,10 @@ func LatestMigrationID() string {
 // [LatestMigrationID]. On SQLite the connection is put in query_only mode;
 // on PostgreSQL callers read in READ ONLY transactions.
 func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
+	return openReadOnly(cfg, currentChain())
+}
+
+func openReadOnly(cfg *types.Config, ch chain) (*gorm.DB, error) {
 	if cfg.Database.IsSQLite() {
 		_, err := os.Stat(cfg.SQLitePath())
 		if err != nil {
@@ -50,11 +54,11 @@ func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 
 	var n int64
 
-	err = conn.Raw(`SELECT count(*) FROM migrations WHERE id = ?`, LatestMigrationID()).Scan(&n).Error
+	err = conn.Raw(`SELECT count(*) FROM migrations WHERE id = ?`, ch.latest()).Scan(&n).Error
 	if err != nil || n != 1 {
 		closeConn()
 
-		return nil, fmt.Errorf("%w: want migration %s (err=%w)", ErrSchemaNotCurrent, LatestMigrationID(), err)
+		return nil, fmt.Errorf("%w: want migration %s (err=%w)", ErrSchemaNotCurrent, ch.latest(), err)
 	}
 
 	if cfg.Database.IsSQLite() {

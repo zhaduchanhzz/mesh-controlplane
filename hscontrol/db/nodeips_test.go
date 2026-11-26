@@ -186,7 +186,7 @@ func TestMigrationNodeIPUnique(t *testing.T) {
 			require.NoError(t, addNodeIPs(t, tenantDB(t, p, idA), nil, v6))
 			require.NoError(t, p.Close())
 
-			_, err := OpenPlatform(cfg)
+			_, err := MigrateAndOpenPlatform(cfg)
 			require.ErrorIs(t, err, errDuplicateNodeIPs)
 			assert.Contains(t, err.Error(), "1 addresses")
 
