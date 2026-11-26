@@ -215,3 +215,76 @@ t_s04() {
   rm -f "$TMPD/key-d"
   [ -z "$p" ] && record S04 PASS "new tailnet d: no enrolment while PENDING; once ACTIVE two real clients see no peer under the default policy and under {}; an explicit grant connects them" || record S04 FAIL "${p#; }"
 }
+
+# S13b (owner: "chạy luôn bootstrap flood cho S13, tải nhẹ qua VPS"): the
+# bootstrap (P11) runs on mc-cp against this run's database and is reached
+# through the VPS (boot.cp.gta5web.online:8444 -> wg -> mc-cp). From the VPS
+# tenant A floods /v1/bootstrap at S13B_RATE/s (above the default per-tenant
+# limit of 20/s, below the global 200/s); meanwhile B asks at 2/s from mc-ci
+# through the same public path. Pass: B gets every answer (no 429/5xx/error,
+# p99 <= 2 s) and still gets c1's URL; A's own limit is what stops A.
+BOOT_HOST=boot.cp.gta5web.online
+BOOT_URL=https://$BOOT_HOST:8444
+BOOT_LISTEN=10.99.77.2:8444
+S13B_RATE=${S13B_RATE:-30}
+S13B_SECONDS=${S13B_SECONDS:-40}
+boot_start() {
+  local i
+  scp -q "${SSHO[@]}" "$BOOT_BIN" "$CP_SSH:/tmp/mesh-bootstrap" || return 1
+  cp_ "set -e; sudo install -m 0755 /tmp/mesh-bootstrap /usr/local/bin/mesh-bootstrap; rm -f /tmp/mesh-bootstrap
+    sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null || true; sudo systemctl reset-failed mesh-bootstrap-e2e 2>/dev/null || true
+    sudo systemd-run --quiet --unit=mesh-bootstrap-e2e --uid=headscale --gid=headscale \
+      /usr/local/bin/mesh-bootstrap -config $CFG -listen $BOOT_LISTEN \
+      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST" || return 1
+  for i in $(seq 1 20); do [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$BOOT_URL/health")" = 200 ] && return 0; sleep 1; done
+  return 1
+}
+boot_stop() {
+  cp_ "sudo journalctl -u mesh-bootstrap-e2e --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/bootstrap.log"
+  cp_ "sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null; sudo systemctl reset-failed mesh-bootstrap-e2e 2>/dev/null; sudo rm -f /usr/local/bin/mesh-bootstrap; ! test -e /usr/local/bin/mesh-bootstrap"
+}
+# boot_url_of KEYFILE TENANT: the control_url bootstrap answers (proof only;
+# the secret never leaves this host).
+boot_url_of() {
+  py 'import hashlib, json
+k = open(sys.argv[1]).read().strip()
+i, s = k.split("hskey-auth-", 1)[1].split("-", 1)
+print(json.dumps({"credential": {"kind": "authkey_proof", "key_id": i, "proof": hashlib.sha256(s.encode()).hexdigest()}, "tenant": sys.argv[2]}))' "$1" "$2" | strip_cr \
+    | curl -s -m 10 -H 'Content-Type: application/json' --data-binary @- "$BOOT_URL/v1/bootstrap" \
+    | py 'import json; print(json.load(sys.stdin).get("control_url", ""))' 2>/dev/null | strip_cr
+}
+flood_sum() { # FILE: one line per flood JSON in FILE
+  py 'import json
+for l in open(sys.argv[1]):
+    l = l.strip()
+    if not l.startswith("{"): continue
+    d = json.loads(l)
+    print("started=%d 2xx=%d 4xx=%d 429=%d 5xx=%d err=%d p50=%.0fms p99=%.0fms" % (d["started"], d["status_2xx"], d["status_4xx"], d["status_429"], d["status_5xx"], d["errors"], d["p50_ms"], d["p99_ms"]))' "$1" | strip_cr
+}
+t_s13b() {
+  local p="" fpid sa sb u
+  [ -n "${BOOT_BIN:-}" ] || { record S13b FAIL "BOOT_BIN not set: bootstrap flood not run"; return; }
+  boot_start || { record S13b FAIL "bootstrap did not start (logs/bootstrap.log)"; boot_stop; return; }
+  u=$(boot_url_of "$TMPD/key-b" b); [ "$u" = "$URL1" ] || p="$p; before: bootstrap for b -> [$u]"
+  scp -q "${VSSHO[@]}" "$PROBE_BIN" "$VPS:$VPS_RD-probe" && vps "umask 077; cat >$VPS_RD-key" <"$TMPD/key-a" \
+    && ssh_ $CI_SSH "umask 077; cat >/tmp/n1-s13b-kb" <"$TMPD/key-b" || { record S13b FAIL "copy probe/keys"; boot_stop; return; }
+  vps "chmod 0755 $VPS_RD-probe; $VPS_RD-probe flood --kind bootstrap --bootstrap-url $BOOT_URL --tenant a --key $VPS_RD-key \
+      --rate $S13B_RATE --duration ${S13B_SECONDS}s --max-inflight 16; rm -f $VPS_RD-*" \
+    >"$ART_DIR/logs/S13b-flood-a.jsonl" 2> >(redact >"$ART_DIR/logs/S13b-flood-a.err") &
+  fpid=$!
+  sleep 5
+  ssh_ $CI_SSH "/tmp/n1probe flood --kind bootstrap --bootstrap-url $BOOT_URL --tenant b --key /tmp/n1-s13b-kb --rate 2 --duration 30s --max-inflight 4; rm -f /tmp/n1-s13b-kb" \
+    >"$ART_DIR/logs/S13b-b.jsonl" 2> >(redact >"$ART_DIR/logs/S13b-b.err")
+  wait "$fpid" || p="$p; A flood rc=$?"
+  vps "rm -f $VPS_RD-*; ! ls $VPS_RD-* 2>/dev/null" >/dev/null || p="$p; VPS files left"
+  u=$(boot_url_of "$TMPD/key-b" b); [ "$u" = "$URL1" ] || p="$p; after: bootstrap for b -> [$u]"
+  sa=$(flood_sum "$ART_DIR/logs/S13b-flood-a.jsonl"); sb=$(flood_sum "$ART_DIR/logs/S13b-b.jsonl")
+  grep -q 'started=[1-9]' <<<"$sa" || p="$p; A flood did not run [$sa]"
+  py 'import json, sys
+d = [json.loads(l) for l in open(sys.argv[1]) if l.startswith("{")][0]
+ok = d["started"] > 0 and d["status_2xx"] == d["started"] and d["status_429"] == 0 and d["status_5xx"] == 0 and d["errors"] == 0 and d["p99_ms"] <= 2000
+sys.exit(0 if ok else 1)' "$ART_DIR/logs/S13b-b.jsonl" 2>/dev/null || p="$p; B during A's flood: [$sb]"
+  boot_stop || p="$p; bootstrap not stopped"
+  printf 'S13b %s bootstrap flood via VPS: A %s; B %s\n' "$MODE" "$sa" "$sb" >>"$ART_DIR/timings.txt"
+  [ -z "$p" ] && record S13b PASS "A floods bootstrap via VPS at ${S13B_RATE}/s ($sa): B every answer ($sb), B still -> c1" || record S13b FAIL "${p#; }"
+}
