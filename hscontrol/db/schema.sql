@@ -304,3 +304,10 @@ WHEN NEW.tailnet_id IS NOT OLD.tailnet_id
 BEGIN
   SELECT RAISE(ABORT, 'tailnet_id of a tenant row is immutable');
 END;
+
+-- Schema compatibility (P13d, ADR 0013): min_reader_id of each migration
+-- from 202611271000-schema-compat on; see hscontrol/db/schema_compat.go.
+CREATE TABLE schema_compat(
+  migration_id text PRIMARY KEY,
+  min_reader_id text NOT NULL
+);

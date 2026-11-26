@@ -189,6 +189,13 @@ func checkVersionUpgradePath(db *gorm.DB) error {
 		return err
 	}
 
+	return compareStoredVersion(db)
+}
+
+// compareStoredVersion is the comparison of checkVersionUpgradePath, on a
+// database_versions table that exists; it only reads (P13d: OpenPlatform
+// never changes the schema).
+func compareStoredVersion(db *gorm.DB) error {
 	currentVersion := types.GetVersionInfo().Version
 
 	// Running binary has no real version — skip the check but

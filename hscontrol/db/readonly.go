@@ -25,8 +25,10 @@ func LatestMigrationID() string {
 // platform tables (the bootstrap service, P11). Unlike [OpenPlatform] it
 // never creates the schema, never runs migrations and does not register
 // tenantscope: the caller reads with reviewed raw SQL only. It refuses a
-// missing SQLite file and a database whose migrations do not include
-// [LatestMigrationID]. On SQLite the connection is put in query_only mode;
+// missing SQLite file and a database this binary cannot run with (the rule
+// of [OpenPlatform], ADR 0013 §4: every migration it knows present, every
+// newer one marked compatible); the version check is not applied, as
+// before P13d. On SQLite the connection is put in query_only mode;
 // on PostgreSQL callers read in READ ONLY transactions.
 func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 	return openReadOnly(cfg, currentChain())
@@ -52,13 +54,14 @@ func openReadOnly(cfg *types.Config, ch chain) (*gorm.DB, error) {
 		}
 	}
 
-	var n int64
-
-	err = conn.Raw(`SELECT count(*) FROM migrations WHERE id = ?`, ch.latest()).Scan(&n).Error
-	if err != nil || n != 1 {
+	// The compatibility rule of the cluster processes (ADR 0013 §4), read
+	// only: a newer expand migration is accepted, a newer contract
+	// migration or a missing one is not.
+	_, err = verifySchema(conn, ch)
+	if err != nil {
 		closeConn()
 
-		return nil, fmt.Errorf("%w: want migration %s (err=%w)", ErrSchemaNotCurrent, ch.latest(), err)
+		return nil, fmt.Errorf("%w: %w", ErrSchemaNotCurrent, err)
 	}
 
 	if cfg.Database.IsSQLite() {

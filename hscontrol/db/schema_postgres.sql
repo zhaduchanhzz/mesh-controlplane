@@ -272,3 +272,10 @@ CREATE TRIGGER trg_policies_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON 
   FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
 CREATE TRIGGER trg_tailnet_settings_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON tailnet_settings
   FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
+
+-- Schema compatibility (P13d, ADR 0013): min_reader_id of each migration
+-- from 202611271000-schema-compat on; see hscontrol/db/schema_compat.go.
+CREATE TABLE schema_compat(
+  migration_id text PRIMARY KEY,
+  min_reader_id text NOT NULL
+);

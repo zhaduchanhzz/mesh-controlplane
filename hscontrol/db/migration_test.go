@@ -151,7 +151,7 @@ func TestCheckV01DatabaseSurfacesConnectionErrors(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, sqlDB.Close())
 
-			err = checkV01Database(conn, currentChain())
+			_, err = checkV01Database(conn)
 			require.Error(t, err, "a closed connection is not a fresh database")
 			require.NotErrorIs(t, err, ErrNotV01Database)
 			assert.Contains(t, err.Error(), "closed")

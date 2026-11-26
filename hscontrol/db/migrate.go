@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
+	"strings"
 
 	"github.com/go-gormigrate/gormigrate/v2"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
@@ -93,53 +93,152 @@ func migrateChain(ctx context.Context, cfg *types.Config, ch chain) (MigrateResu
 		}
 	}()
 
-	return migrateConn(ctx, conn, cfg, ch)
-}
-
-// migrateConn is the migrate step on conn. RED stub (P13d): today's
-// behaviour, no lock.
-func migrateConn(ctx context.Context, conn *gorm.DB, cfg *types.Config, ch chain) (MigrateResult, error) {
-	res := MigrateResult{Latest: ch.latest()}
-
-	err := checkV01Database(conn, ch)
-	if err != nil {
-		return res, fmt.Errorf("version check: %w", err)
-	}
-
-	err = checkVersionUpgradePath(conn)
-	if err != nil {
-		return res, fmt.Errorf("version check: %w", err)
-	}
-
-	before, err := recordedMigrations(conn.WithContext(ctx))
+	res, err := migrateConn(ctx, conn, cfg, ch)
 	if err != nil {
 		return res, err
 	}
 
-	migrations := gormigrate.New(conn.WithContext(ctx), gormigrate.DefaultOptions, ch.migrations)
-	migrations.InitSchema(func(tx *gorm.DB) error {
-		return tx.Transaction(createSchema)
-	})
-
-	err = runMigrations(cfg.Database, conn, migrations)
-	if err != nil {
-		return res, fmt.Errorf("migration failed: %w", err)
-	}
-
-	after, err := recordedMigrations(conn.WithContext(ctx))
+	// SQLite: the migrated schema must match schema.sql (squibble), as
+	// OpenPlatform checks; outside the transaction, on its own connection.
+	exact, err := verifySchema(conn, ch)
 	if err != nil {
 		return res, err
 	}
 
-	res.Fresh = len(before) == 0
-
-	for _, m := range ch.migrations {
-		if after[m.ID] && !before[m.ID] {
-			res.Applied = append(res.Applied, m.ID)
+	if exact && cfg.Database.IsSQLite() {
+		err = validateSQLiteSchema(conn)
+		if err != nil {
+			return res, err
 		}
 	}
 
 	return res, nil
+}
+
+// migrateLockSQL serialises migrate runs on PostgreSQL (L7): a
+// transaction-scoped advisory lock, released by COMMIT, ROLLBACK or a lost
+// connection, and usable through PgBouncer in transaction mode (ADR 0006
+// §3.2). The key is fixed and distinct from the lease and ownership locks.
+const migrateLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended('mesh/schema-migrate', 0))`
+
+// migrateConn is the migrate step on conn, all in one transaction: on
+// PostgreSQL under migrateLockSQL, on SQLite under the write lock its
+// IMMEDIATE transaction takes at BEGIN (sqliteconfig). A second run waits
+// for the first and then finds nothing to do. A failure rolls everything
+// back: the schema, the migrations rows, schema_compat and the version.
+func migrateConn(ctx context.Context, conn *gorm.DB, cfg *types.Config, ch chain) (MigrateResult, error) {
+	res := MigrateResult{Latest: ch.latest()}
+
+	err := conn.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if tx.Name() == dialectPostgres {
+			err := tx.Exec(migrateLockSQL).Error
+			if err != nil {
+				return fmt.Errorf("waiting for the migrate lock: %w", err)
+			}
+		}
+
+		fresh, err := checkV01Database(tx)
+		if err != nil {
+			return fmt.Errorf("version check: %w", err)
+		}
+
+		before, err := recordedMigrations(tx)
+		if err != nil {
+			return err
+		}
+
+		// A database a newer binary migrated: this binary runs with it only
+		// if every unknown migration allows it, and never migrates it (it
+		// cannot know what the newer chain expects).
+		if unknown := unknownMigrations(before, ch); len(unknown) > 0 {
+			err := checkSchemaCompat(tx, ch, before)
+			if errors.Is(err, ErrSchemaNeedsMigration) {
+				return fmt.Errorf("%w: the database has migrations this binary does not know (%s) and lacks some of "+
+					"its own; migrate with the newest binary", ErrSchemaTooNew, strings.Join(unknown, ", "))
+			}
+
+			return err // nil: compatible, nothing to do
+		}
+
+		err = checkVersionUpgradePath(tx)
+		if err != nil {
+			return fmt.Errorf("version check: %w", err)
+		}
+
+		migrations := gormigrate.New(tx, gormigrate.DefaultOptions, ch.migrations)
+		migrations.InitSchema(func(itx *gorm.DB) error {
+			return itx.Transaction(createSchema)
+		})
+
+		err = runMigrations(cfg.Database, tx, migrations)
+		if err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+
+		after, err := recordedMigrations(tx)
+		if err != nil {
+			return err
+		}
+
+		err = recordSchemaCompat(tx, ch, after)
+		if err != nil {
+			return err
+		}
+
+		res.Fresh = fresh
+
+		for _, m := range ch.migrations {
+			if after[m.ID] && !before[m.ID] {
+				res.Applied = append(res.Applied, m.ID)
+			}
+		}
+
+		// The version the database was last migrated by (versioncheck):
+		// written here only, never by OpenPlatform. Dev builds keep it.
+		if v := types.GetVersionInfo().Version; !isDev(v) {
+			err = setDatabaseVersion(tx, v)
+			if err != nil {
+				return fmt.Errorf("storing database version: %w", err)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return MigrateResult{Latest: ch.latest()}, err
+	}
+
+	return res, nil
+}
+
+// verifySchema checks, reading only, that db holds a v0.1 schema the binary
+// of chain ch can run with (ADR 0013 §4): ErrNotV01Database for a Headscale
+// or foreign database, ErrSchemaNeedsMigration for no schema or a missing
+// migration, ErrSchemaTooNew for a newer contract migration. exact reports
+// that the database has exactly ch's migrations, so the schema files
+// describe it.
+func verifySchema(db *gorm.DB, ch chain) (bool, error) {
+	fresh, err := checkV01Database(db)
+	if err != nil {
+		return false, fmt.Errorf("version check: %w", err)
+	}
+
+	if fresh {
+		return false, fmt.Errorf("%w: the database has no schema (this binary's latest migration: %s)",
+			ErrSchemaNeedsMigration, ch.latest())
+	}
+
+	recorded, err := recordedMigrations(db)
+	if err != nil {
+		return false, err
+	}
+
+	err = checkSchemaCompat(db, ch, recorded)
+	if err != nil {
+		return false, err
+	}
+
+	return len(unknownMigrations(recorded, ch)) == 0, nil
 }
 
 // recordedMigrations returns the IDs in the migrations table; none when the
@@ -163,16 +262,4 @@ func recordedMigrations(db *gorm.DB) (map[string]bool, error) {
 	}
 
 	return out, nil
-}
-
-// sortedKeys is for messages.
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-
-	slices.Sort(out)
-
-	return out
 }

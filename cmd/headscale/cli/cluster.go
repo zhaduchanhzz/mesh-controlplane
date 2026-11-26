@@ -78,7 +78,9 @@ func init() {
 	clusterRegisterCmd.Flags().StringVar(&clusterRegEndpoint, "endpoint", "", "endpoint URL (default: server_url)")
 
 	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetDNSCmd, tailnetAuthKeyCmd, tailnetAuthKeyRevokeCmd, tailnetNodesCmd, tailnetReassignCmd)
-	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, tailnetCmd)
+	clusterMigrateCmd.Flags().DurationVar(&clusterMigrateTimeout, "timeout", 10*time.Minute,
+		"how long to wait for another migrate run and to migrate")
+	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, clusterMigrateCmd, tailnetCmd)
 	rootCmd.AddCommand(clusterCmd)
 }
 
@@ -123,6 +125,32 @@ var clusterServeCmd = &cobra.Command{
 		}
 
 		return nil
+	},
+}
+
+// clusterMigrateTimeout is `cluster migrate --timeout`.
+var clusterMigrateTimeout time.Duration
+
+// clusterMigrateCmd is the operator step of ADR 0013: it creates the schema
+// of a fresh shared database or runs the pending migrations, under a lock
+// (two runs at once: one waits, then has nothing to do). `cluster serve`,
+// mesh-placement and the admin commands never migrate. Run it on a direct
+// connection to the primary where possible (ADR 0006 §4); it also works
+// through PgBouncer in transaction mode (one transaction). --cluster-id is
+// not needed.
+var clusterMigrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Create or migrate the shared database schema (operator step; cluster processes never migrate)",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		ctx, cancel := context.WithTimeout(cmd.Context(), clusterMigrateTimeout)
+		defer cancel()
+
+		res, err := db.Migrate(ctx, serverConfig())
+		if err != nil {
+			return fmt.Errorf("migrating the database: %w", err)
+		}
+
+		return printJSON(res)
 	},
 }
 
