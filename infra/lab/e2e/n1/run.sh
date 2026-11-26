@@ -45,9 +45,22 @@ URL2=https://$HOST2:8445
 POC_HEALTH=https://a.cp.gta5web.online:8443/health
 RELAY=10.77.40.30
 A1=10.77.20.11 A2=10.77.20.12 B1=10.77.30.11 B2=10.77.30.12
-BIN=${BIN:?BIN= linux/amd64 cluster binary}
-PROBE_BIN=${PROBE_BIN:?PROBE_BIN= linux/amd64 n1probe binary}
-BOOT_BIN=${BOOT_BIN:-} # linux/amd64 mesh-bootstrap (S13b); empty: S13b FAIL
+# CI_BINDIR=<dir on mc-ci holding headscale, n1probe, mesh-bootstrap built
+# there> instead of BIN/PROBE_BIN/BOOT_BIN: the lab hosts fetch the binaries
+# from mc-ci over the LAN (transient unit n1-binsrv: plain HTTP on mc-ci's LAN
+# address, binaries only, stopped after use) and check their sha256; only
+# n1probe comes to the laptop once, for the VPS (S13, S13b). The P12b runs
+# 20261126T041654Z and T042420Z failed copying 81 MB from the laptop.
+CI_BINDIR=${CI_BINDIR:-}
+BINPORT=${BINPORT:-18090}
+if [ -n "$CI_BINDIR" ]; then
+  [[ $CI_BINDIR =~ ^/[A-Za-z0-9/_.-]+$ ]] || { echo "CI_BINDIR: absolute path, [A-Za-z0-9/_.-] only" >&2; exit 2; }
+  BIN=- PROBE_BIN=- BOOT_BIN=-
+else
+  BIN=${BIN:?BIN= linux/amd64 cluster binary (or CI_BINDIR=)}
+  PROBE_BIN=${PROBE_BIN:?PROBE_BIN= linux/amd64 n1probe binary}
+  BOOT_BIN=${BOOT_BIN:-} # linux/amd64 mesh-bootstrap (S13b); empty: S13b FAIL
+fi
 KEEP=${KEEP:-0}
 TTL=10
 PY=${PY:-python}
@@ -87,6 +100,31 @@ cp_() { ssh_ "$CP_SSH" "$@"; }
 pg_() { ssh_ "$PG_SSH" "$@"; }
 sshof() { case $1 in cp) echo $CP_SSH;; c1b) echo $C1B_SSH;; c2) echo $C2_SSH;; c2b) echo $C2B_SSH;; esac; }
 on() { local n=$1; shift; ssh_ "$(sshof "$n")" "$@"; }
+# Binaries. binsha NAME (headscale, n1probe, mesh-bootstrap): its sha256, read
+# on mc-ci with CI_BINDIR (binsums), else from the local file.
+binlocal() { case $1 in headscale) echo "$BIN";; n1probe) echo "$PROBE_BIN";; mesh-bootstrap) echo "$BOOT_BIN";; esac; }
+binsums() {
+  ssh_ "$CI_SSH" "cd $CI_BINDIR && sha256sum headscale n1probe mesh-bootstrap" | tr -d '\r' >"$TMPD/binsha" || return 1
+  [ "$(awk 'length($1) == 64' "$TMPD/binsha" | wc -l)" = 3 ] || { log "CI_BINDIR: missing binaries"; return 1; }
+}
+binsha() {
+  if [ -n "$CI_BINDIR" ]; then awk -v n="$1" '$2 == n { print $1 }' "$TMPD/binsha"
+  else sha256sum "$(binlocal "$1")" | cut -d' ' -f1; fi
+}
+binsrv_start() {
+  [ -n "$CI_BINDIR" ] || return 0
+  ssh_ "$CI_SSH" "sudo systemctl stop n1-binsrv 2>/dev/null; sudo systemctl reset-failed n1-binsrv 2>/dev/null;     sudo systemd-run --quiet --collect --unit=n1-binsrv --uid=mesh --gid=mesh -p RuntimeMaxSec=900       python3 -m http.server $BINPORT --bind ${CI_SSH#*@} --directory $CI_BINDIR;     for i in \$(seq 1 20); do curl -fsS -o /dev/null -m 2 http://${CI_SSH#*@}:$BINPORT/ && exit 0; sleep 0.5; done; exit 1" || { log "n1-binsrv not answering"; return 1; }
+}
+binsrv_stop() { [ -z "$CI_BINDIR" ] || ssh_ "$CI_SSH" "sudo systemctl stop n1-binsrv 2>/dev/null; sudo systemctl reset-failed n1-binsrv 2>/dev/null; ! systemctl is-active -q n1-binsrv"; }
+# put NODE NAME DEST: DEST on NODE (cp, c1b, c2, c2b) becomes binary NAME,
+# sha256 checked on NODE; with CI_BINDIR NODE fetches it from mc-ci (LAN).
+put() {
+  local n=$1 name=$2 dst=$3 sum; sum=$(binsha "$2")
+  [ ${#sum} = 64 ] || return 1
+  if [ -n "$CI_BINDIR" ]; then on "$n" "curl -fsS --retry 3 -m 120 -o $dst http://${CI_SSH#*@}:$BINPORT/$name" || return 1
+  else scp -q "${SSHO[@]}" "$(binlocal "$name")" "$(sshof "$n"):$dst" || return 1; fi
+  on "$n" "echo '$sum  $dst' | sha256sum -c --quiet" || { log "$n: $name sha256 mismatch"; return 1; }
+}
 vm() { local ip=$1; shift; ssh "${SSHO[@]}" -o StrictHostKeyChecking=accept-new -o "$PX" "mesh@$ip" "$@"; }
 ipof() { case $1 in cp) echo 192.168.1.241;; c1b) echo 192.168.1.245;; c2) echo 192.168.1.244;; c2b) echo 192.168.1.246;; esac; }
 clusterof() { case $1 in cp|c1b) echo c1;; *) echo c2;; esac; }
@@ -170,6 +208,7 @@ cleanup() {
   [ "$KEEP" = 1 ] && { log "KEEP=1: leaving everything running"; return; }
   log "cleanup"
   local n ip
+  binsrv_stop || { log "n1-binsrv not stopped"; CLEAN_OK=0; }
   for ip in $A1 $A2 $B1 $B2; do
     vm "$ip" "sudo journalctl -u $TSU --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/ts-$ip.log" || true
     vm "$ip" "sudo nft delete table inet n1test 2>/dev/null; true" >/dev/null 2>&1
@@ -217,9 +256,17 @@ setup() {
   log "database $PG_DB"
   pg_ "sudo docker exec mc-pg createdb -U postgres -O headscale $PG_DB" || return 1
 
-  log "binary $HS on the four cluster hosts"
+  if [ -n "$CI_BINDIR" ]; then
+    binsums || return 1
+    # The VPS (S13, S13b) is outside the LAN: n1probe comes here once.
+    scp -q "${SSHO[@]}" "$CI_SSH:$CI_BINDIR/n1probe" "$TMPD/n1probe" || return 1
+    echo "$(binsha n1probe)  $TMPD/n1probe" | sha256sum -c --quiet || { log "n1probe sha256 mismatch"; return 1; }
+    PROBE_BIN=$TMPD/n1probe
+  fi
+  binsrv_start || return 1
+  log "binary $HS on the four cluster hosts${CI_BINDIR:+ (fetched from mc-ci $CI_BINDIR over the LAN)}"
   for n in cp c1b c2 c2b; do
-    scp -q "${SSHO[@]}" "$BIN" "$(sshof $n):/tmp/n1-hs" || return 1
+    put $n headscale /tmp/n1-hs || return 1
     on $n "sudo install -m 0755 /tmp/n1-hs $HS && rm -f /tmp/n1-hs" || return 1
   done
 
@@ -352,7 +399,10 @@ EOF
     sleep 2; systemctl is-active n1-derp-c1 n1-derp-c2" || return 1
 
   log "probe binary to mc-ci and the client VMs"
-  scp -q "${SSHO[@]}" "$PROBE_BIN" "$CI_SSH:/tmp/n1probe" || return 1
+  if [ -n "$CI_BINDIR" ]; then ssh_ "$CI_SSH" "cp $CI_BINDIR/n1probe /tmp/n1probe" || return 1
+  else scp -q "${SSHO[@]}" "$PROBE_BIN" "$CI_SSH:/tmp/n1probe" || return 1; fi
+  ssh_ "$CI_SSH" "echo '$(binsha n1probe)  /tmp/n1probe' | sha256sum -c --quiet" || { log "mc-ci: n1probe sha256 mismatch"; return 1; }
+  binsrv_stop || { log "n1-binsrv not stopped"; return 1; }
   for ip in $A1 $B1; do
     ssh_ $CI_SSH "cat /tmp/n1probe" | vm "$ip" "cat >/tmp/n1probe && chmod 0755 /tmp/n1probe" || return 1
   done
@@ -488,7 +538,8 @@ if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
   log "setup failed (see logs/setup.log)"; cleanup; exit 2
 fi
 { echo "client: $V"; echo "incremental_netmap: $MODE"; echo "commit: $SHA"; echo "database: $PG_DB"
-  echo "cluster binary: $(sha256sum "$BIN" | cut -c1-16)"; echo "n1probe: $(sha256sum "$PROBE_BIN" | cut -c1-16)"; } >>"$ART_DIR/env.txt"
+  if [ -n "$CI_BINDIR" ]; then echo "binaries: built on mc-ci in $CI_BINDIR, fetched over the LAN"; else echo "binaries: copied from the laptop"; fi
+  echo "cluster binary: $(binsha headscale | cut -c1-16)"; echo "n1probe: $(binsha n1probe | cut -c1-16)"; } >>"$ART_DIR/env.txt"
 t_e00
 t_s01
 t_s02
