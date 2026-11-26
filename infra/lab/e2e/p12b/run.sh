@@ -185,8 +185,6 @@ ts_json() { ci_ "timeout 15 docker exec $1 tailscale status --json" 2>/dev/null;
 field() { ts_json "$1" | py "import json; d=json.load(sys.stdin); print($2)" 2>/dev/null | strip_cr; }
 npeers() { field "$1" "len(d.get('Peer') or {})"; }
 selfip() { field "$1" "d['Self']['TailscaleIPs'][0]"; }
-state() { field "$1" "d['BackendState']"; }
-has_notice() { field "$1" "any('$NOTICE' in h for h in (d.get('Health') or []))"; }
 health_text() { field "$1" "' | '.join(d.get('Health') or [])"; }
 # snap NAME...: the status of many clients in one ssh round trip (one per
 # client takes ~0.7 s from the laptop: 24 clients would outlast LEAD).
@@ -212,7 +210,13 @@ save_logs() { ci_ "timeout 30 docker logs $1 2>&1" | redact >"$ART_DIR/logs/$1.t
 # Tailnets: OWNER_<slug> = c1|c2, ID_<slug>.
 owner() { eval "echo \$OWNER_$1"; }
 tid() { eval "echo \$ID_$1"; }
-node_count() { cli "$(owner "$1")" tailnet nodes --slug "$1" 2>/dev/null | py "import json; print(len(json.load(sys.stdin)))" | strip_cr; }
+# nodes_list SLUG: "<hostname> <node id> <ipv4> <short node key>" per node, by hostname (from its owner's DB view).
+nodes_list() {
+  cli "$(owner "$1")" tailnet nodes --slug "$1" 2>/dev/null | py 'import json
+for n in sorted(json.load(sys.stdin), key=lambda n: n["hostname"]):
+    print(n["hostname"], n["id"], n["ipv4"] or "-", n["node_key"])' | strip_cr
+  echo
+}
 
 # placement API over mTLS on mc-cp loopback: pl METHOD PATH [IDEMPOTENCY-KEY] [BODY]
 pl() {
@@ -480,7 +484,8 @@ t_round() {
   local want=$N; [ "$r" = 1 ] && want=$((N + $(wc -w <<<"$VM_TARGETS")))
   for i in $(seq 1 60); do [ "$(npeers "$a")" = $((want - 1)) ] && break; sleep 1; done
   [ "$(npeers "$a")" = $((want - 1)) ] || p="$p; $a sees $(npeers "$a") peers, want $((want - 1))"
-  [ "$(node_count "$s")" = "$want" ] || p="$p; nodes $(node_count "$s") want $want"
+  nodes_list "$s" >"$ART_DIR/logs/M01-$s-nodes-before.txt"
+  [ "$(wc -l <"$ART_DIR/logs/M01-$s-nodes-before.txt")" = "$want" ] || p="$p; nodes $(wc -l <"$ART_DIR/logs/M01-$s-nodes-before.txt") want $want"
   ping_ok "$a" "$b" || p="$p; $a cannot ping $b"
   snap "${names[@]}"; for c in "${names[@]}"; do echo "$c $(sget "$c" 3)"; done >"$TMPD/ips-before-$s"
   [ "$(scount 2 Running)" = "$N" ] || p="$p; Running $(scount 2 Running)/$N"
@@ -540,7 +545,7 @@ t_round() {
   [ -n "$rbrc" ] || ci_ "sudo systemctl stop p12b-rb-$s 2>/dev/null"
   ci_ "cat $CIDIR/rb-$s.json 2>/dev/null" | redact >"$ART_DIR/logs/rebootstrap-$s.json"
   ci_ "cat $CIDIR/rb-$s.log; rm -f $CIDIR/key-$s $CIDIR/rb-$s.* $CIDIR/targets-$s" | redact >"$ART_DIR/logs/rebootstrap-$s.log"
-  [ "$rbrc" = 0 ] || p="$p; mesh-rebootstrap rc=${rbrc:-none}"
+  # (mesh-rebootstrap's exit code is judged in M04, with the clients.)
 
   # M03 the move itself
   local m; m=$(pl GET "/v1/moves/$mid"); printf 'move %s %s\n' "$s" "$m" >>"$ART_DIR/logs/placement.log"
@@ -550,37 +555,66 @@ t_round() {
   eval "OWNER_$s=$to"
   [ "$(boot_url "$(boot_req "$TMPD/key-$s" "$s")")" = "$(urlof "$to")" ] || p="$p; bootstrap not at $to"
   local th tl
-  th=$(proc_log "$from" $(( $(date +%s) - since + 5 )) | grep "tailnet handed over" | grep -o '^[0-9T:.+-]*' | head -1)
+  th=$(proc_log "$from" $(( $(date +%s) - since + 5 )) | grep "tailnet handed over" | grep -F -- "$(tid "$s")" | grep -o '^[0-9T:.+-]*' | head -1)
   tl=$(proc_log "$to" $(( $(date +%s) - since + 5 )) | grep "loaded tailnet runtime.*slug=$s" | grep -o '^[0-9T:.+-]*' | head -1)
   [ -n "$th" ] && [ -n "$tl" ] && [[ "$th" < "$tl" ]] || p="$p; order handed-over=[$th] loaded=[$tl]"
   [ -z "$p" ] && record "M03.$r" PASS "$ver: requested $(jget "$m" "d.get('requested_at')"), $from handed over ($th) before $to loaded ($tl); epoch 2; move HANDED_OVER $(jget "$m" "d.get('finished_at')"); bootstrap -> $to" \
     || record "M03.$r" FAIL "$ver: ${p#; }"
 
-  # M04 clients at the target, same IPs; timings
+  # M04 clients at the target, same IPs and node IDs; timings
   p=""
   snap "${names[@]}"
+  # Owner decision (a), 2026-11-26: a client not Running after its re-login
+  # gets `tailscale debug restun` (client 1.84.3 kept the previous control's
+  # home DERP region when the new DERP map shared no region with it: N1 S05,
+  # "derpMap.Regions[901] is nil", stuck in Starting). Documented operational
+  # workaround, never silent: each one is a manual intervention, recorded in
+  # the result and timings.txt.
+  local stuck="" restunned=""
+  for c in "${names[@]}"; do [ "$(sget "$c" 2)" = Running ] || stuck="$stuck $c"; done
+  if [ -n "$stuck" ]; then
+    printf 'M04 %s %s: not Running after mesh-rebootstrap:%s [%s]; debug restun\n' "$s" "$ver" "$stuck" "$(grep -v ' Running ' "$TMPD/snap" | awk '{print $1"="$2}' | tr '\n' ' ')" >>"$ART_DIR/timings.txt"
+    for c in $stuck; do ci_ "timeout 15 docker exec $c tailscale debug restun" >/dev/null 2>&1; done
+    for i in $(seq 1 30); do snap "${names[@]}"; [ "$(scount 2 Running)" = "$N" ] && break; sleep 1; done
+    for c in $stuck; do [ "$(sget "$c" 2)" = Running ] && restunned="$restunned $c"; done
+    printf 'M04 %s %s: Running after debug restun:%s\n' "$s" "$ver" "${restunned:- none}" >>"$ART_DIR/timings.txt"
+  fi
+  local manual; manual=$(wc -w <<<"$stuck")
   local back; back=$(scount 2 Running)
-  [ "$back" = "$N" ] || p="$p; Running $back/$N"
+  [ "$back" = "$N" ] || p="$p; Running $back/$N${stuck:+ (after debug restun of$stuck)}"
+  # mesh-rebootstrap failed only for clients that the re-STUN brought back?
+  if [ "$rbrc" != 0 ]; then
+    local failed_t; failed_t=$(py 'import json
+d=json.load(open(sys.argv[1], encoding="utf-8")); print(" ".join(x["target"] for x in d.get("results") or [] if not x.get("ok")))' "$ART_DIR/logs/rebootstrap-$s.json" 2>/dev/null | strip_cr)
+    if [ -z "$failed_t" ]; then p="$p; mesh-rebootstrap rc=${rbrc:-none}"
+    else for c in $failed_t; do grep -qw -- "$c" <<<"$restunned" || p="$p; $c failed in mesh-rebootstrap (rc=${rbrc:-none})"; done; fi
+  fi
   for c in "${names[@]}"; do echo "$c $(sget "$c" 3)"; done >"$TMPD/ips-after-$s"
   cmp -s "$TMPD/ips-before-$s" "$TMPD/ips-after-$s" || p="$p; IPs changed: $(diff "$TMPD/ips-before-$s" "$TMPD/ips-after-$s" | grep -c '^>')"
   for i in $(seq 1 60); do [ "$(npeers "$a")" = $((want - 1)) ] && break; sleep 1; done
   [ "$(npeers "$a")" = $((want - 1)) ] || p="$p; $a sees $(npeers "$a") peers at $to"
-  [ "$(node_count "$s")" = "$want" ] || p="$p; nodes at $to $(node_count "$s") want $want (old nodes kept, Q4)"
+  # Node list after (Q4: nodes kept; same node ID and IP per hostname; the
+  # short node key is recorded, a re-login may rotate it).
+  nodes_list "$s" >"$ART_DIR/logs/M04-$s-nodes-after.txt"
+  [ "$(wc -l <"$ART_DIR/logs/M04-$s-nodes-after.txt")" = "$want" ] || p="$p; nodes at $to $(wc -l <"$ART_DIR/logs/M04-$s-nodes-after.txt") want $want (old nodes kept, Q4)"
+  cut -d' ' -f1-3 "$ART_DIR/logs/M01-$s-nodes-before.txt" >"$TMPD/nb"; cut -d' ' -f1-3 "$ART_DIR/logs/M04-$s-nodes-after.txt" >"$TMPD/na"
+  cmp -s "$TMPD/nb" "$TMPD/na" || p="$p; node id/IP per hostname changed: $(diff "$TMPD/nb" "$TMPD/na" | grep '^>' | head -3 | tr '\n' ' ')"
   ping_ok "$a" "$b" || p="$p; $a cannot ping $b at $to"
   snap "$a"; [ "$(sget "$a" 4)" = False ] || p="$p; notice still shown at $to"
   for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_state "$vmt" | grep -q '^Running ' || p="$p; VM $vmt [$(vm_state "$vmt")]"; done
   stop_pinger "$a" >"$ART_DIR/logs/M04-$s-ping.txt"
   local gap; gap=$(ping_gap "$ART_DIR/logs/M04-$s-ping.txt")
-  local tt; tt=$(py 'import json,sys,datetime
-d=json.load(open(sys.argv[1])); at=datetime.datetime.fromisoformat(sys.argv[2].replace("Z","+00:00"))
-st=datetime.datetime.fromisoformat(d["started_at"].replace("Z","+00:00")[:26]+"+00:00") if "." in d["started_at"] else datetime.datetime.fromisoformat(d["started_at"].replace("Z","+00:00"))
+  local tt; tt=$(py 'import json,sys,datetime,re
+iso=lambda v: datetime.datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", v).replace("Z", "+00:00"))
+d=json.load(open(sys.argv[1], encoding="utf-8")); at=iso(sys.argv[2]); st=iso(d["started_at"])
 off=int((st-at).total_seconds()*1000)
 f=lambda v: v if v<0 else v+off
 print("ok=%d failed=%d t50=%d t90=%d t100=%d ms (from run start); from scheduled_at: t50=%d t90=%d t100=%d ms" % (d["ok"],d["failed"],d["t50_ms"],d["t90_ms"],d["t100_ms"],f(d["t50_ms"]),f(d["t90_ms"]),f(d["t100_ms"])))' \
     "$ART_DIR/logs/rebootstrap-$s.json" "$at" 2>/dev/null | strip_cr)
-  printf 'M04 %s %s N=%d PAR=%d: %s; ping gap %s ms (failed/samples %s)\n' "$s" "$ver" "$N" "$PAR" "$tt" "${gap%% *}" "${gap#* }" >>"$ART_DIR/timings.txt"
-  [ -z "$p" ] && record "M04.$r" PASS "$ver: $N clients re-bootstrapped $PAR at a time: $tt; all Running at $to, same IPs (nodes kept), $a sees $((want - 1)) peers, notice gone; ping gap ${gap%% *} ms" \
-    || record "M04.$r" FAIL "$ver: ${p#; }; $tt; gap ${gap%% *} ms"
+  printf 'M04 %s %s N=%d PAR=%d: %s; ping gap %s ms (failed/samples %s); manual interventions %d%s\n' \
+    "$s" "$ver" "$N" "$PAR" "$tt" "${gap%% *}" "${gap#* }" "$manual" "${stuck:+ (debug restun:$stuck)}" >>"$ART_DIR/timings.txt"
+  [ -z "$p" ] && record "M04.$r" PASS "$ver: $N clients re-bootstrapped $PAR at a time: $tt; all Running at $to, same node IDs and IPs (nodes kept), $a sees $((want - 1)) peers, notice gone; ping gap ${gap%% *} ms; manual interventions $manual${stuck:+ (owner decision (a): debug restun of$stuck)}" \
+    || record "M04.$r" FAIL "$ver: ${p#; }; $tt; gap ${gap%% *} ms; manual interventions $manual"
 
   # M05 control tailnet untouched
   p=""
