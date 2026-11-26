@@ -45,6 +45,16 @@
 # Thresholds: none yet (owner Q7: fixed after the first measurement); the
 # measurements are recorded, PASS/FAIL covers correctness only.
 # Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
+#
+# Operating rules (lessons of the N1 and P12 runs):
+# - Never edit this file while a run is in progress: bash reads a running
+#   script incrementally, an edit changes what the run executes. Edit a copy
+#   and swap it in after the run.
+# - Start it in the foreground of a background task (not with `&` inside
+#   one): an orphaned run keeps going and its cleanup breaks later runs.
+# - Every ssh carries keepalives and every long remote command a `timeout`;
+#   jobs that must outlive one ssh session run on the remote host as
+#   transient systemd units (jobs.sh) and cleanup stops them first.
 # shellcheck disable=SC2029
 set -u -o pipefail
 
@@ -100,8 +110,8 @@ PLDIR=/run/p12b-placement
 CIDIR=/dev/shm/p12b
 VMUNIT=p12b-ts
 VMSOCK=/run/p12b-ts/tailscaled.sock
-CLI1="sudo -u headscale $HS -c $CFG cluster --cluster-id $C1_ID"
-CLI2="sudo -u headscale $HS -c $CFG cluster --cluster-id $C2_ID"
+CLI1="sudo -u headscale timeout 60 $HS -c $CFG cluster --cluster-id $C1_ID"
+CLI2="sudo -u headscale timeout 60 $HS -c $CFG cluster --cluster-id $C2_ID"
 
 [ -z "$VM_TARGETS" ] || [ -n "$RB_LOCAL_BIN" ] || { echo "VM_TARGETS needs RB_LOCAL_BIN" >&2; exit 2; }
 [[ $N =~ ^[0-9]+$ ]] && [ "$N" -ge 2 ] && [[ $PAR =~ ^[0-9]+$ ]] && [ "$PAR" -ge 1 ] || { echo "bad N/PAR" >&2; exit 2; }
@@ -113,7 +123,12 @@ redact() {
     -e 's/((mkey|nodekey|discokey|nlpub|privkey):)([0-9a-f]{8})[0-9a-f]{56}/\1\3…/g'
 }
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$ART_DIR/run.log" >&2; }
-ssh_() { local h=$1; shift; ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 "$h" "$@"; }
+# Keepalives: the laptop reaches the lab through a Tailscale subnet route; a
+# dropped session must fail within a minute, not hang the run (P12 at de8a562
+# hung 2 h 48 min on a reset ssh to mc-ci).
+SSHO=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+ssh_() { local h=$1; shift; ssh "${SSHO[@]}" "$h" "$@"; }
+scp_() { scp -q "${SSHO[@]}" "$@"; }
 cp_() { ssh_ "$CP_SSH" "$@"; }
 ci_() { ssh_ "$CI_SSH" "$@"; }
 pg_() { ssh_ "$PG_SSH" "$@"; }
@@ -161,15 +176,15 @@ ts_up() { # NAME URL KEYFILE [EXTRA]
     <"$3" 2>&1 | redact >>"$ART_DIR/logs/$1.cli.log"
   return "${PIPESTATUS[0]}"
 }
-ts_json() { ci_ "docker exec $1 tailscale status --json" 2>/dev/null; }
+ts_json() { ci_ "timeout 15 docker exec $1 tailscale status --json" 2>/dev/null; }
 field() { ts_json "$1" | py "import json; d=json.load(sys.stdin); print($2)" 2>/dev/null | strip_cr; }
 npeers() { field "$1" "len(d.get('Peer') or {})"; }
 selfip() { field "$1" "d['Self']['TailscaleIPs'][0]"; }
 state() { field "$1" "d['BackendState']"; }
 has_notice() { field "$1" "any('$NOTICE' in h for h in (d.get('Health') or []))"; }
 health_text() { field "$1" "' | '.join(d.get('Health') or [])"; }
-ping_ok() { ci_ "docker exec $1 tailscale ping -c 3 --timeout 5s $2" >>"$ART_DIR/logs/$1-ping.log" 2>&1; }
-save_logs() { ci_ "docker logs $1 2>&1" | redact >"$ART_DIR/logs/$1.tailscaled.log" 2>/dev/null || true; }
+ping_ok() { ci_ "timeout 30 docker exec $1 tailscale ping -c 3 --timeout 5s $2" >>"$ART_DIR/logs/$1-ping.log" 2>&1; }
+save_logs() { ci_ "timeout 30 docker logs $1 2>&1" | redact >"$ART_DIR/logs/$1.tailscaled.log" 2>/dev/null || true; }
 
 # Tailnets: OWNER_<slug> = c1|c2, ID_<slug>.
 owner() { eval "echo \$OWNER_$1"; }
@@ -283,7 +298,7 @@ cleanup() {
   [ "$q" = 200 ] && log "long-lived c2 /ready 200 on meshlab" || { log "long-lived c2 /ready $q"; CLEAN_OK=0; }
   rm -rf "$TMPD"
 }
-trap 'cleanup; exit 2' INT TERM
+trap 'cleanup; exit 2' INT TERM HUP
 
 # ------------------------------------------------------------------ setup ---
 setup() {
@@ -296,7 +311,7 @@ setup() {
 
   log "binary $HS on mc-cp and mc-c2"
   for n in cp c2; do
-    scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$BIN" "$(sshof $n):/tmp/p12b-hs" || return 1
+    scp_ "$BIN" "$(sshof $n):/tmp/p12b-hs" || return 1
     on $n "sudo install -m 0755 /tmp/p12b-hs $HS && rm -f /tmp/p12b-hs" || return 1
   done
 
@@ -339,7 +354,7 @@ EOF
   cp_ "sudo systemctl reset-failed mesh-c1-ha 2>/dev/null; sudo systemd-run --quiet --unit=mesh-c1-ha /usr/sbin/haproxy -Ws -f /etc/haproxy/mesh-c1-p12b.cfg" || return 1
 
   log "mesh-placement on mc-cp loopback (throwaway CA under $PLDIR, scheduler every 2 s)"
-  scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$PLBIN" "$CP_SSH:/tmp/p12b-pl" || return 1
+  scp_ "$PLBIN" "$CP_SSH:/tmp/p12b-pl" || return 1
   cp_ "set -e; sudo install -m 0755 /tmp/p12b-pl /usr/local/bin/mesh-placement-p12b; rm -f /tmp/p12b-pl
     sudo install -d -o root -g headscale -m 0751 $PLDIR; cd $PLDIR
     sudo openssl ecparam -name prime256v1 -genkey -noout -out ca.key 2>/dev/null
@@ -370,7 +385,7 @@ EOF
   wait_public_ready c1 40 && wait_public_ready c2 40 || { log "public /ready (c1=$(public_ready c1) c2=$(public_ready c2))"; return 1; }
 
   log "bootstrap on mc-cp ($BOOT_URL)"
-  scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$BOOT_BIN" "$CP_SSH:/tmp/p12b-boot" || return 1
+  scp_ "$BOOT_BIN" "$CP_SSH:/tmp/p12b-boot" || return 1
   cp_ "set -e; sudo install -m 0755 /tmp/p12b-boot /usr/local/bin/mesh-bootstrap-p12b; rm -f /tmp/p12b-boot
     sudo systemctl reset-failed $BOOTUNIT 2>/dev/null || true
     sudo systemd-run --quiet --unit=$BOOTUNIT --uid=headscale --gid=headscale \
@@ -381,7 +396,7 @@ EOF
 
   log "mesh-rebootstrap and images on mc-ci"
   ci_ "rm -rf $CIDIR; install -d -m 0700 $CIDIR" || return 1
-  scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$RB_BIN" "$CI_SSH:$CIDIR/mesh-rebootstrap" || return 1
+  scp_ "$RB_BIN" "$CI_SSH:$CIDIR/mesh-rebootstrap" || return 1
   ci_ "chmod 0700 $CIDIR/mesh-rebootstrap" || return 1
   local img; for img in $IMAGES; do ci_ "docker image inspect $img >/dev/null 2>&1 || docker pull -q $img >/dev/null" || return 1; done
 }
