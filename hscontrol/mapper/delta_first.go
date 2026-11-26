@@ -61,8 +61,20 @@ func hashJSON(v any) (uint64, bool) {
 }
 
 // hashPeer hashes a peer entry without its presence fields (Online,
-// LastSeen), see the safety rules above.
+// LastSeen), see the safety rules above. A shared entry's hash is computed
+// once, when it is stored (P14f F4).
 func hashPeer(p *tailcfg.Node) (uint64, bool) {
+	if v, ok := sharedPeerHashes.Load(p); ok {
+		h, _ := v.(uint64)
+
+		return h, true
+	}
+
+	return hashPeerUncached(p)
+}
+
+// hashPeerUncached is [hashPeer] without the shared-entry memo.
+func hashPeerUncached(p *tailcfg.Node) (uint64, bool) {
 	c := *p
 	c.Online = nil
 	c.LastSeen = nil

@@ -684,6 +684,10 @@ func (s *NodeStore) applyBatch(batch []work) {
 	nodeSetOnly := true
 	touched := make(map[types.NodeID]bool)
 
+	// written is every node this batch may have changed; the others keep
+	// their view in the new snapshot (P14f F4).
+	written := make(map[types.NodeID]struct{})
+
 	var joined, removed []types.NodeID
 
 	reconcile := false
@@ -696,6 +700,7 @@ func (s *NodeStore) applyBatch(batch []work) {
 			n.GivenName = resolveGivenName(nodes, n.ID, n.GivenName, s.reservedLabel)
 
 			nodes[w.nodeID] = n
+			written[w.nodeID] = struct{}{}
 
 			if _, existed := prev.nodesByID[w.nodeID]; existed || touched[w.nodeID] {
 				nodeSetOnly = false
@@ -725,6 +730,7 @@ func (s *NodeStore) applyBatch(batch []work) {
 				}
 
 				nodes[id] = n
+				written[id] = struct{}{}
 
 				if w.pre != nil {
 					w.pre[id] = pre.View()
@@ -740,6 +746,7 @@ func (s *NodeStore) applyBatch(batch []work) {
 			}
 		case del:
 			delete(nodes, w.nodeID)
+			written[w.nodeID] = struct{}{}
 
 			if w.peers != nil {
 				*w.peers = slices.Clone(prev.peersByNode[w.nodeID])
@@ -777,6 +784,7 @@ func (s *NodeStore) applyBatch(batch []work) {
 
 			n.GivenName = w.name
 			nodes[w.nodeID] = n
+			written[w.nodeID] = struct{}{}
 			nodeSetOnly = false
 			relationChanged = true
 			electionChanged = true
@@ -807,7 +815,7 @@ func (s *NodeStore) applyBatch(batch []work) {
 		}
 	}
 
-	newSnap := snapshotFromNodesWith(nodes, build, prev, !relationChanged, !electionChanged)
+	newSnap := snapshotFromNodesWith(nodes, build, prev, !relationChanged, !electionChanged, written)
 
 	var reconciled ReconcileResult
 	if reconcile {
@@ -941,7 +949,7 @@ func snapshotFromNodes(
 	prev *Snapshot,
 	reusePeers, reuseRoutes bool,
 ) Snapshot {
-	return snapshotFromNodesWith(nodes, legacyBuild(peersFunc), prev, reusePeers, reuseRoutes)
+	return snapshotFromNodesWith(nodes, legacyBuild(peersFunc), prev, reusePeers, reuseRoutes, nil)
 }
 
 // peerBuilder builds adjacency for a snapshot's nodes and returns the rules
@@ -956,11 +964,17 @@ func legacyBuild(peersFunc PeersFunc) peerBuilder {
 }
 
 // snapshotFromNodesWith is [snapshotFromNodes] with the adjacency from build.
+//
+// With written non-nil (the IDs the batch wrote), a node not in written keeps
+// prev's view: its value is unchanged, and the same view across snapshots
+// lets readers tell an unchanged node by identity ([types.NodeView.SameNode],
+// P14f F4). nil written gives every node a new view.
 func snapshotFromNodesWith(
 	nodes map[types.NodeID]types.Node,
 	build peerBuilder,
 	prev *Snapshot,
 	reusePeers, reuseRoutes bool,
+	written map[types.NodeID]struct{},
 ) Snapshot {
 	timer := prometheus.NewTimer(nodeStoreSnapshotBuildDuration)
 	defer timer.ObserveDuration()
@@ -970,6 +984,15 @@ func snapshotFromNodesWith(
 
 	for _, n := range nodes {
 		nv := n.View()
+
+		if written != nil && prev != nil {
+			if _, w := written[n.ID]; !w {
+				if pv, ok := prev.nodeViewsByID[n.ID]; ok {
+					nv = pv
+				}
+			}
+		}
+
 		allNodes = append(allNodes, nv)
 		nodeViewsByID[n.ID] = nv
 	}
