@@ -147,10 +147,12 @@ func spendConfigWrite(b Backend) error {
 	return nil
 }
 
-// tenantPolicyLimit is tuning.tenant_api.max_policy_bytes (cluster mode).
+// tenantPolicyLimit is tuning.tenant_api.max_policy_bytes (cluster mode);
+// its default without a config (operations registered for the spec or the
+// endpoint inventory).
 func tenantPolicyLimit(b Backend) int {
-	if n := b.Cfg.Tuning.TenantAPI.MaxPolicyBytes; n > 0 {
-		return n
+	if b.Cfg != nil && b.Cfg.Tuning.TenantAPI.MaxPolicyBytes > 0 {
+		return b.Cfg.Tuning.TenantAPI.MaxPolicyBytes
 	}
 
 	return types.MaxTenantPolicyBytes
