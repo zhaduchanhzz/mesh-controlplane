@@ -54,8 +54,11 @@
 #        binaries only, stopped after setup) and check their sha256; nothing
 #        large crosses the laptop's route (runs 20261126T041654Z and
 #        T042420Z failed copying 81 MB from the laptop over Tailscale).
-# Thresholds: none yet (owner Q7: fixed after the first measurement); the
-# measurements are recorded, PASS/FAIL covers correctness only.
+# Thresholds (owner decision Q7, 2026-11-26, after the first clean run
+# 20261126T045654Z: t100 6.1 s / 0.4 s, ping gap 5.1-5.2 s, manual 0): M04
+# FAILs when mesh-rebootstrap's t100 for the N containers exceeds T100_MAX_MS
+# (15000), the ping gap exceeds GAP_MAX_MS (10000) or more than MANUAL_MAX (0)
+# manual interventions were needed.
 # Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
 #
 # Operating rules (lessons of the N1 and P12 runs):
@@ -92,6 +95,9 @@ IMAGES=${IMAGES:-tailscale/tailscale:v1.104.7 tailscale/tailscale:v1.84.3}
 N=${N:-24}
 PAR=${PAR:-8}
 LEAD=${LEAD:-60}
+T100_MAX_MS=${T100_MAX_MS:-15000}
+GAP_MAX_MS=${GAP_MAX_MS:-10000}
+MANUAL_MAX=${MANUAL_MAX:-0}
 VM_TARGETS=${VM_TARGETS:-}
 CI_BINDIR=${CI_BINDIR:-}
 CI_LAN=${CI_SSH#*@}
@@ -722,6 +728,11 @@ d=json.load(open(sys.argv[1], encoding="utf-8")); print(" ".join(x["target"] for
   stop_pinger "$s" >"$ART_DIR/logs/M04-$s-ping.txt"
   local gap; gap=$(ping_gap "$ART_DIR/logs/M04-$s-ping.txt")
   case "${gap#* }" in */0) p="$p; pinger recorded no samples";; esac
+  # Q7 thresholds (owner decision 2026-11-26).
+  local t100; t100=$(py 'import json; print(json.load(open(sys.argv[1], encoding="utf-8"))["t100_ms"])' "$ART_DIR/logs/rebootstrap-$s.json" 2>/dev/null | strip_cr)
+  { [[ $t100 =~ ^[0-9]+$ ]] && [ "$t100" -le "$T100_MAX_MS" ]; } || p="$p; Q7: t100 ${t100:-?} ms > $T100_MAX_MS ms"
+  { [[ ${gap%% *} =~ ^[0-9]+$ ]] && [ "${gap%% *}" -le "$GAP_MAX_MS" ]; } || p="$p; Q7: ping gap ${gap%% *} ms > $GAP_MAX_MS ms"
+  [ "$manual" -le "$MANUAL_MAX" ] || p="$p; Q7: manual interventions $manual > $MANUAL_MAX"
   local tt; tt=$(py 'import json,sys,datetime,re
 iso=lambda v: datetime.datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", v).replace("Z", "+00:00"))
 d=json.load(open(sys.argv[1], encoding="utf-8")); at=iso(sys.argv[2]); st=iso(d["started_at"])
@@ -778,7 +789,7 @@ log "P12b E2E $RUN_ID at $SHA: c1 $URL1, c2 $URL2, images [$IMAGES], N=$N PAR=$P
 if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
   log "setup failed (see logs/setup.log)"; cleanup; exit 2
 fi
-{ echo "images: $IMAGES"; echo "client VMs: ${VM_TARGETS:-none} (tailscale $VMVER, round 1)"; echo "commit: $SHA"; echo "database: $PG_DB (mc-db via PgBouncer $PG_LISTEN)"; echo "N=$N PAR=$PAR LEAD=$LEAD"
+{ echo "images: $IMAGES"; echo "client VMs: ${VM_TARGETS:-none} (tailscale $VMVER, round 1)"; echo "commit: $SHA"; echo "database: $PG_DB (mc-db via PgBouncer $PG_LISTEN)"; echo "N=$N PAR=$PAR LEAD=$LEAD"; echo "Q7 thresholds: t100<=${T100_MAX_MS} ms, ping gap<=${GAP_MAX_MS} ms, manual interventions<=${MANUAL_MAX}"
   if [ -n "$CI_BINDIR" ]; then echo "binaries: built on mc-ci in $CI_BINDIR, fetched over the LAN"; else echo "binaries: copied from the laptop"; fi
   echo "cluster binary: $(binsha headscale | cut -c1-16)"; echo "mesh-placement: $(binsha mesh-placement | cut -c1-16)"
   echo "mesh-bootstrap: $(binsha mesh-bootstrap | cut -c1-16)"; echo "mesh-rebootstrap: $(binsha mesh-rebootstrap | cut -c1-16)"; } >>"$ART_DIR/env.txt"
