@@ -98,7 +98,11 @@ tailnet_updates() { # ACTIVE_NODE TAILNET_ID
 t_s12() {
   local p="" act tb u0 u1 i
   act=$(active_of c1); tb=$(cat "$TMPD/id-b" 2>/dev/null)
-  u0=$(tailnet_updates "$act" "$tb")
+  # Baseline only once B is quiet: B's own late events (b2 back online after
+  # S10, endpoint updates) must not be counted against A (run at 3ad5743).
+  local prev=-1; u0=$(tailnet_updates "$act" "$tb")
+  for i in $(seq 1 10); do [ "$u0" = "$prev" ] && break; prev=$u0; sleep 4; u0=$(tailnet_updates "$act" "$tb"); done
+  printf 'S12 B baseline %s after %d reads\n' "$u0" "$i" >>"$ART_DIR/timings.txt"
   for i in 1 2 3; do
     TS $A2 "set --advertise-routes=10.98.$i.0/24" >/dev/null 2>&1; sleep 1
     TS $A2 down >/dev/null 2>&1; sleep 1; TS $A2 up >/dev/null 2>&1; sleep 2

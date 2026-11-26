@@ -17,9 +17,10 @@
 # Batch 1 cases: E00 environment (relay, verify secret, underlay isolation),
 # S01, S02, S03, S11 (n1probe switch-tenant), S15 (relay region, relay path,
 # unknown key refused by derp-check). Batch 2 (cases2.sh): S07, S08, S10,
-# S12, S14, S16, S17, S18, M06. Batch 3 (cases3.sh): S04, S05, S06, S09, S13.
+# S12, S14, S16, S17, S18, M06. Batch 3 (cases3.sh): S04, S05, S06, S09, S13,
+# S13b (bootstrap flood; needs BOOT_BIN).
 #
-# Usage: MODE=off|on V=1.104.7|1.84.3 BIN=… PROBE_BIN=… infra/lab/e2e/n1/run.sh
+# Usage: MODE=off|on V=1.104.7|1.84.3 BIN=… PROBE_BIN=… BOOT_BIN=… infra/lab/e2e/n1/run.sh
 # Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
 # shellcheck disable=SC2029
 set -u -o pipefail
@@ -46,6 +47,7 @@ RELAY=10.77.40.30
 A1=10.77.20.11 A2=10.77.20.12 B1=10.77.30.11 B2=10.77.30.12
 BIN=${BIN:?BIN= linux/amd64 cluster binary}
 PROBE_BIN=${PROBE_BIN:?PROBE_BIN= linux/amd64 n1probe binary}
+BOOT_BIN=${BOOT_BIN:-} # linux/amd64 mesh-bootstrap (S13b); empty: S13b FAIL
 KEEP=${KEEP:-0}
 TTL=10
 PY=${PY:-python}
@@ -174,6 +176,8 @@ cleanup() {
     ts_stop "$ip" >/dev/null 2>&1 || { log "$ip tailscaled not stopped"; CLEAN_OK=0; }
   done
   vps "rm -f /tmp/n1s13-$RUN_ID-*" >/dev/null 2>&1 || true
+  cp_ "sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null; sudo systemctl reset-failed mesh-bootstrap-e2e 2>/dev/null; sudo rm -f /usr/local/bin/mesh-bootstrap; true" >/dev/null 2>&1
+  ssh_ $CI_SSH "rm -f /tmp/n1-s13b-kb" >/dev/null 2>&1 || true
   relay "sudo journalctl -u n1-derp-c1 -u n1-derp-c2 --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/derper.log" || true
   relay "for u in n1-derp-c1 n1-derp-c2; do sudo systemctl stop \$u 2>/dev/null; sudo systemctl reset-failed \$u 2>/dev/null; done; \
     sudo rm -rf /run/n1-derp; ! sudo test -e /run/n1-derp" || { log "relay not cleaned"; CLEAN_OK=0; }
@@ -429,7 +433,10 @@ t_s03() {
 t_s11() {
   local p="" out rc=0
   ssh_ $CI_SSH "umask 077; cat >/tmp/n1-ka" <"$TMPD/key-a" && ssh_ $CI_SSH "umask 077; cat >/tmp/n1-kb" <"$TMPD/key-b" || { record S11 FAIL "keys"; return; }
-  out=$(ssh_ $CI_SSH "/tmp/n1probe switch-tenant --url $URL1 --key-a /tmp/n1-ka --key-b /tmp/n1-kb; echo rc=\$?; rm -f /tmp/n1-ka /tmp/n1-kb" 2>&1)
+  out=$(ssh_ $CI_SSH "timeout 300 /tmp/n1probe switch-tenant --url $URL1 --key-a /tmp/n1-ka --key-b /tmp/n1-kb; echo rc=\$?; rm -f /tmp/n1-ka /tmp/n1-kb" 2>&1)
+  # A dropped SSH session leaves the probe running and registering (run at
+  # 3ad5743): stop it before its nodes are deleted.
+  ssh_ $CI_SSH "pkill -f 'n1probe switch-tenant'; rm -f /tmp/n1-ka /tmp/n1-kb; true" >/dev/null 2>&1
   printf '%s\n' "$out" | redact >"$ART_DIR/logs/S11-switch-tenant.jsonl"
   rc=$(grep -o 'rc=[0-9]*' <<<"$out" | tail -1 | cut -d= -f2)
   local n; n=$(grep -c '"pass":true' <<<"$out")
@@ -503,6 +510,7 @@ t_s17 c2 "${F02_ROUNDS:-3}"
 t_s16 S16 c1
 t_s18
 t_s13
+t_s13b
 for n in cp c1b c2 c2b; do on $n "sudo journalctl -u $UNIT --since -$(( $(date +%s) - T0 + 5 ))s --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/$n-process.log"; done
 hits=$(grep -rlE 'hskey-(auth|api)-[A-Za-z0-9]{6,}|privkey:[0-9a-f]{64}|nodekey:[0-9a-f]{64}|mkey:[0-9a-f]{64}|BEGIN [A-Z ]*PRIVATE KEY|secret=[A-Za-z0-9]{20,}' "$ART_DIR" 2>/dev/null | grep -v results.tsv)
 [ -z "$hits" ] && record S99 PASS "no auth key, private key, full key or verify secret in the artifacts" || record S99 FAIL "unredacted in: $hits"

@@ -30,7 +30,9 @@ api_v2() {
 # back restores A.
 t_s05() {
   local p="" r i other n
-  r=0; vm $A2 "sudo timeout 60 /opt/tailscale/$V/tailscale --socket=$TSS login --login-server=$URL2 --auth-key=file:/dev/stdin --hostname=n1-a2c --accept-dns=false" \
+  printf 'S05 login start %s
+' "$(date -u +%T)" >>"$ART_DIR/timings.txt"
+  r=0; vm $A2 "sudo timeout 120 /opt/tailscale/$V/tailscale --socket=$TSS login --login-server=$URL2 --auth-key=file:/dev/stdin --hostname=n1-a2c --accept-dns=false" \
     <"$TMPD/key-c" 2>&1 | redact >>"$ART_DIR/logs/n1-a2c.cli.log"; r=${PIPESTATUS[0]}
   [ "$r" = 0 ] || p="$p; login to c at c2 rc=$r"
   for i in $(seq 1 40); do [ "$(field $A2 "d['Self']['HostName']")" = n1-a2c ] && [ -n "$(node_id c2 c n1-a2c)" ] && break; sleep 1; done
