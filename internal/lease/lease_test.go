@@ -480,3 +480,117 @@ func TestManagerStartFailureReleases(t *testing.T) {
 		t.Fatal("still active after start failure")
 	}
 }
+
+// TestManagerRenewsDuringSlowOnAcquire (P12c B3): loading the tailnets
+// (onAcquire) may take longer than TTL - SafetyMargin (many tailnets, a slow
+// database, runtimes still draining). The lease is renewed from the moment
+// it is taken, so it is still held when onAcquire returns: no self-fence, no
+// release, no new epoch.
+func TestManagerRenewsDuringSlowOnAcquire(t *testing.T) {
+	s := openStore(t)
+
+	m, err := newManager(s, "c1", "a", fast)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := t.Context()
+
+	slow := 2 * fast.TTL // well past the self-fence deadline of the first acquire
+
+	started := make(chan struct{})
+	loaded := make(chan struct{})
+	lost := make(chan string, 4)
+
+	go m.Run(ctx, func(context.Context, Lease) error {
+		close(started)
+		time.Sleep(slow) //nolint:forbidigo // a slow load: elapsed time is the subject
+		close(loaded)
+
+		return nil
+	}, func(_ Lease, reason string) { lost <- reason })
+
+	<-started
+
+	// While loading, the process is active as long as the renewals succeed.
+	time.Sleep(fast.TTL) //nolint:forbidigo // past the first deadline
+	if _, ok := m.Current(); !ok {
+		t.Error("lease reported lost while onAcquire was still loading and renewals succeed")
+	}
+
+	<-loaded
+
+	select {
+	case reason := <-lost:
+		t.Fatalf("lease ended after a slow onAcquire: %s", reason)
+	case <-time.After(2 * fast.TTL):
+	}
+
+	l, ok := m.Current()
+	if !ok || l.Epoch != 1 {
+		t.Fatalf("Current after a slow onAcquire: %+v ok=%v, want epoch 1 still held", l, ok)
+	}
+
+	row, _, _ := s.Get(context.Background(), "c1")
+	if row.Holder != "a" || row.Epoch != 1 || row.Expired {
+		t.Fatalf("lease row %+v, want holder a, epoch 1, live", row)
+	}
+}
+
+// TestManagerSelfFencesDuringSlowOnAcquire (P12c B3): renewing during
+// onAcquire must not let a process whose renewals fail serve past its
+// deadline: Current reports false at the deadline although onAcquire is
+// still running, and onLose follows once onAcquire returned.
+func TestManagerSelfFencesDuringSlowOnAcquire(t *testing.T) {
+	s := openStore(t)
+
+	m, err := newManager(stuckStore{s}, "c1", "a", fast)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := t.Context()
+
+	acquired := make(chan time.Time, 1)
+	release := make(chan struct{})
+	returned := make(chan time.Time, 1)
+	lost := make(chan time.Time, 1)
+
+	go m.Run(ctx, func(context.Context, Lease) error {
+		acquired <- time.Now()
+		<-release
+		returned <- time.Now()
+
+		return nil
+	}, func(Lease, string) { lost <- time.Now() })
+
+	t0 := <-acquired
+
+	deadline := fast.TTL - fast.SafetyMargin
+	for time.Since(t0) < deadline+300*time.Millisecond {
+		time.Sleep(20 * time.Millisecond) //nolint:forbidigo // polling Current
+	}
+
+	if _, ok := m.Current(); ok {
+		t.Fatal("Current still reports the lease past the self-fence deadline")
+	}
+
+	select {
+	case <-lost:
+		t.Fatal("onLose called while onAcquire was still running")
+	default:
+	}
+
+	close(release)
+
+	r := <-returned
+
+	select {
+	case at := <-lost:
+		if at.Before(r) {
+			t.Fatal("onLose ran before onAcquire returned")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no onLose after onAcquire returned past the deadline")
+	}
+}
