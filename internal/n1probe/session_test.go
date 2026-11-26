@@ -77,9 +77,12 @@ func TestURLPortDefaults(t *testing.T) {
 // counts those attempts: each is refused and counted, none is dialled.
 func TestSessionCountsRedials(t *testing.T) {
 	s := &Session{port: "8443"}
+
 	c1, c2 := net.Pipe()
+
 	defer c1.Close()
 	defer c2.Close()
+
 	s.conns = []*trackedConn{{Conn: c1}}
 
 	for _, addr := range []string{"192.0.2.1:8443", "192.0.2.1:80", "192.0.2.1:8443"} {

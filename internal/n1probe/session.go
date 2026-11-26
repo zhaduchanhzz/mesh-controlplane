@@ -228,7 +228,7 @@ func (s *Session) WaitPeerClosed(d time.Duration) bool {
 // the session. An HTTP answer means it is open. (The client retries refused
 // dials with backoff, so the request's own error is often just its
 // deadline: it is not what decides.)
-func (s *Session) Closed(ctx context.Context, d time.Duration) (closed bool, how string) {
+func (s *Session) Closed(ctx context.Context, d time.Duration) (bool, string) {
 	if s.WaitPeerClosed(d) {
 		return true, "tcp close"
 	}
