@@ -1,0 +1,35 @@
+#cloud-config
+# PostgreSQL HA nodes (P13a, ADR 0011): no Docker and no build tools, so
+# nftables.service owns the firewall (infra/lab/pg/setup-pg.sh) and nothing
+# else rewrites the ruleset. PostgreSQL, Patroni and etcd are installed by
+# setup-pg.sh, not here.
+hostname: ${hostname}
+manage_etc_hosts: true
+
+users:
+  - name: mesh
+    gecos: mesh-controlplane lab admin
+    shell: /bin/bash
+    groups: [sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+# 04-proxmox-lab.md §5: key-only SSH on lab VMs.
+ssh_pwauth: false
+disable_root: true
+
+package_update: true
+package_upgrade: false
+packages:
+  - qemu-guest-agent
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - nftables
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - touch /var/lib/mesh-lab-bootstrap-done

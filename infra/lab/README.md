@@ -48,6 +48,7 @@ Open for P09: the lab control plane sits behind the home NAT. This client needs 
 | `scripts/tofu.sh` | Runs `tofu` with credentials from `~/.mesh-lab/proxmox.env` |
 | `scripts/check-plan.py` | Self-apply gate: exit 0 only for create/update inside the lab scope |
 | `LAB00-operator.md` | One-time host preparation and the optional least-privilege token |
+| `pg/` | Separate root (own state): PostgreSQL HA VMs mc-pg-01/02 (7708/7709), Patroni + etcd setup, checks. See `pg/README.md` |
 
 ## Secrets (never in this repo)
 
