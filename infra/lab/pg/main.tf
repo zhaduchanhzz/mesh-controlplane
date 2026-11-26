@@ -1,25 +1,25 @@
-# DRAFT (P13a/P13b, not applied): the two PostgreSQL HA VMs of Gate N3.
+# mc-pg-01/02: the two PostgreSQL HA VMs of Gate N3 (LAB-P13, ADR 0011,
+# owner-approved 2026-11-26: decisions D1 and D7 in tickets/P13.md).
 #
-#   mc-pg-01  VMID 7708  192.168.1.247  PostgreSQL 16 (Patroni) + etcd + PgBouncer + HAProxy
-#   mc-pg-02  VMID 7709  192.168.1.248  same, starts as the streaming replica
-#   (mc-db 7704 stays: third etcd member, pgBackRest repository, monitoring;
-#    it is not managed here)
+#   mc-pg-01  VMID 7708  192.168.1.247  PostgreSQL 16 (Patroni) + etcd
+#   mc-pg-02  VMID 7709  192.168.1.248  same, starts as the synchronous replica
+#   (mc-db 7704 stays: third etcd member (witness), later pgBackRest repository
+#    and monitoring; it is managed by infra/lab/db, not here)
 #
-# A root of its own under drafts/, with its own (empty) state, like
-# infra/lab/db: the infra/lab root never reads this directory, so nothing
-# here changes the live lab plan. It only creates; it never touches an
-# existing VM. Planned from WSL as infra/lab/README.md describes:
+# A root of its own with its own state, like infra/lab/db: the infra/lab root
+# never reads this directory, so nothing here changes the live lab plan. It
+# only creates; it never touches an existing VM. Run from WSL as
+# infra/lab/README.md describes (state: keep terraform.tfstate in the main
+# checkout's infra/lab/pg/, gitignored, plus a dated copy in
+# %USERPROFILE%/.mesh-lab/tofu-state/):
 #
-#   bash infra/lab/scripts/tofu.sh -chdir=drafts/p13-pg init
-#   bash infra/lab/scripts/tofu.sh -chdir=drafts/p13-pg plan -out=p13-pg.tfplan
-#   bash infra/lab/scripts/tofu.sh -chdir=drafts/p13-pg show -json p13-pg.tfplan \
+#   bash infra/lab/scripts/tofu.sh -chdir=pg init
+#   bash infra/lab/scripts/tofu.sh -chdir=pg plan -out=pg.tfplan
+#   bash infra/lab/scripts/tofu.sh -chdir=pg show -json pg.tfplan \
 #     | python3 infra/lab/scripts/check-plan.py
 #
-# Apply only after the owner has chosen ADR 0011 (PG HA) and the VM sizes
-# (tickets/P13.md, decisions D1 and D7); before applying, move this root out of
-# drafts/ (for example to infra/lab/pg/) so its state lives next to infra/lab/db.
-# Software (Patroni, etcd, PgBouncer, HAProxy, pgBackRest) is installed by a
-# setup script of P13a, not here.
+# Software (PostgreSQL 16, Patroni, etcd, chrony, softdog, nftables) is
+# installed by setup-pg.sh (P13a); PgBouncer/HAProxy by P13b.
 
 terraform {
   required_version = ">= 1.13.0"
@@ -98,7 +98,7 @@ variable "pg_vms" {
 
   validation {
     # .240-.246 are taken (mc-ci, mc-cp, mc-bench, mc-db, mc-c2, mc-c1b, mc-c2b);
-    # .249 is kept free for an optional VIP (ADR 0011, decision D2).
+    # .249 is kept free for the optional VIP fallback (ADR 0011 §D, decision D3).
     condition     = alltrue([for v in values(var.pg_vms) : contains(["192.168.1.247", "192.168.1.248"], v.ipv4)])
     error_message = "PG VMs use 192.168.1.247 and .248 (the lab's free addresses on vmbr0)."
   }
@@ -129,7 +129,7 @@ resource "proxmox_virtual_environment_file" "pg_user_data" {
 
   source_raw {
     file_name = "${each.key}-user-data.yaml"
-    data = templatefile("${path.module}/../../cloud-init/mc-ci.yaml.tftpl", {
+    data = templatefile("${path.module}/../cloud-init/mc-pg.yaml.tftpl", {
       hostname       = each.key
       ssh_public_key = trimspace(file(var.ssh_public_key_file))
     })
@@ -140,7 +140,7 @@ resource "proxmox_virtual_environment_vm" "pg" {
   for_each = var.pg_vms
 
   name        = each.key
-  description = "mesh-controlplane: PostgreSQL 16 HA node (Patroni) + PgBouncer (P13, ADR 0011 draft). Managed by OpenTofu."
+  description = "mesh-controlplane: PostgreSQL 16 HA node (Patroni + etcd, ADR 0011). Managed by OpenTofu (infra/lab/pg)."
   tags        = ["mesh-lab", "db", "pg-ha"]
 
   node_name = var.pve_node
