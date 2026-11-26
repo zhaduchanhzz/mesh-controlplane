@@ -35,7 +35,7 @@ Fence ở DB vẫn chặn **ghi** kép trong cả hai trường hợp, vì nó s
 
 - `synchronous_mode: true`, `synchronous_mode_strict: false`, `synchronous_commit: on` (remote flush). Patroni chỉ promote node nằm trong khóa `/sync` của DCS, tức node đã xác nhận mọi commit.
 - Khi replica chết: Patroni bỏ đồng bộ, primary ghi tiếp một mình (tính sẵn sàng giữ nguyên). Nếu primary chết **trong lúc đó**, Patroni **không** tự promote replica (không nằm trong `/sync`). Operator phải promote cưỡng bức; trường hợp đó bị coi là **failover có thể mất dữ liệu** và bắt buộc chạy epoch fence của ADR 0012 trước khi mở lại PgBouncer.
-- Chi phí: mỗi COMMIT thêm một vòng LAN tới replica (lab: cùng host, dự kiến < 0,5 ms; **chưa đo**, đo trong P13a và P14).
+- Chi phí: mỗi COMMIT chờ replica flush WAL (lab: cùng host). Dự kiến ban đầu < 0,5 ms; **đo trong P13a (2026-11-26): +~0,95 ms mỗi commit** (`pgbench` 1 client: 2,16 ms với `on` so với 1,21 ms với `local`, `evidence/P13a-ha-postgres.md`), phần lớn là fsync trên replica, không phải mạng. Đo dưới tải ở P14.
 - `strict: true` (từ chối ghi khi không có replica đồng bộ) được ghi là phương án, không chọn: nó biến lỗi replica thành dừng control plane mọi cluster.
 
 ### C. Đồng hồ
