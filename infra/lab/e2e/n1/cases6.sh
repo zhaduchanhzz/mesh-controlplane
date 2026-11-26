@@ -8,18 +8,29 @@
 # The operator CLI only issues and revokes the two API keys and is the
 # last-resort fallback of the policy restore.
 #
-# Topology. a2 (tailnet A) and b2 (tailnet B) each get a fake "internet":
-#   bridge x77br on the VM: 203.0.113.1/24, 2001:db8:77::1/64 (TEST-NET-3 and
-#     the documentation prefix: both inside autogroup:internet, routed nowhere
-#     in the lab, so a client reaches them only through an exit node);
-#   netns x77inet: 203.0.113.10, 2001:db8:77::10, no default route; TCP 7780
-#     answers "INET-<A|B> src=<address it saw>" (the exit node's SNAT address).
+# Topology. a2 (tailnet A) and b2 (tailnet B) each get a fake "internet" ONE
+# ROUTED HOP behind the exit node:
+#   bridge x77br on the VM: transit 10.177.77.1/24, fd77:77:ff::1/64;
+#   netns x77inet on the bridge (10.177.77.10, fd77:77:ff::10) holding the
+#     "internet" addresses 203.0.113.10/32 and 2001:db8:77::10/128 on lo
+#     (TEST-NET-3 and the documentation prefix: inside autogroup:internet,
+#     routed nowhere in the lab, so a client reaches them only through an exit
+#     node); the VM routes 203.0.113.0/24 and 2001:db8:77::/64 via x77inet;
+#     TCP 7780 answers "INET-<A|B> src=<address it saw>" (the exit node's SNAT
+#     address, i.e. its transit address).
+# Why one hop: an exit node never forwards to its OWN directly connected
+# networks (tailscaled "guest wifi" rule, ipn/ipnlocal/local.go
+# shrinkDefaultRoute: the advertised default route minus local interface
+# routes and host IPs). A fake internet on a prefix of the exit node's own
+# interface is treated as the exit node's LAN and dropped, as on real
+# Tailscale; a routed destination is internet.
 # a2 also runs a LAN witness on its LAN address 10.77.20.12:7781 that answers
 # "LANSEEN src=<address it saw>": src 10.77.20.11 means a1 came over the LAN,
 # a tailnet address means through the tunnel.
 # The auto-approved exit node n1-ax1 lives in netns x77r1 on a2 (own
-# tailscaled $V, tun x77ts1, port 41645, 203.0.113.2 / 2001:db8:77::2 on the
-# bridge, uplink 10.177.78.2/30 NATed out of a2 by nft table ip n1s08d).
+# tailscaled $V, tun x77ts1, port 41645, 10.177.77.2 / fd77:77:ff::2 on the
+# bridge with routes to the fake internet via x77inet, uplink 10.177.78.2/30
+# NATed out of a2 by nft table ip n1s08d).
 #
 # With an exit node set, a client's replies to the harness (mc-ci) leave
 # through the exit node and SSH hangs (S08, cases2.sh): every client step
@@ -34,14 +45,14 @@
 #          a2's routes -> 404; A POSTs {"routes":["0.0.0.0/0","::/0"]};
 #          approval -> a1 offered n1-a2 (time).
 #   S08d.2 data path: a1 --exit-node=<a2's IP>: ping + TCP to 203.0.113.10
-#          (banner shows a2's SNAT address), IPv6 2001:db8:77::10;
+#          (banner shows a2's SNAT address 10.177.77.1), IPv6 2001:db8:77::10;
 #          --exit-node-allow-lan-access=false vs true: route, gateway ping
 #          and LAN witness recorded as they are.
 #   S08d.3 policy without autogroup:internet: what a1 gets (cannot select, or
 #          no traffic) recorded; the grant back -> offered again.
 #   S08d.4 autoApprovers.exitNode: a tagged key minted by the API; n1-ax1
 #          joins with it and advertises -> 0.0.0.0/0, ::/0 enabled with no
-#          approval call; a1 through n1-ax1 -> INET-A src=203.0.113.2.
+#          approval call; a1 through n1-ax1 -> INET-A src=10.177.77.2.
 #   S08d.5 B: its own exit node n1-b2 (approved by B's key, B's policy with
 #          autogroup:internet written by B's key) and the same fake internet
 #          address answering INET-B; b1 can never select A's exit nodes (by
@@ -55,6 +66,10 @@
 
 S08D_INET=203.0.113.10
 S08D_INET6=2001:db8:77::10
+S08D_TR4=10.177.77    # transit /24 on x77br: VM .1, n1-ax1 .2, x77inet .10
+S08D_TR6=fd77:77:ff:: # transit /64 on x77br: VM ::1, n1-ax1 ::2, x77inet ::10
+S08D_SRC4=10.177.77.1 S08D_SRC6=fd77:77:ff::1   # the VM's (a2/b2) SNAT source
+S08D_XSRC4=10.177.77.2 S08D_XSRC6=fd77:77:ff::2 # n1-ax1's SNAT source
 S08D_PORT=7780
 S08D_LANW=10.77.20.12 # a2's LAN address: the LAN witness
 S08D_LPORT=7781
@@ -124,18 +139,24 @@ PY
 set -e
 ip link add x77br type bridge mcast_snooping 0
 sysctl -qw net.ipv6.conf.x77br.disable_ipv6=0 || true
-ip addr add 203.0.113.1/24 dev x77br
-ip -6 addr add 2001:db8:77::1/64 dev x77br nodad || true
+ip addr add $S08D_TR4.1/24 dev x77br
+ip -6 addr add ${S08D_TR6}1/64 dev x77br nodad || true
 ip link set x77br up
 ip netns add x77inet
 ip link add x77ih type veth peer name x77ib
 ip link set x77ih netns x77inet
 ip link set x77ib master x77br up
 ip -n x77inet link set lo up
-ip -n x77inet addr add $S08D_INET/24 dev x77ih
+ip -n x77inet addr add $S08D_TR4.10/24 dev x77ih
+ip -n x77inet addr add $S08D_INET/32 dev lo
 ip netns exec x77inet sysctl -qw net.ipv6.conf.all.disable_ipv6=0 || true
-ip -n x77inet -6 addr add $S08D_INET6/64 dev x77ih nodad || true
+ip -n x77inet -6 addr add ${S08D_TR6}10/64 dev x77ih nodad || true
+ip -n x77inet -6 addr add $S08D_INET6/128 dev lo nodad || true
 ip -n x77inet link set x77ih up
+ip -n x77inet route add default via $S08D_TR4.1
+ip -n x77inet -6 route add default via ${S08D_TR6}1 || true
+ip route add ${S08D_INET%.*}.0/24 via $S08D_TR4.10 dev x77br
+ip -6 route add ${S08D_INET6%::*}::/64 via ${S08D_TR6}10 dev x77br || true
 [ -e /run/n1-s08d.fwd ] || cat /proc/sys/net/ipv4/ip_forward >/run/n1-s08d.fwd
 [ -e /run/n1-s08d.fwd6 ] || cat /proc/sys/net/ipv6/conf/all/forwarding >/run/n1-s08d.fwd6
 sysctl -qw net.ipv4.ip_forward=1
@@ -164,9 +185,11 @@ ip addr add 10.177.78.1/30 dev x77u1
 ip link set x77u1 up
 ip -n x77r1 link set lo up
 ip netns exec x77r1 sysctl -qw net.ipv6.conf.all.disable_ipv6=0 || true
-ip -n x77r1 addr add 203.0.113.2/24 dev x77l1
-ip -n x77r1 -6 addr add 2001:db8:77::2/64 dev x77l1 nodad || true
+ip -n x77r1 addr add $S08D_TR4.2/24 dev x77l1
+ip -n x77r1 -6 addr add ${S08D_TR6}2/64 dev x77l1 nodad || true
 ip -n x77r1 link set x77l1 up
+ip -n x77r1 route add ${S08D_INET%.*}.0/24 via $S08D_TR4.10 dev x77l1
+ip -n x77r1 -6 route add ${S08D_INET6%::*}::/64 via ${S08D_TR6}10 dev x77l1 || true
 ip -n x77r1 addr add 10.177.78.2/30 dev x77u1n
 ip -n x77r1 link set x77u1n up
 ip -n x77r1 route add default via 10.177.78.1
@@ -347,10 +370,10 @@ s08d_setup() {
   r=$(s08c_enabled b "$S08D_IDB"); [ -z "$r" ] || p="$p; b2 has approved routes before S08d [$r]"
   s08d_inet_up "$A2" A 1 || p="$p; fake internet + LAN witness on a2"
   s08d_inet_up "$B2" B 0 || p="$p; fake internet on b2"
-  b=$(s08d_banner "$A2" $S08D_INET $S08D_PORT); [ "$b" = "INET-A src=203.0.113.1" ] || p="$p; a2 to its own fake internet [$b]"
-  b=$(s08d_banner "$B2" $S08D_INET $S08D_PORT); [ "$b" = "INET-B src=203.0.113.1" ] || p="$p; b2 to its own fake internet [$b]"
+  b=$(s08d_banner "$A2" $S08D_INET $S08D_PORT); [ "$b" = "INET-A src=$S08D_SRC4" ] || p="$p; a2 to its own fake internet [$b]"
+  b=$(s08d_banner "$B2" $S08D_INET $S08D_PORT); [ "$b" = "INET-B src=$S08D_SRC4" ] || p="$p; b2 to its own fake internet [$b]"
   b=$(s08d_banner "$A2" $S08D_INET6 $S08D_PORT)
-  if [ "$b" = "INET-A src=2001:db8:77::1" ]; then S08D_V6A=1; else S08D_V6A="a2 has no IPv6 path to its own fake internet [$b]"; fi
+  if [ "$b" = "INET-A src=$S08D_SRC6" ]; then S08D_V6A=1; else S08D_V6A="a2 has no IPv6 path to its own fake internet [$b]"; fi
   # Without an exit node the clients have no path to the fake internet (captured output, not a pipeline).
   for s in "$A1:a1" "$B1:b1"; do
     r=$(s08d_ping "${s%%:*}" $S08D_INET); [[ $r == 0/* ]] || p="$p; ${s##*:} reached $S08D_INET without an exit node [$r]"
@@ -421,14 +444,14 @@ EOF
   [ "$(s08d_kv "$f" sel_rc)" = 0 ] || p="$p; a1 set --exit-node=$a2ip rc=[$(s08d_kv "$f" sel_rc)] [$(s08d_kv "$f" sel_out)]"
   [[ $(s08d_kv "$f" exit) == *"$a2ip/32"* ]] || p="$p; a1 exit node status [$(s08d_kv "$f" exit)]"
   [[ $(s08d_kv "$f" ping4) == 3/3* ]] || p="$p; a1 ping $S08D_INET [$(s08d_kv "$f" ping4)]"
-  [ "$(s08d_kv "$f" tcp4)" = "INET-A src=203.0.113.1" ] || p="$p; a1 TCP $S08D_INET [$(s08d_kv "$f" tcp4)]"
+  [ "$(s08d_kv "$f" tcp4)" = "INET-A src=$S08D_SRC4" ] || p="$p; a1 TCP $S08D_INET [$(s08d_kv "$f" tcp4)]"
   # IPv6: asserted when the lab has it (a1 has a tailnet IPv6, a2 reaches its fake internet over IPv6).
   if [ -z "$ip6" ]; then v6="skipped: a1 has no tailnet IPv6"
   elif [ "$S08D_V6A" != 1 ]; then v6="skipped: $S08D_V6A"
   else
     v6="ping $(s08d_kv "$f" ping6), TCP [$(s08d_kv "$f" tcp6)]"
     [[ $(s08d_kv "$f" ping6) == 3/3* ]] || p="$p; a1 ping $S08D_INET6 [$(s08d_kv "$f" ping6)]"
-    [ "$(s08d_kv "$f" tcp6)" = "INET-A src=2001:db8:77::1" ] || p="$p; a1 TCP $S08D_INET6 [$(s08d_kv "$f" tcp6)]"
+    [ "$(s08d_kv "$f" tcp6)" = "INET-A src=$S08D_SRC6" ] || p="$p; a1 TCP $S08D_INET6 [$(s08d_kv "$f" tcp6)]"
   fi
   # allow-lan-access=false: the LAN goes into the tunnel (never direct);
   # true: the LAN is direct again, the internet still through a2.
@@ -438,7 +461,7 @@ EOF
   [[ $(s08d_kv "$f" route_lan_on) != *tailscale0* ]] || p="$p; allow-lan on: route to $S08D_GW [$(s08d_kv "$f" route_lan_on)]"
   [ "$(s08d_kv "$f" lan_on)" = "LANSEEN src=$A1" ] || p="$p; allow-lan on: LAN witness [$(s08d_kv "$f" lan_on)]"
   [[ $(s08d_kv "$f" ping_gw_on) == 3/3* ]] || p="$p; allow-lan on: ping $S08D_GW [$(s08d_kv "$f" ping_gw_on)]"
-  [ "$(s08d_kv "$f" tcp4_on)" = "INET-A src=203.0.113.1" ] || p="$p; allow-lan on: TCP $S08D_INET [$(s08d_kv "$f" tcp4_on)]"
+  [ "$(s08d_kv "$f" tcp4_on)" = "INET-A src=$S08D_SRC4" ] || p="$p; allow-lan on: TCP $S08D_INET [$(s08d_kv "$f" tcp4_on)]"
   [ "$(s08d_kv "$f" unset_rc)" = 0 ] && [ "$(s08d_kv "$f" exit_after)" = none ] || p="$p; a1 exit node not unset [$(s08d_kv "$f" exit_after)]"
   r=$(s08d_exitnow "$A1"); [ "$r" = none ] || p="$p; a1 still uses an exit node [$r]"
   printf 'S08d.2 a1 --exit-node=%s (n1-a2): set -> first reply from %s %s ms (a1 clock); ping %s; TCP [%s]; IPv6 %s\n' \
@@ -447,7 +470,7 @@ EOF
     "$(s08d_kv "$f" route_lan_off)" "$S08D_GW" "$(s08d_kv "$f" ping_gw_off)" "$(s08d_kv "$f" lan_off)" >>"$ART_DIR/timings.txt"
   printf 'S08d.2 allow-lan-access=true: route [%s]; ping %s [%s]; LAN witness [%s]; internet still [%s] ping [%s]\n' \
     "$(s08d_kv "$f" route_lan_on)" "$S08D_GW" "$(s08d_kv "$f" ping_gw_on)" "$(s08d_kv "$f" lan_on)" "$(s08d_kv "$f" tcp4_on)" "$(s08d_kv "$f" ping4_on)" >>"$ART_DIR/timings.txt"
-  s08d_done S08d.2 "a1 via n1-a2 ($a2ip): ping 3/3 and TCP [INET-A src=203.0.113.1] (a2's SNAT); IPv6 $v6; allow-lan-access=false: LAN into the tunnel, witness [$(s08d_kv "$f" lan_off)], gateway ping [$(s08d_kv "$f" ping_gw_off)]; true: LAN direct (witness src=$A1), internet still via a2; exit node unset after"
+  s08d_done S08d.2 "a1 via n1-a2 ($a2ip): ping 3/3 and TCP [INET-A src=$S08D_SRC4] (a2's SNAT); IPv6 $v6; allow-lan-access=false: LAN into the tunnel, witness [$(s08d_kv "$f" lan_off)], gateway ping [$(s08d_kv "$f" ping_gw_off)]; true: LAN direct (witness src=$A1), internet still via a2; exit node unset after"
 }
 
 t_s08d_3() {
@@ -507,12 +530,12 @@ EOF
   f=$TMPD/s08d-auto.out
   [ "$(s08d_kv "$f" sel_rc)" = 0 ] || p="$p; a1 set --exit-node=n1-ax1 rc=[$(s08d_kv "$f" sel_rc)] [$(s08d_kv "$f" sel_out)]"
   [[ $(s08d_kv "$f" ping4) == 3/3* ]] || p="$p; a1 ping $S08D_INET via n1-ax1 [$(s08d_kv "$f" ping4)]"
-  [ "$(s08d_kv "$f" tcp4)" = "INET-A src=203.0.113.2" ] || p="$p; a1 TCP via n1-ax1 [$(s08d_kv "$f" tcp4)]"
-  [ "$S08D_V6A" != 1 ] || [ "$(s08d_kv "$f" tcp6)" = "INET-A src=2001:db8:77::2" ] || p="$p; a1 TCP $S08D_INET6 via n1-ax1 [$(s08d_kv "$f" tcp6)]"
+  [ "$(s08d_kv "$f" tcp4)" = "INET-A src=$S08D_XSRC4" ] || p="$p; a1 TCP via n1-ax1 [$(s08d_kv "$f" tcp4)]"
+  [ "$S08D_V6A" != 1 ] || [ "$(s08d_kv "$f" tcp6)" = "INET-A src=$S08D_XSRC6" ] || p="$p; a1 TCP $S08D_INET6 via n1-ax1 [$(s08d_kv "$f" tcp6)]"
   [ "$(s08d_exitnow "$A1")" = none ] || p="$p; a1 still uses an exit node"
   printf 'S08d.4 autoApprovers.exitNode: n1-ax1 advertise -> enabled (no call) %s ms, -> a1 offered %s ms; a1 via n1-ax1: first reply %s ms (a1 clock), ping %s, TCP [%s], IPv6 TCP [%s]\n' \
     "$((t1 < 0 ? -1 : t1 - t0))" "$((t2 < 0 ? -1 : t2 - t0))" "$(s08d_kv "$f" first_reply_ms)" "$(s08d_kv "$f" ping4)" "$(s08d_kv "$f" tcp4)" "$(s08d_kv "$f" tcp6)" >>"$ART_DIR/timings.txt"
-  s08d_done S08d.4 "tagged key (tag:exit) by A's API key; n1-ax1 advertised -> 0.0.0.0/0,::/0 enabled by autoApprovers.exitNode with no approval call ($((t1 < 0 ? -1 : t1 - t0)) ms); a1 via n1-ax1: ping 3/3, TCP [INET-A src=203.0.113.2]"
+  s08d_done S08d.4 "tagged key (tag:exit) by A's API key; n1-ax1 advertised -> 0.0.0.0/0,::/0 enabled by autoApprovers.exitNode with no approval call ($((t1 < 0 ? -1 : t1 - t0)) ms); a1 via n1-ax1: ping 3/3, TCP [INET-A src=$S08D_XSRC4]"
 }
 
 t_s08d_5() {
@@ -565,14 +588,14 @@ EOF
   grep -q 'INET-A' "$f" && p="$p; b1 reached A's fake internet"
   [ "$(s08d_kv "$f" sel_rc)" = 0 ] || p="$p; b1 set --exit-node=n1-b2 rc=[$(s08d_kv "$f" sel_rc)] [$(s08d_kv "$f" sel_out)]"
   [[ $(s08d_kv "$f" ping4) == 3/3* ]] || p="$p; b1 ping $S08D_INET via n1-b2 [$(s08d_kv "$f" ping4)]"
-  [ "$(s08d_kv "$f" tcp4)" = "INET-B src=203.0.113.1" ] || p="$p; b1 TCP via n1-b2 [$(s08d_kv "$f" tcp4)]"
+  [ "$(s08d_kv "$f" tcp4)" = "INET-B src=$S08D_SRC4" ] || p="$p; b1 TCP via n1-b2 [$(s08d_kv "$f" tcp4)]"
   [ "$(s08d_exitnow "$B1")" = none ] || p="$p; b1 still uses an exit node"
   what="by name n1-a2 rc=$(s08d_kv "$f" a2_rc) [$(s08d_kv "$f" a2_out)], n1-ax1 rc=$(s08d_kv "$f" ax1_rc)"
   if [ -n "$xip" ]; then what="$what, by n1-ax1's address $xip rc=$(s08d_kv "$f" xip_rc) [$(s08d_kv "$f" xip_out)]"
   else what="$what (n1-ax1's address is also a B address: not tried)"; fi
   printf 'S08d.5 B: approval by B'"'"'s key -> b1 offered n1-b2 after %s ms; b1 selecting A'"'"'s exit nodes: %s; b1 via n1-b2: first reply %s ms, ping %s, TCP [%s], IPv6 TCP [%s]\n' \
     "$((t1 < 0 ? -1 : t1 - t0))" "$what" "$(s08d_kv "$f" first_reply_ms)" "$(s08d_kv "$f" ping4)" "$(s08d_kv "$f" tcp4)" "$(s08d_kv "$f" tcp6)" >>"$ART_DIR/timings.txt"
-  s08d_done S08d.5 "B's own exit node n1-b2 (policy and approval by B's key; A's key on b2 404, B's key on a2/n1-ax1 404): b1 via n1-b2 gets [INET-B src=203.0.113.1] for the same address, never INET-A; b1 cannot select A's exit nodes ($what); no A exit node name, tag or key in b1's status/netmap; a1 offered n1-a2 n1-ax1 only"
+  s08d_done S08d.5 "B's own exit node n1-b2 (policy and approval by B's key; A's key on b2 404, B's key on a2/n1-ax1 404): b1 via n1-b2 gets [INET-B src=$S08D_SRC4] for the same address, never INET-A; b1 cannot select A's exit nodes ($what); no A exit node name, tag or key in b1's status/netmap; a1 offered n1-a2 n1-ax1 only"
 }
 
 t_s08d_6() {
