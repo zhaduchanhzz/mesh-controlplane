@@ -25,7 +25,7 @@
    - *shared*: nhiều tenant, mỗi tenant có hard quota **5.000 thiết bị**, cảnh báo ở 80% (4.000).
    - *dedicated*: một tenant, 5.000–10.000 thiết bị.
 
-   Một tailnet **không bao giờ trải qua nhiều cluster**. Đây là mục tiêu, chưa phải năng lực. Theo P00b, với code upstream hiện tại một process chỉ phục vụ được khoảng **1.5k–2.5k thiết bị với policy thực tế** (`allow_all`, `personal_devices`), đo bằng client chạy trong cùng process (`evidence/P00b-capacity-baseline.md` §7). P00c đang tối ưu và đo **server-only**.
+   Một tailnet **không bao giờ trải qua nhiều cluster**. Đây là mục tiêu, chưa phải năng lực. **Quyết định của chủ dự án (2026-11-26):** 5.000 (shared, mỗi tenant) và 5.000–10.000 (dedicated) là mục tiêu ban đầu, **được hạ xuống bằng mức lớn nhất đạt được sau khi tối ưu** (P14). Quota và lớp shard áp dụng theo số đo đó; không cam kết con số chưa đo được. Theo P00b, với code upstream hiện tại một process chỉ phục vụ được khoảng **1.5k–2.5k thiết bị với policy thực tế** (`allow_all`, `personal_devices`), đo bằng client chạy trong cùng process (`evidence/P00b-capacity-baseline.md` §7). P00c đang tối ưu và đo **server-only**.
 7. **Tenant migration giữa cluster trong MVP (P12b):** đổi chủ sở hữu (`owner_cluster_id`, `owner_epoch`) trong PostgreSQL, không copy dữ liệu. Cluster đích có URL và Noise key khác, nên client **phải gọi lại bootstrap, đổi ControlURL và đăng nhập lại**; thủ tục có thông báo trước. Chi tiết: [ADR 0003](design/adr/0003-shard-classes-and-tenant-migration.md), ADR 0005, `tickets/P12b.md`.
 8. Test E2E chạy bằng lab VM/container tạo từ **Proxmox VE**, có IaC, traffic P2P và DERP fallback, negative security tests, failover tests, chaos testing và benchmark.
 9. Mọi tính năng admin/observability/relay có bảo vệ đa tenant. Một process treo/crash không bị quảng bá là hard isolation.
@@ -38,7 +38,7 @@
 - Chuyển tenant giữa cluster **mà client không phải đăng nhập lại**, và zero-staleness: không thuộc MVP; để ở P16, chỉ sau một ADR mới.
 - **Row-level security** của PostgreSQL và **role DB theo cluster**: không làm (ADR 0005 Bổ sung 2 §3). Rủi ro còn lại ghi ở `03-isolation-threat-model.md` §8.
 - Phân tán **một tailnet** qua nhiều cluster; đơn vị placement là nguyên tailnet.
-- Không cam kết "thiết bị không giới hạn" hoặc tăng tuyến tính theo số cluster khi chưa benchmark. 5.000/10.000 là quota và mục tiêu thiết kế, không phải capacity claim.
+- Không cam kết "thiết bị không giới hạn" hoặc tăng tuyến tính theo số cluster khi chưa benchmark. 5.000/10.000 là quota và mục tiêu thiết kế, không phải capacity claim; theo quyết định ngày 2026-11-26, chúng được hạ xuống bằng mức đo được sau tối ưu (§0 mục 6).
 - SQLite cho production. SQLite chỉ dùng cho dev và unit test, với **cùng schema v0.1**.
 
 ### Definition of Done mức dự án
@@ -335,7 +335,7 @@ Mỗi PR phải kèm: (a) scope file/symbol thực tế, (b) unit/integration/ne
 - DERP/STUN verified; queue/rate limit, giới hạn kết nối PG theo cluster và monitoring;
 - **Xoay Noise key của cluster** (ADR 0005): runbook đã diễn tập trên lab; phạm vi ảnh hưởng = **mọi tenant và mọi client trên cluster** (reconnect, có thể phải đăng nhập lại; đo thời gian và tỉ lệ khôi phục); quy trình khẩn cấp khi lộ key: thu hồi, xoay, thông báo admin của mọi tenant bị ảnh hưởng.
 
-**N4 — Capacity:** SLO do người phụ trách xác nhận dựa trên benchmark; không gọi 'unlimited'. Kiểm thử nhiều tailnet nhỏ, một tailnet lớn (tới 10k trên dedicated, nếu P00c/P14 cho thấy khả thi), burst registration, reconnect storm, failover storm, policy changes, relay saturation, quota 5.000/tenant trên shared.
+**N4 — Capacity:** SLO do người phụ trách xác nhận dựa trên benchmark; không gọi 'unlimited'. Dung lượng mỗi tenant (shared) và mỗi cluster dedicated = mức lớn nhất đạt được sau tối ưu P14, có biên an toàn; quota cấu hình theo đó (quyết định 2026-11-26). Kiểm thử nhiều tailnet nhỏ, một tailnet lớn (tới 10k trên dedicated, nếu P00c/P14 cho thấy khả thi), burst registration, reconnect storm, failover storm, policy changes, relay saturation, quota 5.000/tenant trên shared.
 
 **N5 — Release Review (ngoài MVP):** independent security review, CVE/dependency audit, license, DR drill, vận hành thực tế; các block risk chưa xử lý -> NO-GO.
 
@@ -406,7 +406,7 @@ Các mốc là **ước lượng lập kế hoạch**, không phải cam kết. 
 - Cô lập chỉ ở tầng ứng dụng: không có lớp chặn ở DB.
 - Key cluster dùng chung: lộ key ảnh hưởng mọi tenant trên cluster.
 - Netmap tăng dần sai có thể lộ peer hoặc không thu hồi peer.
-- Năng lực một process hiện mới ≈1.5k–2.5k thiết bị với policy thực tế (P00b, client trong cùng process). Lớp *dedicated* 5k–10k chưa khả thi cho tới khi P00c/P14 đo được khác.
+- Năng lực một process hiện mới ≈1.5k–2.5k thiết bị với policy thực tế (P00b, client trong cùng process). Lớp *dedicated* 5k–10k chưa khả thi cho tới khi P00c/P14 đo được khác; theo quyết định 2026-11-26, mục tiêu được hạ theo số đo sau tối ưu thay vì chặn MVP.
 
 ## 12. Deliverables cuối cùng agent phải bàn giao
 
