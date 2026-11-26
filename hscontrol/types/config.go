@@ -1058,12 +1058,15 @@ type Tuning struct {
 }
 
 // TenantAPIConfig is the token buckets of the public /api/v2 of a cluster
-// (P08b). Requests over the global bucket are refused before the API key is
-// looked up; then the key's bucket and its tailnet's bucket must both have
-// a token. Refused requests get 429.
+// (P08b, P12c). An API key this process has not authenticated recently
+// needs a token of the pre-authentication bucket before it is looked up in
+// the database; then the key's bucket and its tailnet's bucket must both
+// have a token, and only then the global bucket. Refused requests get 429.
+// So neither a tenant over its limit nor keys that do not authenticate can
+// spend the budget of the other tenants.
 type TenantAPIConfig struct {
 	// GlobalRate is requests per second for the whole process, counted
-	// before the API key is looked up.
+	// after the key's and the tailnet's buckets admitted the request.
 	GlobalRate int `example:"500" koanf:"global_rate"`
 
 	// GlobalBurst is the bucket size of `tuning.tenant_api.global_rate`.
@@ -1081,6 +1084,14 @@ type TenantAPIConfig struct {
 
 	// KeyBurst is the bucket size of `tuning.tenant_api.key_rate`.
 	KeyBurst int `example:"50" koanf:"key_burst"`
+
+	// PreauthRate is requests per second for the whole process whose API
+	// key has to be looked up in the database: keys this process has not
+	// authenticated in the last minute, garbage included.
+	PreauthRate int `example:"100" koanf:"preauth_rate"`
+
+	// PreauthBurst is the bucket size of `tuning.tenant_api.preauth_rate`.
+	PreauthBurst int `example:"200" koanf:"preauth_burst"`
 }
 
 // ClusterLeaseConfig times the cluster lease (P11b). Expiry is decided by

@@ -167,6 +167,8 @@ func TestConfigFields(t *testing.T) {
 		"tuning.tenant_api.tailnet_burst",
 		"tuning.tenant_api.key_rate",
 		"tuning.tenant_api.key_burst",
+		"tuning.tenant_api.preauth_rate",
+		"tuning.tenant_api.preauth_burst",
 		"tuning.tailnet_metric_label_limit",
 	}
 	// dns.extra_records is a list, a leaf like any other.
