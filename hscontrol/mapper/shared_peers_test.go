@@ -321,8 +321,13 @@ func announceAndApprove(t tb, td *TestData, i int, routes ...netip.Prefix) {
 
 	id := td.Nodes[i].n.ID
 
+	nv, ok := td.State.GetNodeByID(id)
+	require.True(t, ok)
+
 	_, err := td.State.UpdateNodeFromMapRequest(id, tailcfg.MapRequest{
-		Hostinfo: &tailcfg.Hostinfo{Hostname: fmt.Sprintf("node%d", id), RoutableIPs: routes},
+		NodeKey:  nv.NodeKey(),
+		DiscoKey: nv.DiscoKey(),
+		Hostinfo: &tailcfg.Hostinfo{Hostname: nv.Hostname(), RoutableIPs: routes},
 	})
 	require.NoError(t, err)
 
