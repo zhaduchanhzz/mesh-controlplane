@@ -62,6 +62,7 @@ func v01Migrations() []*gormigrate.Migration {
 		// P13 (ADR 0013): every migration from here on declares its
 		// min_reader_id in migrationCompat.
 		schemaCompatMigration(),
+		epochFenceMigration(),
 	}
 }
 

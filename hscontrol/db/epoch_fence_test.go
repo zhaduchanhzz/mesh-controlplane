@@ -290,9 +290,43 @@ func TestEpochFenceAfterSimulatedRestore(t *testing.T) {
 }
 
 // The fence migration is appended and declared expand: a binary of the
-// schema_compat migration runs on a database that has it.
+// schema_compat migration runs on a database that has it. A fresh database
+// gets it from the schema files.
 func TestEpochFenceMigrationDeclared(t *testing.T) {
 	ms := v01Migrations()
 	require.Equal(t, EpochFenceMigrationID, ms[len(ms)-1].ID, "appended at the end of the chain")
 	assert.Equal(t, SchemaCompatMigrationID, migrationCompat[EpochFenceMigrationID], "expand")
+	assert.Contains(t, normalizeNewlines(dbSchema), EpochFenceSQLiteDDL)
+	assert.Contains(t, normalizeNewlines(dbSchemaPostgres), EpochFencePostgresDDL)
+}
+
+// TestEpochFenceMigrationUpgrades: a database from before the migration
+// (rewound with its own Rollback) gets the table and the trigger, keeps its
+// lease rows, and the trigger is active.
+func TestEpochFenceMigrationUpgrades(t *testing.T) {
+	for _, bk := range backends(t) {
+		t.Run(bk.name, func(t *testing.T) {
+			cfg := bk.cfg(t, "", "")
+			p := openPlatform(t, cfg)
+
+			_, err := p.LeaseStore().Acquire(context.Background(), "c1", "h1", time.Minute)
+			require.NoError(t, err)
+
+			require.NoError(t, epochFenceMigration().Rollback(p.db))
+			require.NoError(t, p.db.Exec(`DELETE FROM migrations WHERE id = ?`, EpochFenceMigrationID).Error)
+			require.NoError(t, p.db.Exec(`DELETE FROM schema_compat WHERE migration_id = ?`, EpochFenceMigrationID).Error)
+			require.NoError(t, p.Close())
+
+			res, err := Migrate(context.Background(), cfg)
+			require.NoError(t, err)
+			assert.Equal(t, []string{EpochFenceMigrationID}, res.Applied)
+
+			p = openPlatform(t, cfg)
+			require.Error(t, p.db.Exec(`DELETE FROM cluster_leases`).Error, "migrated trigger is active")
+			assert.Equal(t, uint64(1), leaseRow(t, p, "c1").Epoch)
+
+			var n int64
+			require.NoError(t, p.db.Raw(`SELECT count(*) FROM platform_epoch_fences`).Scan(&n).Error)
+		})
+	}
 }

@@ -143,6 +143,76 @@ type Cluster struct {
 	// loadHook, when set (tests, SetLoadHook), runs between building a
 	// tailnet's runtime and starting it. Under mu.
 	loadHook func(tailnet.ID)
+
+	// epochs is the highest owner_epoch this process has seen per tailnet
+	// (P13c, ADR 0012 §3): loaded at, or set by its own hand-over and
+	// take-over. A tailnet whose owner_epoch is below it (the database went
+	// back: restore, lossy promote) is retired and not loaded again until
+	// the epoch fence raised owner_epoch.
+	epochs ownerEpochs
+}
+
+// ownerEpochs is the per-tailnet owner_epoch high-water mark of a cluster
+// process (memory only).
+type ownerEpochs struct {
+	mu     sync.Mutex
+	seen   map[tailnet.ID]uint64
+	logged map[tailnet.ID]uint64 // db epoch of the last regression logged
+}
+
+// note raises the high-water mark of id to epoch.
+func (e *ownerEpochs) note(id tailnet.ID, epoch uint64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.seen == nil {
+		e.seen = make(map[tailnet.ID]uint64)
+	}
+
+	e.seen[id] = max(e.seen[id], epoch)
+}
+
+// behind reports whether owner_epoch epoch of id is below the high-water
+// mark (returned), and whether this regression is new (log it once).
+func (e *ownerEpochs) behind(id tailnet.ID, epoch uint64) (uint64, bool, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	hwm := e.seen[id]
+	if epoch >= hwm {
+		return hwm, false, false
+	}
+
+	if e.logged == nil {
+		e.logged = make(map[tailnet.ID]uint64)
+	}
+
+	first := e.logged[id] != epoch
+	e.logged[id] = epoch
+
+	return hwm, true, first
+}
+
+// errOwnerEpochRegression: a tailnet's owner_epoch is below one this
+// process served or set it at.
+var errOwnerEpochRegression = errors.New("owner_epoch went backwards in the database (restore or lossy promote): " +
+	"not serving the tailnet until the epoch fence runs")
+
+// ownerEpochRegressed logs (once per database epoch) and reports a tailnet
+// whose owner_epoch went below this process's high-water mark.
+func (c *Cluster) ownerEpochRegressed(id tailnet.ID, epoch uint64) error {
+	hwm, back, first := c.epochs.behind(id, epoch)
+	if !back {
+		return nil
+	}
+
+	if first {
+		log.Error().Str("tailnet", id.String()).Uint64("owner_epoch", epoch).Uint64("owner_epoch_high_water_mark", hwm).
+			Msg("CRITICAL epoch regression: owner_epoch is below what this process saw (restore or lossy promote?); " +
+				"the tailnet is not served until the epoch fence runs")
+	}
+
+	return fmt.Errorf("%w: tailnet %s at owner_epoch %d, seen %d", errOwnerEpochRegression, id, epoch, hwm)
 }
 
 // runLoadHook runs the test hook of the load-to-start window (P12c B5).
@@ -345,6 +415,16 @@ func (c *Cluster) load(tn types.Tailnet) (*tenantRuntime, error) {
 		return nil, fmt.Errorf("tailnet %s: %w", id, err)
 	}
 
+	// P13c: never at an owner_epoch below one this process saw (fail closed).
+	err = c.ownerEpochRegressed(id, tdb.Tailnet().OwnerEpoch)
+	if err != nil {
+		_ = tdb.Close()
+
+		return nil, err
+	}
+
+	c.epochs.note(id, tdb.Tailnet().OwnerEpoch)
+
 	// The runtime's own config: the tailnet's DNS under <slug>.<base>, a
 	// live DNS no other runtime shares (ADR 0008 §5). Stored settings that
 	// do not parse or validate keep the tailnet out: never default DNS.
@@ -516,11 +596,22 @@ func (c *Cluster) reconcile() {
 	}
 
 	for _, rt := range stale {
-		c.retire(rt, "not ACTIVE and owned by this cluster at the loaded epoch any more")
+		reason := "not ACTIVE and owned by this cluster at the loaded epoch any more"
+		if tn, ok := want[rt.id.String()]; ok && tn.OwnerEpoch < rt.epoch {
+			reason = "owner_epoch went backwards (restore or lossy promote?)"
+		}
+
+		c.retire(rt, reason)
 	}
 
 	for _, tn := range owned {
 		if loaded[tn.ID] && !containsRuntime(stale, tn.ID) {
+			continue
+		}
+
+		// P13c: an owner_epoch below what this process saw is not loaded
+		// (load refuses it too); checked here to skip the database reads.
+		if id, err := tailnet.ParseID(tn.ID); err == nil && c.ownerEpochRegressed(id, tn.OwnerEpoch) != nil {
 			continue
 		}
 
@@ -804,6 +895,9 @@ func (c *Cluster) handOver(id tailnet.ID, epoch uint64, to string) {
 		return
 	}
 
+	// This process set epoch+1: it never serves the tailnet below it again.
+	c.epochs.note(id, epoch+1)
+
 	log.Info().Str("tailnet", id.String()).Str("to", newOwner).Uint64("owner_epoch", epoch+1).
 		Msg("tailnet handed over: no longer served here")
 }
@@ -839,6 +933,8 @@ func (c *Cluster) takeOverOrphans() {
 
 			continue
 		}
+
+		c.epochs.note(id, tn.OwnerEpoch+1)
 
 		log.Warn().Str("tailnet", tn.ID).Str("from", tn.OwnerClusterID).Uint64("owner_epoch", tn.OwnerEpoch+1).
 			Msg("tailnet taken over from a cluster with no live lease")

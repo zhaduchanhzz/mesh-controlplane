@@ -115,8 +115,8 @@ func TestReconcileFindsEachAnomaly(t *testing.T) {
 		{"R5 active cluster never started", func(t *testing.T, r *Registry) []Finding {
 			t.Helper()
 
-			healthyCluster(t, r, "new", ClassShared, 100)
-			require.NoError(t, r.db.Exec(`DELETE FROM cluster_leases WHERE cluster_id = 'new'`).Error)
+			addClusterNoLease(t, r, "new", ClassShared, ClusterActive, 100)
+			setNoiseKey(t, r.db, "new")
 
 			return []Finding{{Code: FindingClusterNoLease, ClusterID: "new"}}
 		}},

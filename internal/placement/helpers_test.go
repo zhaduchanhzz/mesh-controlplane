@@ -104,15 +104,25 @@ var testOp = Op{Actor: "spiffe://mesh/operator/test"}
 func addCluster(t *testing.T, r *Registry, id string, class Class, state ClusterState, maxDevices int64) Cluster {
 	t.Helper()
 
+	c := addClusterNoLease(t, r, id, class, state, maxDevices)
+
+	// A process of the cluster holds its lease (P12: placement skips
+	// clusters without one).
+	setLease(t, r.db, id, true)
+
+	return c
+}
+
+// addClusterNoLease registers a cluster no process ever ran: no
+// cluster_leases row (rows are never deleted, P13c).
+func addClusterNoLease(t *testing.T, r *Registry, id string, class Class, state ClusterState, maxDevices int64) Cluster {
+	t.Helper()
+
 	c, err := r.CreateCluster(context.Background(), testOp, ClusterSpec{
 		ID: id, EndpointURL: "https://" + id + ".cp.example.test:8443", Class: class,
 		State: state, MaxDevices: maxDevices,
 	})
 	require.NoError(t, err)
-
-	// A process of the cluster holds its lease (P12: placement skips
-	// clusters without one).
-	setLease(t, r.db, id, true)
 
 	return c
 }

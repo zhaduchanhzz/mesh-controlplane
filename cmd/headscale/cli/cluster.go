@@ -80,7 +80,10 @@ func init() {
 	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetDNSCmd, tailnetAuthKeyCmd, tailnetAuthKeyRevokeCmd, tailnetNodesCmd, tailnetReassignCmd)
 	clusterMigrateCmd.Flags().DurationVar(&clusterMigrateTimeout, "timeout", 10*time.Minute,
 		"how long to wait for another migrate run and to migrate")
-	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, clusterMigrateCmd, tailnetCmd)
+	clusterEpochFenceCmd.Flags().StringVar(&clusterFenceReason, "reason", "", "why the fence runs (recorded), e.g. the restore target")
+	clusterEpochFenceCmd.Flags().StringVar(&clusterFenceOperator, "operator", "", "who runs it (recorded)")
+	clusterEpochFenceCmd.Flags().Uint64Var(&clusterFenceHWM, "external-hwm", 0, "highest epoch recorded outside the database, if any")
+	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, clusterMigrateCmd, clusterEpochFenceCmd, tailnetCmd)
 	rootCmd.AddCommand(clusterCmd)
 }
 
@@ -148,6 +151,47 @@ var clusterMigrateCmd = &cobra.Command{
 		res, err := db.Migrate(ctx, serverConfig())
 		if err != nil {
 			return fmt.Errorf("migrating the database: %w", err)
+		}
+
+		return printJSON(res)
+	},
+}
+
+// `cluster epoch-fence` flags.
+var (
+	clusterFenceReason   string
+	clusterFenceOperator string
+	clusterFenceHWM      uint64
+
+	errFenceFlags = errors.New("--reason and --operator are required")
+)
+
+// clusterEpochFenceCmd is the restore fence of ADR 0012 §1 (as
+// `mesh-placement epoch-fence`): run it after a restore or a promote that
+// may have lost commits, before the cluster processes reach the database
+// again. --cluster-id is not needed: it fences every cluster.
+var clusterEpochFenceCmd = &cobra.Command{
+	Use:   "epoch-fence",
+	Short: "Raise every lease epoch and owner_epoch above the time-based floor (after a restore; ADR 0012)",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		if clusterFenceReason == "" || clusterFenceOperator == "" {
+			return errFenceFlags
+		}
+
+		p, err := db.OpenPlatform(serverConfig())
+		if err != nil {
+			return err
+		}
+		defer p.Close()
+
+		ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
+		defer cancel()
+
+		res, err := p.EpochFence(ctx, db.EpochFenceRequest{
+			Reason: clusterFenceReason, Operator: clusterFenceOperator, OperatorNow: time.Now(), ExternalHWM: clusterFenceHWM,
+		})
+		if err != nil {
+			return err
 		}
 
 		return printJSON(res)

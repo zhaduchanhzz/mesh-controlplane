@@ -48,6 +48,9 @@ const (
 var migrationCompat = map[string]string{
 	// contract: binaries before P13d refuse every unknown migration.
 	SchemaCompatMigrationID: SchemaCompatMigrationID,
+	// expand (P13c): a new table only the fence writes, and a trigger on
+	// DELETE of cluster_leases, which no binary does.
+	EpochFenceMigrationID: SchemaCompatMigrationID,
 }
 
 func schemaCompatMigration() *gormigrate.Migration {

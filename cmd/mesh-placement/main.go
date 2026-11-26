@@ -7,6 +7,8 @@
 // Usage:
 //
 //	mesh-placement migrate -config /etc/mesh/config.yaml [-timeout 10m]
+//	mesh-placement epoch-fence -config /etc/mesh/config.yaml -reason "restore to T" \
+//	  -operator alice [-external-hwm N]   # after a restore or forced promote (ADR 0012)
 //	mesh-placement [serve] -config /etc/mesh/config.yaml \
 //	  -tls-cert server.crt -tls-key server.key -client-ca operator-ca.crt \
 //	  -operators spiffe://mesh/operator/alice[,...] [-listen 127.0.0.1:9443]
@@ -41,6 +43,7 @@ import (
 var (
 	errFlagsRequired  = errors.New("-config, -tls-cert, -tls-key, -client-ca and -operators are required")
 	errConfigRequired = errors.New("-config is required")
+	errFenceFlags     = errors.New("-config, -reason and -operator are required")
 	errNoClientCA     = errors.New("client CA file holds no certificate")
 )
 
@@ -56,6 +59,8 @@ func run() error {
 		switch os.Args[1] {
 		case "migrate":
 			return runMigrate(os.Args[2:])
+		case "epoch-fence":
+			return runEpochFence(os.Args[2:])
 		case "serve":
 			os.Args = append(os.Args[:1], os.Args[2:]...)
 		}
@@ -198,6 +203,54 @@ func runMigrate(args []string) error {
 	res, err := db.Migrate(ctx, loaded.Config)
 	if err != nil {
 		return fmt.Errorf("migrating the database: %w", err)
+	}
+
+	return json.NewEncoder(os.Stdout).Encode(res)
+}
+
+// runEpochFence is `mesh-placement epoch-fence` (ADR 0012 §1): after a
+// restore or a promote that may have lost commits, and before PgBouncer lets
+// the cluster processes back in, it raises every lease epoch and owner_epoch
+// above the time-based floor and above every epoch present, in one
+// transaction, and prints the result as JSON. Point -config at a direct
+// connection to the primary (ADR 0006 §4). Running it again raises the
+// epochs again (safe; every cluster reloads its tailnets once more).
+func runEpochFence(args []string) error {
+	fs := flag.NewFlagSet("epoch-fence", flag.ContinueOnError)
+	cfgPath := fs.String("config", "", "Headscale configuration file (only database.* is used)")
+	reason := fs.String("reason", "", "why the fence runs (recorded), e.g. the restore target")
+	operator := fs.String("operator", "", "who runs it (recorded)")
+	hwm := fs.Uint64("external-hwm", 0, "highest epoch recorded outside the database, if any")
+	timeout := fs.Duration("timeout", 2*time.Minute, "overall timeout")
+
+	err := fs.Parse(args)
+	if err != nil {
+		return err
+	}
+
+	if *cfgPath == "" || *reason == "" || *operator == "" {
+		return errFenceFlags
+	}
+
+	loaded, err := config.Load(*cfgPath, true, os.Environ())
+	if err != nil {
+		return fmt.Errorf("loading configuration: %w", err)
+	}
+
+	p, err := db.OpenPlatform(loaded.Config)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	res, err := p.EpochFence(ctx, db.EpochFenceRequest{
+		Reason: *reason, Operator: *operator, OperatorNow: time.Now(), ExternalHWM: *hwm,
+	})
+	if err != nil {
+		return err
 	}
 
 	return json.NewEncoder(os.Stdout).Encode(res)

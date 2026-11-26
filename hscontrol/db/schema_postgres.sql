@@ -279,3 +279,25 @@ CREATE TABLE schema_compat(
   migration_id text PRIMARY KEY,
   min_reader_id text NOT NULL
 );
+
+-- Epoch fence (P13c, ADR 0012): the record of every fence; lease rows are
+-- never deleted. See hscontrol/db/epoch_fence.go.
+CREATE TABLE platform_epoch_fences(
+  id bigserial PRIMARY KEY,
+  epoch_floor bigint NOT NULL CHECK(epoch_floor >= 1),
+  fenced_at timestamptz NOT NULL,
+  reason text NOT NULL,
+  operator text NOT NULL,
+  leases bigint NOT NULL,
+  tailnets bigint NOT NULL,
+  moves_cancelled bigint NOT NULL
+);
+CREATE FUNCTION cluster_leases_no_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'cluster_leases rows are never deleted: the epoch would restart at 1 (ADR 0012)' USING ERRCODE = 'check_violation';
+END;
+$$;
+CREATE TRIGGER trg_cluster_leases_no_delete BEFORE DELETE ON cluster_leases
+  FOR EACH ROW EXECUTE FUNCTION cluster_leases_no_delete();
+CREATE TRIGGER trg_cluster_leases_no_truncate BEFORE TRUNCATE ON cluster_leases
+  FOR EACH STATEMENT EXECUTE FUNCTION cluster_leases_no_delete();

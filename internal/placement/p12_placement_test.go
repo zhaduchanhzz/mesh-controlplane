@@ -10,7 +10,8 @@ import (
 )
 
 // setLease writes cluster id's cluster_leases row: live (expires an hour
-// from now by the database clock) or expired (an hour ago).
+// from now by the database clock) or expired (an hour ago). Rows are never
+// deleted (P13c trigger): an existing row keeps its holder and epoch.
 func setLease(t *testing.T, gdb *gorm.DB, id string, live bool) {
 	t.Helper()
 
@@ -27,9 +28,9 @@ func setLease(t *testing.T, gdb *gorm.DB, id string, live bool) {
 		now = `clock_timestamp()`
 	}
 
-	require.NoError(t, gdb.Exec(`DELETE FROM cluster_leases WHERE cluster_id = ?`, id).Error)
 	require.NoError(t, gdb.Exec(`INSERT INTO cluster_leases (cluster_id, holder, epoch, expires_at, updated_at)
-		VALUES (?, 'test-holder', 1, `+exp+`, `+now+`)`, id).Error)
+		VALUES (?, 'test-holder', 1, `+exp+`, `+now+`)
+		ON CONFLICT (cluster_id) DO UPDATE SET expires_at = excluded.expires_at, updated_at = excluded.updated_at`, id).Error)
 }
 
 // P12, owner decision Q1: equal device load is broken by the number of live
@@ -78,10 +79,9 @@ func TestPlacementSkipsClusterWithoutLiveLease(t *testing.T) {
 			gdb := b.open(t)
 			r := newRegistry(t, gdb, Config{})
 
-			addCluster(t, r, "s1", ClassShared, ClusterActive, 100) // never ran: no lease row
+			addClusterNoLease(t, r, "s1", ClassShared, ClusterActive, 100) // never ran: no lease row
 			addCluster(t, r, "s2", ClassShared, ClusterActive, 100)
 			addCluster(t, r, "s3", ClassShared, ClusterActive, 100)
-			require.NoError(t, gdb.Exec(`DELETE FROM cluster_leases WHERE cluster_id = 's1'`).Error)
 			setLease(t, gdb, "s2", false) // its process stopped renewing
 			setLease(t, gdb, "s3", true)
 

@@ -105,6 +105,12 @@ const lockPrefix = "lease/cluster/"
 // takeover holds the lock exclusive from before its check until it commits.
 const PostgresSharedLock = `SELECT pg_advisory_xact_lock_shared(hashtextextended('` + lockPrefix + `' || $1, 0))`
 
+// PostgresTakeoverLock takes, until the end of the transaction, the
+// exclusive advisory lock of the lease of cluster ? (a gorm placeholder): the
+// lock a takeover holds ([Store.Acquire]), which the epoch fence also takes
+// before it rewrites a lease row.
+const PostgresTakeoverLock = `SELECT pg_advisory_xact_lock(hashtextextended('` + lockPrefix + `' || ?, 0))`
+
 // Lease is a lease held by this process.
 type Lease struct {
 	Cluster string
@@ -153,7 +159,7 @@ func (s *Store) now() string {
 
 // Acquire takes the lease of cluster for holder with ttl: a first lease has
 // epoch 1; an expired lease (whoever held it) is taken over at epoch+1. A
-// lease that has not expired is never taken: [ErrHeld].
+// lease that has not expired is never taken: [ErrHeld] (a [*HeldError]).
 //
 // On PostgreSQL a live lease is answered from a plain read, without locking
 // anything (a standby polls every AcquireInterval). Otherwise the takeover
@@ -161,22 +167,33 @@ func (s *Store) now() string {
 // documentation), its wait bounded by ctx's deadline (lock_timeout), else
 // by ttl.
 func (s *Store) Acquire(ctx context.Context, cluster, holder string, ttl time.Duration) (Lease, error) {
+	return s.AcquireAbove(ctx, cluster, holder, ttl, 0)
+}
+
+// AcquireAbove is Acquire that never grants an epoch at or below floor, the
+// highest epoch the caller has seen (ADR 0012 §3). If the stored lease would
+// give such an epoch (the database went back: restore, promote that lost
+// commits) nothing changes and the error is [ErrEpochRegression].
+func (s *Store) AcquireAbove(ctx context.Context, cluster, holder string, ttl time.Duration, floor uint64) (Lease, error) {
 	if !s.postgres {
-		return s.acquire(s.db.WithContext(ctx), cluster, holder, ttl)
+		return s.acquireSQLite(ctx, cluster, holder, ttl, floor)
 	}
 
 	var l Lease
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var live []bool
-
-		err := tx.Raw(`SELECT expires_at > `+s.now()+` FROM cluster_leases WHERE cluster_id = ?`, cluster).Scan(&live).Error
+		cur, found, err := s.get(tx, cluster)
 		if err != nil {
 			return fmt.Errorf("acquiring cluster lease %s: %w", cluster, err)
 		}
 
-		if len(live) == 1 && live[0] {
-			return ErrHeld
+		if found && !cur.Expired {
+			return &HeldError{Holder: cur.Holder, Epoch: cur.Epoch}
+		}
+
+		err = checkAbove(cluster, cur, found, floor)
+		if err != nil {
+			return err
 		}
 
 		wait := ttl
@@ -195,14 +212,86 @@ func (s *Store) Acquire(ctx context.Context, cluster, holder string, ttl time.Du
 		}
 
 		l, err = s.acquire(tx, cluster, holder, ttl)
+		if err != nil {
+			return err
+		}
 
-		return err
+		// The row changed since the read (it can only have grown, unless the
+		// database was replaced meanwhile): the check again, before COMMIT.
+		if l.Epoch <= floor {
+			return regression(cluster, l.Epoch, floor)
+		}
+
+		return nil
 	})
 	if err != nil {
 		return Lease{}, err
 	}
 
 	return l, nil
+}
+
+// acquireSQLite is AcquireAbove on SQLite (development and tests): the
+// floor is checked by a read before the takeover statement, and again
+// after it, when a regressed lease is given back at once.
+func (s *Store) acquireSQLite(ctx context.Context, cluster, holder string, ttl time.Duration, floor uint64) (Lease, error) {
+	db := s.db.WithContext(ctx)
+
+	if floor > 0 {
+		cur, found, err := s.get(db, cluster)
+		if err != nil {
+			return Lease{}, fmt.Errorf("acquiring cluster lease %s: %w", cluster, err)
+		}
+
+		if !found || cur.Expired {
+			err = checkAbove(cluster, cur, found, floor)
+			if err != nil {
+				return Lease{}, err
+			}
+		}
+	}
+
+	l, err := s.acquire(db, cluster, holder, ttl)
+	if errors.Is(err, ErrHeld) {
+		cur, found, gerr := s.get(db, cluster)
+		if gerr == nil && found {
+			return Lease{}, &HeldError{Holder: cur.Holder, Epoch: cur.Epoch}
+		}
+
+		return Lease{}, err
+	}
+
+	if err != nil {
+		return Lease{}, err
+	}
+
+	if l.Epoch <= floor {
+		_ = s.Release(ctx, l)
+
+		return Lease{}, regression(cluster, l.Epoch, floor)
+	}
+
+	return l, nil
+}
+
+// checkAbove refuses a takeover of cur (found: the row exists) that would
+// grant an epoch at or below floor.
+func checkAbove(cluster string, cur Row, found bool, floor uint64) error {
+	next := uint64(1)
+	if found {
+		next = cur.Epoch + 1
+	}
+
+	if next <= floor {
+		return regression(cluster, next, floor)
+	}
+
+	return nil
+}
+
+func regression(cluster string, next, floor uint64) error {
+	return fmt.Errorf("%w: cluster %s: the database would grant epoch %d, this process has seen epoch %d",
+		ErrEpochRegression, cluster, next, floor)
 }
 
 // acquire is the takeover statement of Acquire, on db (a transaction under
@@ -268,13 +357,18 @@ WHERE cluster_id = ? AND holder = ? AND epoch = ? AND expires_at > `+s.now(),
 
 // Get reads the stored lease of cluster; ok is false when there is none.
 func (s *Store) Get(ctx context.Context, cluster string) (Row, bool, error) {
+	return s.get(s.db.WithContext(ctx), cluster)
+}
+
+// get is Get on db (a transaction of AcquireAbove).
+func (s *Store) get(db *gorm.DB, cluster string) (Row, bool, error) {
 	var rows []struct {
 		Holder  string
 		Epoch   int64
 		Expired bool
 	}
 
-	err := s.db.WithContext(ctx).Raw(`SELECT holder, epoch, expires_at <= `+s.now()+` AS expired
+	err := db.Raw(`SELECT holder, epoch, expires_at <= `+s.now()+` AS expired
 FROM cluster_leases WHERE cluster_id = ?`, cluster).Scan(&rows).Error
 	if err != nil {
 		return Row{}, false, fmt.Errorf("reading cluster lease %s: %w", cluster, err)

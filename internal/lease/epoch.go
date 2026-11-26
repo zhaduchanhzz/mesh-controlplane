@@ -1,10 +1,8 @@
 package lease
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"time"
 )
 
 // ErrEpochRegression reports that the database would grant this process a
@@ -26,16 +24,3 @@ func (e *HeldError) Error() string {
 
 // Is makes errors.Is(err, ErrHeld) hold.
 func (e *HeldError) Is(target error) bool { return target == ErrHeld }
-
-// AcquireAbove is Acquire that never grants an epoch at or below floor.
-// RED stub (P13c): floor is ignored.
-func (s *Store) AcquireAbove(ctx context.Context, cluster, holder string, ttl time.Duration, _ uint64) (Lease, error) {
-	return s.Acquire(ctx, cluster, holder, ttl)
-}
-
-// HighWaterMark is the highest lease epoch this manager has seen. RED stub.
-func (m *Manager) HighWaterMark() uint64 { return 0 }
-
-// Regressions counts the acquire attempts refused with ErrEpochRegression.
-// RED stub.
-func (m *Manager) Regressions() int64 { return 0 }
