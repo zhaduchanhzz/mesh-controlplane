@@ -86,14 +86,25 @@ func p13bDBName() string { return fmt.Sprintf("mesh_p13b_%d", time.Now().UnixNan
 
 // p13bConfig is a platform config on database name; hosts is written as
 // database.postgres.host in the libpq list form "a:1,b:2".
+// A single host:port is split into host and port, the only form a single
+// server had before P13b.
 func p13bConfig(t *testing.T, name, hosts string) *types.Config {
 	t.Helper()
+
+	host, port := hosts, 0
+	if !strings.Contains(hosts, ",") {
+		h, p, err := net.SplitHostPort(hosts)
+		require.NoError(t, err)
+
+		host, port = h, atoiOr(p, 0)
+	}
 
 	return &types.Config{
 		Database: types.DatabaseConfig{
 			Type: types.DatabasePostgres,
 			Postgres: types.PostgresConfig{
-				Host:                hosts,
+				Host:                host,
+				Port:                port,
 				User:                poolerUser(t),
 				Name:                name,
 				Ssl:                 "disable",
