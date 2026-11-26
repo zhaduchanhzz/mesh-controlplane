@@ -23,3 +23,17 @@ func (tc *TestCluster) TryNewCluster(tb testing.TB, keyPath string, opts ...hsco
 
 	return err
 }
+
+// StartProcessWithNoiseKey starts another process of tc's cluster, as
+// [TestCluster.StartProcess], whose Noise key file is keyPath: a process
+// restarted with a new key during a rotation.
+func (tc *TestCluster) StartProcessWithNoiseKey(tb testing.TB, keyPath string) *ClusterProcess {
+	tb.Helper()
+
+	old := tc.cfg.Noise.PrivateKeyPath
+	tc.cfg.Noise.PrivateKeyPath = keyPath
+
+	defer func() { tc.cfg.Noise.PrivateKeyPath = old }()
+
+	return tc.StartProcess(tb)
+}

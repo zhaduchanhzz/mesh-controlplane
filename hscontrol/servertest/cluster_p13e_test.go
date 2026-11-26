@@ -89,3 +89,41 @@ func TestP13eMissingNoiseKeyRefused(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "not a key\n", string(b))
 }
+
+// P13e (ADR 0014 §1): the planned rotation, in process. The new key is
+// installed for a process that starts as standby; registering its public
+// key in the registry (the CLI's RotateNoiseKey) makes the active, still on
+// the old key, step down; the standby takes the lease and serves, and /key
+// through the front door now answers the new key. Client recovery is
+// measured in the lab drill, not here.
+func TestP13ePlannedRotationSwitchover(t *testing.T) {
+	tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{FrontDoor: true}, servertest.TailnetSeed{Slug: "p13e-plan"})
+	a := tc.Primary()
+	tc.WaitReady(t, a, clusterWait)
+
+	oldKey := tc.NoiseKey(t)
+
+	next := key.NewMachine()
+	path := filepath.Join(t.TempDir(), "noise_private.key")
+	require.NoError(t, hscontrol.WriteNoiseKeyFile(path, next))
+
+	b := tc.StartProcessWithNoiseKey(t, path)
+	assert.Never(t, func() bool { return tc.ProcessGet(t, b, "/ready") == http.StatusOK }, time.Second, 50*time.Millisecond,
+		"standby while the active holds the lease")
+	assert.Equal(t, oldKey, tc.NoiseKey(t))
+
+	start := time.Now()
+
+	_, err := tc.Registry(t).RotateNoiseKey(t.Context(), servertest.TestOperator, tc.ClusterID, next.Public().String())
+	require.NoError(t, err)
+
+	took := tc.WaitReady(t, b, clusterWait)
+	t.Logf("process with the new key serving %s after the registry rotation", took.Round(time.Millisecond))
+
+	assert.NotEqual(t, http.StatusOK, tc.ProcessGet(t, a, "/ready"), "the old-key process is standby")
+	// NoiseKey uses the default transport: a kept-alive connection through
+	// the front door (a TCP proxy) still reaches the old process.
+	http.DefaultClient.CloseIdleConnections()
+	assert.Equal(t, next.Public(), tc.NoiseKey(t), "/key answers the new key")
+	assert.Less(t, time.Since(start), 10*time.Second)
+}
