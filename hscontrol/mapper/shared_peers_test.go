@@ -107,6 +107,8 @@ func newSharedTailnet(t *testing.T, users, perUser int, pol string) (*TestData, 
 // that list it, not one rendering per viewer.
 func TestSharedPeerEntryRenderedOnce(t *testing.T) {
 	td := setupSharedTailnet(t, 5, 10, allowAllPolicyJSON)
+	connectAllShared(t, td)
+
 	m := td.Batcher.mapper
 
 	entries := make(map[tailcfg.NodeID]*tailcfg.Node)
@@ -142,6 +144,36 @@ func TestSharedPeerEntryRenderedOnce(t *testing.T) {
 	}
 
 	requireSharedEqualsFresh(t, td, "after rename")
+
+	// The delta-first baseline a full map sets (F3: hash and presence per
+	// peer) is the same from a shared entry's memo as from hashing it,
+	// also after a presence change.
+	requireMemoMatches := func(step string) {
+		t.Helper()
+
+		for _, p := range peerMap(t, m, td.Nodes[2].n.ID).Peers {
+			memo, ok1 := hashPeer(p)
+			direct, ok2 := hashPeerUncached(p)
+			require.True(t, ok1 && ok2)
+			require.Equal(t, direct, memo, "%s: peer %d", step, p.ID)
+		}
+	}
+
+	requireMemoMatches("online")
+
+	_, err = td.State.Disconnect(td.Nodes[3].n.ID, 0)
+	require.NoError(t, err)
+
+	resp = peerMap(t, m, td.Nodes[2].n.ID)
+	for _, p := range resp.Peers {
+		if p.ID == tailcfg.NodeID(td.Nodes[3].n.ID) {
+			require.NotNil(t, p.Online)
+			require.False(t, *p.Online, "disconnected peer served from its online entry")
+		}
+	}
+
+	requireMemoMatches("after disconnect")
+	requireSharedEqualsFresh(t, td, "after disconnect")
 }
 
 // TestSharedPeersOffWhenSwitchOff: the kill switch also turns the shared
