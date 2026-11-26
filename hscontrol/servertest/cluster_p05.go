@@ -145,6 +145,10 @@ type ClusterOptions struct {
 	EphemeralTimeout time.Duration
 	// TenantAPI, when set, replaces tuning.tenant_api (P08b).
 	TenantAPI *types.TenantAPIConfig
+	// VerifySecret, when set, is written to a file and used as
+	// derp.verify_secret_path: the secret an external DERP server sends
+	// to the cluster's /verify (P09, ADR 0009).
+	VerifySecret string
 }
 
 // NewTestClusterWith is [NewTestCluster] with cluster-wide options.
@@ -211,6 +215,17 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 
 	if o.TenantAPI != nil {
 		cfg.Tuning.TenantAPI = *o.TenantAPI
+	}
+
+	if o.VerifySecret != "" {
+		path := filepath.Join(tmpDir, "derp_verify_secret")
+
+		err := os.WriteFile(path, []byte(o.VerifySecret), 0o600)
+		if err != nil {
+			tb.Fatalf("servertest: verify secret: %v", err)
+		}
+
+		cfg.DERP.VerifySecretPath = path
 	}
 
 	cfg.MetricsAddr = ""

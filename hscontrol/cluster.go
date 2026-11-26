@@ -212,13 +212,24 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		return nil, fmt.Errorf("cluster lease: %w", err)
 	}
 
+	// ADR 0009: the secret of this cluster's external DERP servers (/verify).
+	var verifySecret []byte
+	if cfg.DERP.VerifySecretPath != "" {
+		verifySecret, err = readVerifySecret(cfg.AbsPath(cfg.DERP.VerifySecretPath))
+		if err != nil {
+			_ = platform.Close()
+
+			return nil, err
+		}
+	}
+
 	c := &Cluster{
 		host:        host,
 		cfg:         cfg,
 		platform:    platform,
 		noiseKey:    noiseKey,
 		registry:    registry,
-		front:       &Headscale{cfg: cfg, noisePrivateKey: noiseKey},
+		front:       &Headscale{cfg: cfg, noisePrivateKey: noiseKey, verifySecret: verifySecret},
 		runtimes:    make(map[tailnet.ID]*tenantRuntime),
 		retiring:    make(map[tailnet.ID]chan struct{}),
 		handingOver: make(map[tailnet.ID]bool),
@@ -1180,6 +1191,10 @@ func (c *Cluster) HTTPHandler() http.Handler {
 	r.Get("/version", c.front.VersionHandler)
 	r.Get("/robots.txt", c.front.RobotsHandler)
 	r.Head("/machine/ping-response", c.PingResponseHandler)
+
+	// ADR 0009: client verification for this cluster's external DERP
+	// servers (derp.verify_secret_path).
+	r.Post("/verify", c.VerifyHandler)
 
 	// P08b: the tenant API, keyed by a platform-issued API key bound to
 	// one tailnet. No /api/v1.
