@@ -96,8 +96,8 @@ func TestSentStatePatchAndRemovalInvalidate(t *testing.T) {
 
 	online := false
 	dfDeliver(&s, &tailcfg.MapResponse{PeersChangedPatch: []*tailcfg.PeerChange{
-		{NodeID: 1, Online: &online},          // presence only: hash kept
-		{NodeID: 2, DERPRegion: 7},            // other field: invalidated
+		{NodeID: 1, Online: &online}, // presence only: hash kept
+		{NodeID: 2, DERPRegion: 7},   // other field: invalidated
 	}}, false)
 	dfDeliver(&s, &tailcfg.MapResponse{PeersRemoved: []tailcfg.NodeID{3}}, false)
 
