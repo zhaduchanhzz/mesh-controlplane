@@ -118,6 +118,8 @@ CLI2="sudo -u headscale timeout 60 $HS -c $CFG cluster --cluster-id $C2_ID"
 
 [ -z "$VM_TARGETS" ] || [ -n "$RB_LOCAL_BIN" ] || { echo "VM_TARGETS needs RB_LOCAL_BIN" >&2; exit 2; }
 [[ $N =~ ^[0-9]+$ ]] && [ "$N" -ge 2 ] && [[ $PAR =~ ^[0-9]+$ ]] && [ "$PAR" -ge 1 ] || { echo "bad N/PAR" >&2; exit 2; }
+# M02 needs ~15 s for its API checks between the last notice poll and scheduled_at.
+[[ $LEAD =~ ^[0-9]+$ ]] && [ "$LEAD" -ge 45 ] || { echo "LEAD must be >= 45 s" >&2; exit 2; }
 
 redact() {
   sed -E \
@@ -186,6 +188,24 @@ selfip() { field "$1" "d['Self']['TailscaleIPs'][0]"; }
 state() { field "$1" "d['BackendState']"; }
 has_notice() { field "$1" "any('$NOTICE' in h for h in (d.get('Health') or []))"; }
 health_text() { field "$1" "' | '.join(d.get('Health') or [])"; }
+# snap NAME...: the status of many clients in one ssh round trip (one per
+# client takes ~0.7 s from the laptop: 24 clients would outlast LEAD).
+# $TMPD/snap: "<name> <state> <ip> <notice True|False> <peers>", "- - -" for
+# a client that did not answer. sget NAME COLUMN (2 state, 3 ip, 4 notice, 5 peers).
+snap() {
+  ci_ "for c in $*; do echo \"@@ \$c\"; timeout 10 docker exec \$c tailscale status --json 2>/dev/null; done" 2>/dev/null \
+    | py 'import json,re
+parts = re.split(r"^@@ (\S+)\s*$", sys.stdin.read(), flags=re.M)
+for name, body in zip(parts[1::2], parts[2::2]):
+    try:
+        d = json.loads(body)
+        ips = (d.get("Self") or {}).get("TailscaleIPs") or ["-"]
+        print(name, d.get("BackendState") or "-", ips[0], any(sys.argv[1] in h for h in (d.get("Health") or [])), len(d.get("Peer") or {}))
+    except Exception:
+        print(name, "-", "-", "-", "-")' "$NOTICE" | strip_cr >"$TMPD/snap"
+}
+sget() { awk -v n="$1" -v c="$2" '$1 == n { print $c }' "$TMPD/snap"; }
+scount() { awk -v c="$1" -v v="$2" '$c == v { k++ } END { print k + 0 }' "$TMPD/snap"; }
 ping_ok() { ci_ "timeout 30 docker exec $1 tailscale ping -c 3 --timeout 5s $2" >>"$ART_DIR/logs/$1-ping.log" 2>&1; }
 save_logs() { ci_ "timeout 30 docker logs $1 2>&1" | redact >"$ART_DIR/logs/$1.tailscaled.log" 2>/dev/null || true; }
 
@@ -454,7 +474,7 @@ t_round() {
 
   # M01
   new_tailnet "$s" || { record "M01.$r" FAIL "$ver: tailnet $s"; return; }
-  local from=$(owner "$s") to; to=$(otherc "$from")
+  local from to; from=$(owner "$s"); to=$(otherc "$from")
   enroll "$s" "$img" "${names[@]}" || p="$p; enroll"
   local vmt; for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_start "$vmt" "$s" "$(urlof "$from")" || p="$p; VM $vmt enroll"; done
   local want=$N; [ "$r" = 1 ] && want=$((N + $(wc -w <<<"$VM_TARGETS")))
@@ -462,37 +482,21 @@ t_round() {
   [ "$(npeers "$a")" = $((want - 1)) ] || p="$p; $a sees $(npeers "$a") peers, want $((want - 1))"
   [ "$(node_count "$s")" = "$want" ] || p="$p; nodes $(node_count "$s") want $want"
   ping_ok "$a" "$b" || p="$p; $a cannot ping $b"
-  for c in "${names[@]}"; do echo "$c $(selfip "$c")"; done >"$TMPD/ips-before-$s"
+  snap "${names[@]}"; for c in "${names[@]}"; do echo "$c $(sget "$c" 3)"; done >"$TMPD/ips-before-$s"
+  [ "$(scount 2 Running)" = "$N" ] || p="$p; Running $(scount 2 Running)/$N"
   [ -z "$p" ] && record "M01.$r" PASS "$ver: tailnet $s on $from, $want clients enrolled at the URL bootstrap gave (PAR=$PAR); $a sees $((want - 1)) peers; ping ok" \
     || { record "M01.$r" FAIL "$ver: ${p#; }"; return; }
 
-  # M02 schedule + notice
-  p=""; local at; at=$(iso_in "$LEAD")
+  # M02 schedule + notice. The pinger and mesh-rebootstrap (waiting for a URL
+  # other than the source's) start right after scheduling, well before
+  # scheduled_at; the notice and API checks must also end before it (after
+  # it the source hands the tailnet over and stops serving its API).
+  p=""; local at at_s; at=$(iso_in "$LEAD"); at_s=$(( $(date +%s) + LEAD ))
   local mv; mv=$(pl POST "/v1/tailnets/$(tid "$s")/moves" "p12b-m-$s" "{\"to_cluster\":\"$(idof "$to")\",\"scheduled_at\":\"$at\",\"reason\":\"$REASON\"}")
   printf 'schedule %s %s\n' "$s" "$mv" >>"$ART_DIR/logs/placement.log"
   local mid; mid=$(jget "$mv" "d['id']"); [ -n "$mid" ] && [ "$(jget "$mv" "d['state']")" = SCHEDULED ] || { record "M02.$r" FAIL "$ver: schedule [$mv]"; return; }
   local t_sched; t_sched=$(now_ms)
-  local seen=0 t_seen=""
-  for i in $(seq 1 30); do
-    seen=0; for c in "${names[@]}"; do [ "$(has_notice "$c")" = True ] && seen=$((seen + 1)); done
-    [ "$seen" = "$N" ] && { t_seen=$(now_ms); break; }; sleep 1
-  done
-  [ "$seen" = "$N" ] || p="$p; notice on $seen/$N clients"
-  health_text "$a" >"$ART_DIR/logs/M02-$s-notice.txt"
-  grep -qF "$REASON" "$ART_DIR/logs/M02-$s-notice.txt" || p="$p; reason not in the notice"
-  grep -qiE "$(idof "$to")|$(urlof "$to")" "$ART_DIR/logs/M02-$s-notice.txt" && p="$p; notice names the target"
-  for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_state "$vmt" | grep -q ' True$' || p="$p; VM $vmt no notice [$(vm_state "$vmt")]"; done
-  local api; api=$(tenant_api "$s" /api/v2/tailnet/-/scheduled-move); printf '%s %s\n' "$s" "$api" >>"$ART_DIR/logs/M02-api.txt"
-  jget "$api" "d['scheduled'] and d['reason']=='$REASON'" | grep -q True || p="$p; API [$api]"
-  grep -qiE "$(idof "$to")|$HOST1|$HOST2" <<<"$api" && p="$p; API names a cluster"
-  api=$(tenant_api o /api/v2/tailnet/-/scheduled-move); printf 'o %s\n' "$api" >>"$ART_DIR/logs/M02-api.txt"
-  [ "$(jget "$api" "d['scheduled']")" = False ] || p="$p; o's API [$api]"
-  for c in p12b-o1 p12b-o2; do [ "$(has_notice "$c")" = False ] || p="$p; $c got a notice"; done
-  [ -z "$p" ] && record "M02.$r" PASS "$ver: move $mid $from->$to at $at scheduled; notice on all $N clients in $(( ${t_seen:-$t_sched} - t_sched )) ms, reason shown, target never named; /api/v2 scheduled-move of $s shows it, o's not; o's clients no notice" \
-    || record "M02.$r" FAIL "$ver: ${p#; }"
-
-  # M03 + M04: pinger, then mesh-rebootstrap waiting for a URL other than the source's.
-  p=""; local since; since=$(date +%s)
+  local since; since=$(date +%s)
   start_pinger "$s" "$a" "$(selfip "$b")" || p="$p; pinger not started"
   printf '%s\n' "${names[@]}" | ci_ "cat >$CIDIR/targets-$s"
   ci_ "umask 077; cat >$CIDIR/key-$s" <"$TMPD/key-$s"
@@ -505,9 +509,31 @@ t_round() {
       -cmd "ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes {target} 'sudo timeout 100 tailscale --socket=$VMSOCK up --login-server={login_server} --auth-key=file:/run/p12b-ts/key --hostname=\$(hostname -s)-p12b --force-reauth'" \
       2>&1 | redact >"$ART_DIR/logs/rebootstrap-$s-vms.log" &
   fi
-  # Bounded by wall time (each check is an ssh round trip): the tool waits
-  # up to LEAD for scheduled_at, then at most 3 batches x 120 s.
-  local end=$(( $(date +%s) + LEAD + 480 ))
+  local seen=0 t_seen=""
+  while [ "$(date +%s)" -lt $((at_s - 15)) ]; do
+    snap "${names[@]}"; seen=$(scount 4 True)
+    [ "$seen" = "$N" ] && { t_seen=$(now_ms); break; }; sleep 1
+  done
+  [ "$seen" = "$N" ] || p="$p; notice on $seen/$N clients before scheduled_at"
+  health_text "$a" >"$ART_DIR/logs/M02-$s-notice.txt"
+  grep -qF "$REASON" "$ART_DIR/logs/M02-$s-notice.txt" || p="$p; reason not in the notice"
+  grep -qiE "$(idof "$to")|$(urlof "$to")" "$ART_DIR/logs/M02-$s-notice.txt" && p="$p; notice names the target"
+  for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_state "$vmt" | grep -q ' True$' || p="$p; VM $vmt no notice [$(vm_state "$vmt")]"; done
+  local api; api=$(tenant_api "$s" /api/v2/tailnet/-/scheduled-move); printf '%s %s\n' "$s" "$api" >>"$ART_DIR/logs/M02-api.txt"
+  jget "$api" "d['scheduled'] and d['reason']=='$REASON'" | grep -q True || p="$p; API [$api]"
+  grep -qiE "$(idof "$to")|$HOST1|$HOST2" <<<"$api" && p="$p; API names a cluster"
+  api=$(tenant_api o /api/v2/tailnet/-/scheduled-move); printf 'o %s\n' "$api" >>"$ART_DIR/logs/M02-api.txt"
+  [ "$(jget "$api" "d['scheduled']")" = False ] || p="$p; o's API [$api]"
+  snap p12b-o1 p12b-o2; [ "$(scount 4 False)" = 2 ] || p="$p; o's clients got a notice [$(tr '\n' ' ' <"$TMPD/snap")]"
+  [ "$(date +%s)" -lt "$at_s" ] || p="$p; M02 checks ended after scheduled_at (raise LEAD)"
+  [ -z "$p" ] && record "M02.$r" PASS "$ver: move $mid $from->$to at $at scheduled; notice on all $N clients in $(( ${t_seen:-$t_sched} - t_sched )) ms, reason shown, target never named; /api/v2 scheduled-move of $s shows it, o's not; o's clients no notice" \
+    || record "M02.$r" FAIL "$ver: ${p#; }"
+
+  # M03 + M04: wait for mesh-rebootstrap (started in M02). Bounded by wall
+  # time (each check is an ssh round trip): scheduled_at, then at most
+  # 3 batches x 120 s.
+  p=""
+  local end=$(( at_s + 480 ))
   while [ "$(date +%s)" -lt "$end" ]; do ci_ "test -e $CIDIR/rb-$s.done" && break; sleep 2; done
   wait
   local rbrc; rbrc=$(ci_ "cat $CIDIR/rb-$s.done 2>/dev/null" | strip_cr)
@@ -532,15 +558,16 @@ t_round() {
 
   # M04 clients at the target, same IPs; timings
   p=""
-  local back=0; for c in "${names[@]}"; do [ "$(state "$c")" = Running ] && back=$((back + 1)); done
+  snap "${names[@]}"
+  local back; back=$(scount 2 Running)
   [ "$back" = "$N" ] || p="$p; Running $back/$N"
-  for c in "${names[@]}"; do echo "$c $(selfip "$c")"; done >"$TMPD/ips-after-$s"
+  for c in "${names[@]}"; do echo "$c $(sget "$c" 3)"; done >"$TMPD/ips-after-$s"
   cmp -s "$TMPD/ips-before-$s" "$TMPD/ips-after-$s" || p="$p; IPs changed: $(diff "$TMPD/ips-before-$s" "$TMPD/ips-after-$s" | grep -c '^>')"
   for i in $(seq 1 60); do [ "$(npeers "$a")" = $((want - 1)) ] && break; sleep 1; done
   [ "$(npeers "$a")" = $((want - 1)) ] || p="$p; $a sees $(npeers "$a") peers at $to"
   [ "$(node_count "$s")" = "$want" ] || p="$p; nodes at $to $(node_count "$s") want $want (old nodes kept, Q4)"
   ping_ok "$a" "$b" || p="$p; $a cannot ping $b at $to"
-  [ "$(has_notice "$a")" = False ] || p="$p; notice still shown at $to"
+  snap "$a"; [ "$(sget "$a" 4)" = False ] || p="$p; notice still shown at $to"
   for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_state "$vmt" | grep -q '^Running ' || p="$p; VM $vmt [$(vm_state "$vmt")]"; done
   stop_pinger "$a" >"$ART_DIR/logs/M04-$s-ping.txt"
   local gap; gap=$(ping_gap "$ART_DIR/logs/M04-$s-ping.txt")
@@ -559,7 +586,8 @@ print("ok=%d failed=%d t50=%d t90=%d t100=%d ms (from run start); from scheduled
   p=""
   [ "$(jget "$(pl GET "/v1/tailnets/$(tid o)")" "d['owner_cluster_id']+'@'+str(d['owner_epoch'])")" = "$O_ROW" ] || p="$p; o owner/epoch changed"
   ping_ok p12b-o1 p12b-o2 || p="$p; o1 cannot ping o2"
-  for c in p12b-o1 p12b-o2; do [ "$(has_notice "$c")" = False ] || p="$p; $c notice"; [ "$(npeers "$c")" = 1 ] || p="$p; $c peers $(npeers "$c")"; done
+  snap p12b-o1 p12b-o2
+  for c in p12b-o1 p12b-o2; do [ "$(sget "$c" 4)" = False ] || p="$p; $c notice"; [ "$(sget "$c" 5)" = 1 ] || p="$p; $c peers $(sget "$c" 5)"; done
   [ -z "$p" ] && record "M05.$r" PASS "$ver: control tailnet o unchanged ($O_ROW), o1<->o2, no notice, sees only its own peer" || record "M05.$r" FAIL "$ver: ${p#; }"
 }
 
