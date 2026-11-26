@@ -206,11 +206,15 @@ func (r *Registry) setMoveState(tx *gorm.DB, m Move, from, to MoveState, errText
 	}
 
 	if res.RowsAffected != 1 {
-		return Move{}, fmt.Errorf("%w: move %s is no longer %s", ErrConflict, m.ID, from)
+		return Move{}, fmt.Errorf("%w: %w: move %s is no longer %s", ErrConflict, errMoveClosed, m.ID, from)
 	}
 
 	return loadMove(tx, m.ID)
 }
+
+// errMoveClosed reports a move whose state another call changed first (an
+// operator's cancel under the scheduler): that call recorded the outcome.
+var errMoveClosed = errors.New("move state changed concurrently")
 
 // CancelScheduledMove cancels move moveID before its hand-over. A REQUESTED
 // move also withdraws the request on the tailnet (as CancelMove). A move
@@ -301,8 +305,6 @@ func (r *Registry) RunDueMoves(ctx context.Context, op Op) (RunReport, error) {
 			continue
 		}
 
-		state, errText := r.requestMove(ctx, op, m)
-
 		// Test hook (P12c C2): a cancel that lands after the scheduler took
 		// the move as due, before its outcome is recorded.
 		err := r.step("move-due")
@@ -310,12 +312,11 @@ func (r *Registry) RunDueMoves(ctx context.Context, op Op) (RunReport, error) {
 			return rep, err
 		}
 
-		_, err = mutate(ctx, r, op, "MoveDue", m.ID, map[string]any{"state": state, "error": errText},
-			func(tx *gorm.DB) (Move, string, error) {
-				out, err := r.setMoveState(tx, m, MoveScheduled, state, errText, r.now())
+		state, err := r.runDueMove(ctx, op, m)
+		if errors.Is(err, errMoveClosed) {
+			continue // cancelled meanwhile: the cancel recorded it
+		}
 
-				return out, m.TailnetID, err
-			})
 		if err != nil {
 			return rep, err
 		}
@@ -381,28 +382,113 @@ func (r *Registry) RunDueMoves(ctx context.Context, op Op) (RunReport, error) {
 	return rep, nil
 }
 
-// requestMove asks for the hand-over of m and says which state m moves to.
-func (r *Registry) requestMove(ctx context.Context, op Op, m Move) (MoveState, string) {
-	tn, err := loadTailnet(r.db.WithContext(ctx), m.TailnetID)
-	if err != nil {
-		return MoveFailed, err.Error()
+// runDueMove requests the hand-over of the due move m (MoveOwner, ADR 0010)
+// and records it REQUESTED in ONE transaction under LockOwnership (P12c C2):
+// a cancel (CancelScheduledMove takes the same lock) either comes first, and
+// nothing is requested, or after, and withdraws the request it sees. A
+// request already present for exactly this move (an operator ahead of the
+// schedule) is adopted. A refused request (owner or epoch changed, target
+// without a live lease or room) is recorded FAILED with the reason, again
+// only while m is still SCHEDULED; nothing is retried behind the operator's
+// back. Other errors (database, lock timeout) change nothing and are
+// returned: the next pass tries again. A move closed by someone else
+// meanwhile is errMoveClosed.
+func (r *Registry) runDueMove(ctx context.Context, op Op, m Move) (MoveState, error) {
+	_, err := mutate(ctx, r, op, "MoveDue", m.ID, map[string]any{"state": MoveRequested},
+		func(tx *gorm.DB) (Move, string, error) {
+			err := tenantscope.LockOwnership(tx, m.TailnetID)
+			if err != nil {
+				return Move{}, "", err
+			}
+
+			out, err := r.setMoveState(tx, m, MoveScheduled, MoveRequested, "", r.now())
+			if err != nil {
+				return Move{}, "", err
+			}
+
+			tn, err := loadTailnet(tx, m.TailnetID)
+			if err != nil {
+				return Move{}, "", refused(err)
+			}
+
+			if tn.MovingToClusterID != nil && *tn.MovingToClusterID == m.ToClusterID &&
+				tn.OwnerClusterID == m.FromClusterID && tn.OwnerEpoch == m.FromEpoch {
+				return out, m.TailnetID, nil // adopted
+			}
+
+			_, err = r.moveOwnerTx(tx, m.TailnetID, m.FromClusterID, m.FromEpoch, m.ToClusterID)
+			if err != nil {
+				return Move{}, "", refused(err)
+			}
+
+			err = r.auditTx(tx, op, "MoveOwner", m.TailnetID, map[string]any{
+				"from_cluster": m.FromClusterID, "from_epoch": m.FromEpoch, "to_cluster": m.ToClusterID, "move": m.ID,
+			})
+
+			return out, m.TailnetID, err
+		})
+	if err == nil {
+		return MoveRequested, nil
 	}
 
-	if tn.MovingToClusterID != nil && *tn.MovingToClusterID == m.ToClusterID &&
-		tn.OwnerClusterID == m.FromClusterID && tn.OwnerEpoch == m.FromEpoch {
-		return MoveRequested, "" // adopted
+	var ref refusal
+	if !errors.As(err, &ref) {
+		return "", err
 	}
 
-	_, err = r.MoveOwner(ctx, op, m.TailnetID, m.FromClusterID, m.FromEpoch, m.ToClusterID)
+	errText := ref.err.Error()
+	if errors.Is(ref.err, ErrStaleEpoch) {
+		errText = "owner or epoch changed since the move was scheduled: " + errText
+	}
+
+	_, err = mutate(ctx, r, op, "MoveDue", m.ID, map[string]any{"state": MoveFailed, "error": errText},
+		func(tx *gorm.DB) (Move, string, error) {
+			err := tenantscope.LockOwnership(tx, m.TailnetID)
+			if err != nil {
+				return Move{}, "", err
+			}
+
+			out, err := r.setMoveState(tx, m, MoveScheduled, MoveFailed, errText, r.now())
+
+			return out, m.TailnetID, err
+		})
 	if err != nil {
-		if errors.Is(err, ErrStaleEpoch) {
-			return MoveFailed, "owner or epoch changed since the move was scheduled: " + err.Error()
+		return "", err
+	}
+
+	return MoveFailed, nil
+}
+
+// refusal marks why a due move cannot be requested (recorded as FAILED),
+// as opposed to an error that changes nothing and is retried.
+type refusal struct{ err error }
+
+func (e refusal) Error() string { return e.err.Error() }
+func (e refusal) Unwrap() error { return e.err }
+
+// refused wraps err as a refusal when it is one: the tailnet, the target or
+// the request itself does not allow the move.
+func refused(err error) error {
+	for _, e := range []error{ErrStaleEpoch, ErrNoCapacity, ErrConflict, ErrNotFound, ErrInvalid} {
+		if errors.Is(err, e) {
+			return refusal{err: err}
 		}
-
-		return MoveFailed, err.Error()
 	}
 
-	return MoveRequested, ""
+	return err
+}
+
+// auditTx writes an audit row with outcome ok in tx, beside the one mutate
+// writes for the call (the scheduler's request keeps its MoveOwner row).
+func (r *Registry) auditTx(tx *gorm.DB, op Op, action, target string, detail any) error {
+	err := tx.Create(&auditRow{
+		At: r.now(), Actor: op.Actor, Action: action, Target: target, Outcome: outcomeOK, Detail: marshalDetail(detail),
+	}).Error
+	if err != nil {
+		return fmt.Errorf("writing audit: %w", err)
+	}
+
+	return nil
 }
 
 // SchedulerActor is the audit actor of the move scheduler.

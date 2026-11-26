@@ -314,64 +314,73 @@ func (r *Registry) MoveOwner(ctx context.Context, op Op, id, fromCluster string,
 			return types.Tailnet{}, "", err
 		}
 
-		target, err := lockClusters(tx, "id = ?", toCluster)
-		if err != nil {
-			return types.Tailnet{}, "", err
-		}
+		tn, err := r.moveOwnerTx(tx, id, fromCluster, fromEpoch, toCluster)
 
-		cur, err := loadTailnet(tx, id)
-		if err != nil {
-			return types.Tailnet{}, "", err
-		}
-
-		if cur.OwnerClusterID != fromCluster || cur.OwnerEpoch != fromEpoch {
-			return types.Tailnet{}, "", fmt.Errorf("%w: tailnet %s is owned by %s at epoch %d",
-				ErrStaleEpoch, id, cur.OwnerClusterID, cur.OwnerEpoch)
-		}
-
-		// Same cluster again (a new epoch) changes no load and needs no
-		// lease; another cluster must hold a live lease and have room for
-		// the moving devices (P12, Q5, owner decision 2026-11-25; R7).
-		var moving int64
-
-		if toCluster != fromCluster {
-			moving, err = deviceCount(tx, id)
-			if err != nil {
-				return types.Tailnet{}, "", err
-			}
-		}
-
-		err = admits(tx, target[0], id, moving, toCluster != fromCluster)
-		if err != nil {
-			return types.Tailnet{}, "", err
-		}
-
-		var res *gorm.DB
-		if toCluster == fromCluster {
-			res = tx.Exec(`UPDATE tailnets SET owner_epoch = owner_epoch + 1, updated_at = ?
-				WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id IS NULL AND deleted_at IS NULL`,
-				r.now(), id, fromCluster, fromEpoch)
-		} else {
-			res = tx.Exec(`UPDATE tailnets SET moving_to_cluster_id = ?, updated_at = ?
-				WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id IS NULL AND deleted_at IS NULL`,
-				toCluster, r.now(), id, fromCluster, fromEpoch)
-		}
-
-		if res.Error != nil {
-			return types.Tailnet{}, "", fmt.Errorf("moving tailnet: %w", res.Error)
-		}
-
-		tn, err := loadTailnet(tx, id)
-		if err != nil {
-			return types.Tailnet{}, "", err
-		}
-
-		if res.RowsAffected != 1 {
-			return types.Tailnet{}, "", moveRefused(tn, fromCluster, fromEpoch)
-		}
-
-		return tn, "", nil
+		return tn, "", err
 	})
+}
+
+// moveOwnerTx is MoveOwner on tx, the caller's transaction, which already
+// holds LockOwnership on id (the scheduler requests a due move and records
+// it in one transaction, P12c C2).
+func (r *Registry) moveOwnerTx(tx *gorm.DB, id, fromCluster string, fromEpoch uint64, toCluster string) (types.Tailnet, error) {
+	target, err := lockClusters(tx, "id = ?", toCluster)
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	cur, err := loadTailnet(tx, id)
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	if cur.OwnerClusterID != fromCluster || cur.OwnerEpoch != fromEpoch {
+		return types.Tailnet{}, fmt.Errorf("%w: tailnet %s is owned by %s at epoch %d",
+			ErrStaleEpoch, id, cur.OwnerClusterID, cur.OwnerEpoch)
+	}
+
+	// Same cluster again (a new epoch) changes no load and needs no
+	// lease; another cluster must hold a live lease and have room for
+	// the moving devices (P12, Q5, owner decision 2026-11-25; R7).
+	var moving int64
+
+	if toCluster != fromCluster {
+		moving, err = deviceCount(tx, id)
+		if err != nil {
+			return types.Tailnet{}, err
+		}
+	}
+
+	err = admits(tx, target[0], id, moving, toCluster != fromCluster)
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	var res *gorm.DB
+	if toCluster == fromCluster {
+		res = tx.Exec(`UPDATE tailnets SET owner_epoch = owner_epoch + 1, updated_at = ?
+			WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id IS NULL AND deleted_at IS NULL`,
+			r.now(), id, fromCluster, fromEpoch)
+	} else {
+		res = tx.Exec(`UPDATE tailnets SET moving_to_cluster_id = ?, updated_at = ?
+			WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id IS NULL AND deleted_at IS NULL`,
+			toCluster, r.now(), id, fromCluster, fromEpoch)
+	}
+
+	if res.Error != nil {
+		return types.Tailnet{}, fmt.Errorf("moving tailnet: %w", res.Error)
+	}
+
+	tn, err := loadTailnet(tx, id)
+	if err != nil {
+		return types.Tailnet{}, err
+	}
+
+	if res.RowsAffected != 1 {
+		return types.Tailnet{}, moveRefused(tn, fromCluster, fromEpoch)
+	}
+
+	return tn, nil
 }
 
 // moveRefused explains a MoveOwner compare-and-swap that changed nothing.
