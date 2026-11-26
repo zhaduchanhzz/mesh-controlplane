@@ -73,6 +73,10 @@ EOF
   [ -z "$(field $A1 "(d.get('ExitNodeStatus') or {}).get('ID', '')")" ] || p="$p; a1 still has an exit node"
   TS $A2 "set --advertise-routes= --advertise-exit-node=false" >/dev/null 2>&1
   TS $B2 "set --advertise-routes= --advertise-exit-node=false" >/dev/null 2>&1
+  # Approvals persist (as on Tailscale): remove a2's, or a later case that
+  # advertises an exit node or 10.99.0.0/24 on a2 is active at once (S08d
+  # checks "not offered before approval"). No --routes = approve nothing.
+  [ -n "$ia" ] && { live c1 routes approve --slug a --id "$ia" >>"$ART_DIR/logs/routes.log" 2>&1 || p="$p; unapprove a2"; }
   [ -z "$p" ] && record S08 PASS "same route 10.99.0.0/24 + exit node in A and B: approved only in A, seen only by A; A's node id refused under B; a1 used a2 as exit node" || record S08 FAIL "${p#; }"
 }
 

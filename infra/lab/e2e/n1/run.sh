@@ -20,6 +20,7 @@
 # S12, S14, S16, S17, S18, M06. Batch 3 (cases3.sh): S04, S05, S06, S09, S13,
 # S13b (bootstrap flood; needs BOOT_BIN). Batch 4 (cases4.sh): S08b. Batch 5
 # (cases5.sh): S08c.0-.6 (P12d subnet routers through the tenant API only).
+# Batch 6 (cases6.sh): S08d.0-.6 (P12d exit nodes through the tenant API only).
 #
 # Usage: MODE=off|on V=1.104.7|1.84.3 BIN=… PROBE_BIN=… BOOT_BIN=… infra/lab/e2e/n1/run.sh
 # CASES="t_s01 t_s08c" (optional): setup, only these cases in this order, S99,
@@ -215,6 +216,8 @@ cleanup() {
   binsrv_stop || { log "n1-binsrv not stopped"; CLEAN_OK=0; }
   # S08c objects (router netns, LAN bridge, nft, ip_forward) left by an aborted run.
   for ip in $A1 $A2 $B2; do s08c_vm_undo "$ip" >/dev/null 2>&1 || { log "$ip: S08c objects not removed"; CLEAN_OK=0; }; done
+  # S08d objects (fake internet, exit node netns, nft, forwarding, detached units).
+  for ip in $A1 $A2 $B1 $B2; do s08d_vm_undo "$ip" >/dev/null 2>&1 || { log "$ip: S08d objects not removed"; CLEAN_OK=0; }; done
   for ip in $A1 $A2 $B1 $B2; do
     vm "$ip" "sudo journalctl -u $TSU --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/ts-$ip.log" || true
     vm "$ip" "sudo nft delete table inet n1test 2>/dev/null; true" >/dev/null 2>&1
@@ -540,13 +543,15 @@ NFT" || p="$p; nft on a2"
 . "$(dirname "$0")/cases4.sh"
 # shellcheck source=cases5.sh
 . "$(dirname "$0")/cases5.sh"
+# shellcheck source=cases6.sh
+. "$(dirname "$0")/cases6.sh"
 
 # --------------------------------------------------------------------- main ---
 # Cases taking arguments, as names CASES can list.
 t_s17_c1() { t_s17 c1 "${F02_ROUNDS:-3}"; }
 t_s17_c2() { t_s17 c2 "${F02_ROUNDS:-3}"; }
 t_s16_c1() { t_s16 S16 c1; }
-CASES_ALL="t_e00 t_s01 t_s02 t_s03 t_s11 t_s15 t_s07 t_s08 t_s08b t_s08c t_s10 t_s12 t_s14 t_m06
+CASES_ALL="t_e00 t_s01 t_s02 t_s03 t_s11 t_s15 t_s07 t_s08 t_s08b t_s08c t_s08d t_s10 t_s12 t_s14 t_m06
   t_s05 t_s06 t_s09 t_s04 t_s17_c1 t_s17_c2 t_s16_c1 t_s18 t_s13 t_s13b"
 CASES=${CASES:-$CASES_ALL}
 for c in $CASES; do
