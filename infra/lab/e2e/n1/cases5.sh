@@ -77,7 +77,7 @@ S08C_ORIG="" S08C_KID="" S08C_R1ID="" S08C_R2ID="" S08C_B2ID="" S08C_SETUP="" S0
 # s08c_api SLUG METHOD PATH [BODY [CONTENT_TYPE [HEADER...]]]: like api_v2
 # (key on stdin, never on a command line) with a body, a content type and
 # extra headers; response headers in $TMPD/s08c-hdr; prints "<status> <body>";
-# every call is logged redacted to logs/S08c-api.log.
+# every call is logged redacted to logs/S08c-api.log (or logs/$S08C_APILOG).
 s08c_api() {
   local s=$1 m=$2 path=$3 body=${4:-} ct=${5:-application/json} d=() out
   shift $(($# < 5 ? $# : 5))
@@ -88,7 +88,7 @@ for h in sys.argv[2:]: print(h)' "$TMPD/api-$s" "$@" | strip_cr \
     | curl -s -m 10 -X "$m" -H @- -H "Content-Type: $ct" "${d[@]}" -D "$TMPD/s08c-hdr" \
       -w '\n%{http_code}' "$URL1$path" 2>/dev/null \
     | py 'd = sys.stdin.read().rsplit("\n", 1); print(d[-1].strip(), d[0] if len(d) > 1 else "")' | strip_cr)
-  printf '%s %s %s %s -> %s\n' "$(date -u +%T)" "$s" "$m" "$path" "$(redact <<<"$out" | tr '\n' ' ' | head -c 240)" >>"$ART_DIR/logs/S08c-api.log"
+  printf '%s %s %s %s -> %s\n' "$(date -u +%T)" "$s" "$m" "$path" "$(redact <<<"$out" | tr '\n' ' ' | head -c 240)" >>"$ART_DIR/logs/${S08C_APILOG:-S08c-api.log}"
   printf '%s\n' "$out"
 }
 s08c_etag() { tr -d '\r' <"$TMPD/s08c-hdr" 2>/dev/null | awk 'tolower($1) == "etag:" {v = $2} END {print v}'; }
