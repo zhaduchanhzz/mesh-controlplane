@@ -3,6 +3,7 @@
 package servertest
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -14,7 +15,7 @@ import (
 // P13 helpers.
 
 // NewClusterOn builds, without starting it, a process of tc's cluster on
-// the SQLite database at path (its own Noise key), and returns NewCluster's
+// the SQLite database at path (a copy of its Noise key), and returns NewCluster's
 // error: what `headscale cluster serve` does at start on that database.
 func (tc *TestCluster) NewClusterOn(tb testing.TB, path string) error {
 	tb.Helper()
@@ -24,7 +25,20 @@ func (tc *TestCluster) NewClusterOn(tb testing.TB, path string) error {
 	cfg.Database.Sqlite.Path = path
 	cfg.Noise.PrivateKeyPath = filepath.Join(tb.TempDir(), "noise_private.key")
 
-	_, err := hscontrol.NewCluster(&cfg)
+	// P13e: a cluster process needs its Noise key file and never creates
+	// one at start; this process gets a copy of the cluster's key, as a
+	// second process of the cluster would.
+	key, err := os.ReadFile(tc.cfg.AbsPath(tc.cfg.Noise.PrivateKeyPath))
+	if err != nil {
+		return err
+	}
+
+	err = os.WriteFile(cfg.Noise.PrivateKeyPath, key, 0o600)
+	if err != nil {
+		return err
+	}
+
+	_, err = hscontrol.NewCluster(&cfg)
 
 	return err
 }
