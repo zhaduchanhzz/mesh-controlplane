@@ -397,7 +397,7 @@ func writeDNS(ctx context.Context, b Backend, tn, op string, edit func(*types.Te
 		return nil, huma.Error500InternalServerError("encoding DNS settings", err)
 	}
 
-	auditTenantWrite(ctx, b, op, rev, raw)
+	auditTenantWrite(ctx, b, TenantWrite{Op: op, Revision: rev}, raw)
 
 	return stored, nil
 }

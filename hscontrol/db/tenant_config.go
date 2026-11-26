@@ -113,33 +113,26 @@ func (hsdb *HSDatabase) TailnetRevisions() (policy, config uint64, err error) {
 // stored policy fails the caller's check (If-Match).
 var ErrPolicyPrecondition = errors.New("policy precondition failed")
 
-// SetPolicyRevisedIf is [HSDatabase.SetPolicyRevised] that first passes the
-// stored policy data ("" when none is stored) to match; false is
-// [ErrPolicyPrecondition] and nothing is stored. A nil match always passes.
+// SetPolicyRevisedIf is [HSDatabase.SetPolicyRevised] that passes the
+// stored policy data ("" when none is stored) to match in the same
+// transaction, after the ownership lock and the revision bump (P12d review
+// 3): every policy write committed before it, through any handle (the
+// operator CLI's fenced handle takes the tailnet's shared lock, SQLite
+// serialises writers), is what match sees, and none can commit between the
+// check and the store. false is [ErrPolicyPrecondition]: nothing is stored
+// and nothing bumped. A nil match always passes.
 func (hsdb *HSDatabase) SetPolicyRevisedIf(policy string, match func(stored string) bool) (*types.Policy, uint64, error) {
-	if match != nil {
-		current, err := hsdb.GetPolicy()
-		if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
-			return nil, 0, fmt.Errorf("loading policy: %w", err)
-		}
-
-		var data string
-		if current != nil {
-			data = current.Data
-		}
-
-		if !match(data) {
-			return nil, 0, ErrPolicyPrecondition
-		}
-	}
-
-	return hsdb.SetPolicyRevised(policy)
+	return hsdb.setPolicyRevised(policy, match)
 }
 
 // SetPolicyRevised is [HSDatabase.SetPolicy] that also bumps the tailnet's
 // policy_revision in the same transaction (see above), returning the new
 // revision. It needs a fenced handle.
 func (hsdb *HSDatabase) SetPolicyRevised(policy string) (*types.Policy, uint64, error) {
+	return hsdb.setPolicyRevised(policy, nil)
+}
+
+func (hsdb *HSDatabase) setPolicyRevised(policy string, match func(stored string) bool) (*types.Policy, uint64, error) {
 	type out struct {
 		p   *types.Policy
 		rev uint64
@@ -149,6 +142,22 @@ func (hsdb *HSDatabase) SetPolicyRevised(policy string) (*types.Policy, uint64, 
 		rev, err := bumpTailnetRevision(tx, colPolicyRevision)
 		if err != nil {
 			return out{}, err
+		}
+
+		if match != nil {
+			current, err := GetPolicy(tx)
+			if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
+				return out{}, fmt.Errorf("loading policy: %w", err)
+			}
+
+			var data string
+			if current != nil {
+				data = current.Data
+			}
+
+			if !match(data) {
+				return out{}, ErrPolicyPrecondition
+			}
 		}
 
 		p := types.Policy{Data: policy}

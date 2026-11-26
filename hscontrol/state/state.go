@@ -692,14 +692,25 @@ func (s *State) reloadPolicyLocked() (bool, bool, error) {
 		return false, false, fmt.Errorf("loading policy: %w", err)
 	}
 
+	return s.installPolicyLocked(pol, s.polMan.SetPolicy)
+}
+
+// installPolicyLocked installs pol with set (the policy manager's SetPolicy,
+// or SetValidatedPolicy for bytes validated under the same lock), for
+// callers holding policyMu; results as [State.reloadPolicyLocked].
+func (s *State) installPolicyLocked(pol []byte, set func([]byte) (bool, error)) (bool, bool, error) {
 	// nil means no policy is configured (none stored, or stored empty).
 	// Upstream installs nothing then and keeps the current policy. A tenant
 	// tailnet (PolicyEmptyDenies) installs deny-all at once (P12c A6, AGENTS
 	// rule 8): an operator who empties the policy revokes access now, not
 	// at the next restart. SetPolicy turns the empty input into "{}".
-	var policyChanged bool
+	var (
+		policyChanged bool
+		err           error
+	)
+
 	if pol != nil || s.cfg.PolicyEmptyDenies {
-		policyChanged, err = s.polMan.SetPolicy(pol)
+		policyChanged, err = set(pol)
 		if err != nil {
 			return false, false, fmt.Errorf("setting policy: %w", err)
 		}
@@ -718,9 +729,7 @@ func (s *State) reloadPolicyLocked() (bool, bool, error) {
 	// inputs of the peer map rebuild it themselves (node writes in the
 	// [NodeStore], [State.updatePolicyManagerNodes] and
 	// [State.updatePolicyManagerUsers]), so the O(n^2) rebuild is skipped
-	// then. The policy API handlers always get here that way: they apply
-	// the policy with [State.SetPolicy], which rebuilds, store it, and
-	// reload the very same bytes.
+	// then.
 	if policyChanged {
 		// Stale approvals must not persist if checkPeriod rules are modified
 		// or removed.
@@ -2063,37 +2072,54 @@ func (s *State) UpdatePolicyIf(pol []byte, match func(stored string) bool) (*typ
 	return stored, changes, err
 }
 
+// ErrPolicyNotInForce is returned (as a [*PolicyNotInForceError]) by
+// [State.UpdateTenantPolicyIf] for a policy that was stored, but could not
+// be installed afterwards: the write is committed, the previous policy
+// stays enforced until the stored one is installed (in cluster mode by the
+// reconcile loop, which sees its revision as not installed).
+var ErrPolicyNotInForce = errors.New("policy stored but not in force")
+
+// PolicyNotInForceError is [ErrPolicyNotInForce] with the stored revision
+// and the install error (for logs only: it may hold internals).
+type PolicyNotInForceError struct {
+	Revision uint64
+	Err      error
+}
+
+func (e *PolicyNotInForceError) Error() string {
+	return fmt.Sprintf("policy stored (revision %d) but not in force: %v", e.Revision, e.Err)
+}
+
+// Unwrap is only [ErrPolicyNotInForce]: the install error must not make
+// the write look refused (such as [ErrInvalidPolicy]).
+func (e *PolicyNotInForceError) Unwrap() error { return ErrPolicyNotInForce }
+
 // UpdateTenantPolicyIf is [State.UpdatePolicyIf] that also returns the
 // tailnet's policy_revision after the write. On a fenced handle (a cluster
 // runtime, P12d) the policy and the revision bump are stored in one
 // transaction fenced on the tailnet's ownership, so every process of the
 // cluster sees the new revision with the new policy; without a fence (one
 // tailnet, `headscale serve`) the revision is 0.
+//
+// Validating, storing and installing are one step under policyMu (P12d
+// review 2): the policy is checked (its tests included) against the users
+// and nodes of that moment, stored, then installed from the very bytes
+// validated, without running its tests a second time. A refusal before
+// the store (invalid policy, precondition, fence) stores nothing and
+// changes nothing, so nothing can install it later. Once stored, an
+// install failure is a [*PolicyNotInForceError] returned with the stored
+// policy and revision: the caller must report the write as stored; the
+// previous policy stays enforced until the stored one is installed.
 func (s *State) UpdateTenantPolicyIf(pol []byte, match func(stored string) bool) (*types.Policy, uint64, []change.Change, error) {
-	err := s.ValidatePolicy(pol)
-	if err != nil {
-		return nil, 0, nil, err
-	}
-
-	// Held from store to install: on PostgreSQL a concurrent writer could
-	// otherwise commit an older row after a newer one pruned the rest.
+	// Held from validation to install: on PostgreSQL a concurrent writer
+	// could otherwise commit an older row after a newer one pruned the
+	// rest, and the reconcile loop compares and installs under it.
 	s.policyMu.Lock()
 	defer s.policyMu.Unlock()
 
-	if match != nil {
-		current, err := s.db.GetPolicy()
-		if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
-			return nil, 0, nil, fmt.Errorf("loading policy: %w", err)
-		}
-
-		var data string
-		if current != nil {
-			data = current.Data
-		}
-
-		if !match(data) {
-			return nil, 0, nil, ErrPolicyPrecondition
-		}
+	err := s.ValidatePolicy(pol)
+	if err != nil {
+		return nil, 0, nil, err
 	}
 
 	var (
@@ -2102,9 +2128,16 @@ func (s *State) UpdateTenantPolicyIf(pol []byte, match func(stored string) bool)
 	)
 
 	if s.db.Fenced() {
-		stored, rev, err = s.db.SetPolicyRevised(string(pol))
+		// The precondition is checked in the write's transaction, after
+		// the ownership lock (P12d review 3): a policy another handle (the
+		// operator CLI) committed meanwhile is seen, never overwritten.
+		stored, rev, err = s.db.SetPolicyRevisedIf(string(pol), match)
 	} else {
-		stored, err = s.db.SetPolicy(string(pol))
+		stored, err = s.setPolicyIfLocked(string(pol), match)
+	}
+
+	if errors.Is(err, hsdb.ErrPolicyPrecondition) {
+		return nil, 0, nil, ErrPolicyPrecondition
 	}
 
 	if err != nil {
@@ -2114,13 +2147,13 @@ func (s *State) UpdateTenantPolicyIf(pol []byte, match func(stored string) bool)
 	if fn := s.policyInstallHook.Load(); fn != nil {
 		err = (*fn)()
 		if err != nil {
-			return stored, rev, nil, err
+			return stored, rev, nil, &PolicyNotInForceError{Revision: rev, Err: err}
 		}
 	}
 
-	changed, derpChanged, err := s.reloadPolicyLocked()
+	changed, derpChanged, err := s.installPolicyLocked(pol, s.polMan.SetValidatedPolicy)
 	if err != nil {
-		return stored, rev, nil, err
+		return stored, rev, nil, &PolicyNotInForceError{Revision: rev, Err: err}
 	}
 
 	if rev > 0 {
@@ -2139,6 +2172,29 @@ func (s *State) UpdateTenantPolicyIf(pol []byte, match func(stored string) bool)
 	}
 
 	return stored, rev, changes, nil
+}
+
+// setPolicyIfLocked stores data when match (if any) accepts the stored
+// policy, on a handle without a fence (one tailnet): checked under
+// policyMu, which every writer of this process holds.
+func (s *State) setPolicyIfLocked(data string, match func(stored string) bool) (*types.Policy, error) {
+	if match != nil {
+		current, err := s.db.GetPolicy()
+		if err != nil && !errors.Is(err, types.ErrPolicyNotFound) {
+			return nil, fmt.Errorf("loading policy: %w", err)
+		}
+
+		var stored string
+		if current != nil {
+			stored = current.Data
+		}
+
+		if !match(stored) {
+			return nil, hsdb.ErrPolicyPrecondition
+		}
+	}
+
+	return s.db.SetPolicy(data)
 }
 
 // TenantDNS returns the stored DNS settings of this runtime's tailnet

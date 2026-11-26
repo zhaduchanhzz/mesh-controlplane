@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/rs/zerolog/log"
 	"github.com/tailscale/hujson"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/scope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
@@ -179,12 +180,28 @@ func registerACL(api huma.API, b Backend) {
 			return nil, huma.Error412PreconditionFailed("precondition failed, invalid old hash")
 		}
 
+		// Stored, but not installed (P12d review 2): never a bare failure.
+		// The write is committed: audited, answered with its ETag and a
+		// message saying so; the previous policy stays enforced until the
+		// stored one is installed (the cluster's reconcile loop retries).
+		if errors.Is(err, state.ErrPolicyNotInForce) && updated != nil {
+			if b.Tailnet != "" {
+				auditTenantWrite(ctx, b, TenantWrite{Op: "setACL", Revision: rev, NotInForce: true}, []byte(updated.Data))
+			}
+
+			log.Error().Err(err).Str("tailnet", b.Tailnet).Uint64("revision", rev).
+				Msg("policy stored but not installed; the previous policy stays enforced")
+
+			return nil, huma.ErrorWithHeaders(huma.Error500InternalServerError(errPolicyNotInForce),
+				http.Header{"ETag": {policyETag([]byte(updated.Data))}})
+		}
+
 		if err != nil {
 			return nil, mapError("setting policy", err)
 		}
 
 		if b.Tailnet != "" {
-			auditTenantWrite(ctx, b, "setACL", rev, []byte(updated.Data))
+			auditTenantWrite(ctx, b, TenantWrite{Op: "setACL", Revision: rev}, []byte(updated.Data))
 		}
 
 		return streamPolicy([]byte(updated.Data), aclWriteContentType(in.Accept)), nil

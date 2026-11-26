@@ -88,13 +88,21 @@ func tenantPolicyLimit(b Backend) int {
 	return types.MaxTenantPolicyBytes
 }
 
-// auditTenantWrite records a stored write: the operation, the key, the
-// revision and the SHA-256 of what was stored, never the content.
-func auditTenantWrite(ctx context.Context, b Backend, op string, rev uint64, stored []byte) {
+// errPolicyNotInForce answers a policy write that was stored but could not
+// be put in force at once (P12d review 2).
+const errPolicyNotInForce = "the policy was stored but is not in force yet: " +
+	"the previous policy stays enforced until the stored one is installed; GET returns the stored policy"
+
+// auditTenantWrite records a stored write w (Op, Revision and the write's
+// own fields set by the caller): the key and the SHA-256 of what was
+// stored are added, never the content.
+func auditTenantWrite(ctx context.Context, b Backend, w TenantWrite, stored []byte) {
 	if b.Tenant == nil || b.Tenant.Audit == nil {
 		return
 	}
 
 	sum := sha256.Sum256(stored)
-	b.Tenant.Audit(TenantWrite{Op: op, KeyID: apiKeyID(ctx), Revision: rev, SHA256: hex.EncodeToString(sum[:])})
+	w.KeyID = apiKeyID(ctx)
+	w.SHA256 = hex.EncodeToString(sum[:])
+	b.Tenant.Audit(w)
 }
