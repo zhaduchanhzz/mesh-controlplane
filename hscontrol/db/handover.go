@@ -129,6 +129,7 @@ func (p *Platform) TakeOver(id tailnet.ID, from string, epoch uint64) error {
 		}
 
 		dbNow := p.dbNow()
+
 		res := tx.Exec(`UPDATE tailnets SET owner_cluster_id = moving_to_cluster_id, owner_epoch = owner_epoch + 1,
 				moving_to_cluster_id = NULL, updated_at = ?
 			WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id = ? AND deleted_at IS NULL
