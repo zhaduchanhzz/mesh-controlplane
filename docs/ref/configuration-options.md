@@ -3601,6 +3601,7 @@ Holds performance settings that rarely need changing.
         max_extra_records: 1000
         max_nameservers: 64
         max_search_domains: 64
+        max_split_domains: 64
         max_config_bytes: 262144
       incremental_netmap:
         enabled: false
@@ -3620,6 +3621,9 @@ Holds performance settings that rarely need changing.
         key_burst: 20
         preauth_rate: 50
         preauth_burst: 100
+        config_write_rate: 30
+        config_write_burst: 10
+        max_policy_bytes: 262144
       tailnet_metric_label_limit: 2000
     ```
 
@@ -3851,6 +3855,7 @@ Bounds the DNS settings each tailnet may store in cluster mode (ADR 0008).
         max_extra_records: 1000
         max_nameservers: 64
         max_search_domains: 64
+        max_split_domains: 64
         max_config_bytes: 262144
     ```
 
@@ -3936,6 +3941,34 @@ The most search domains a tailnet may store.
 
     ```nix
     services.headscale.settings.tuning.tenant_dns.max_search_domains = 16;
+    ```
+
+#### `tuning.tenant_dns.max_split_domains` { #tuning.tenant_dns.max_split_domains data-toc-label="max_split_domains" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `64`
+- **Env:** `HEADSCALE_TUNING_TENANT_DNS_MAX_SPLIT_DOMAINS`
+
+The most split DNS domains a tailnet may store, counting a domain mapped to an empty list of nameservers.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_dns:
+        max_split_domains: 16
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_DNS_MAX_SPLIT_DOMAINS=16
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_dns.max_split_domains = 16;
     ```
 
 #### `tuning.tenant_dns.max_config_bytes` { #tuning.tenant_dns.max_config_bytes data-toc-label="max_config_bytes" }
@@ -4208,6 +4241,9 @@ Limits the request rate of the public /api/v2 of a cluster, where each request i
         key_burst: 20
         preauth_rate: 50
         preauth_burst: 100
+        config_write_rate: 30
+        config_write_burst: 10
+        max_policy_bytes: 262144
     ```
 
 #### `tuning.tenant_api.global_rate` { #tuning.tenant_api.global_rate data-toc-label="global_rate" }
@@ -4432,6 +4468,90 @@ The bucket size of [`tuning.tenant_api.preauth_rate`](#tuning.tenant_api.preauth
 
     ```nix
     services.headscale.settings.tuning.tenant_api.preauth_burst = 200;
+    ```
+
+#### `tuning.tenant_api.config_write_rate` { #tuning.tenant_api.config_write_rate data-toc-label="config_write_rate" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `30`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_CONFIG_WRITE_RATE`
+
+Writes per minute per tailnet of its policy and DNS settings (policy set and validate, the DNS endpoints), on top of the request buckets: each write recompiles the tailnet's policy or sends a map to every one of its devices.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        config_write_rate: 60
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_CONFIG_WRITE_RATE=60
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.config_write_rate = 60;
+    ```
+
+#### `tuning.tenant_api.config_write_burst` { #tuning.tenant_api.config_write_burst data-toc-label="config_write_burst" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `10`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_CONFIG_WRITE_BURST`
+
+The bucket size of [`tuning.tenant_api.config_write_rate`](#tuning.tenant_api.config_write_rate).
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        config_write_burst: 20
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_CONFIG_WRITE_BURST=20
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.config_write_burst = 20;
+    ```
+
+#### `tuning.tenant_api.max_policy_bytes` { #tuning.tenant_api.max_policy_bytes data-toc-label="max_policy_bytes" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `262144`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_MAX_POLICY_BYTES`
+
+The largest policy file a tenant may store or validate through /api/v2, at most 1048576.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        max_policy_bytes: 524288
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_MAX_POLICY_BYTES=524288
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.max_policy_bytes = 524288;
     ```
 
 ### `tuning.tailnet_metric_label_limit` { #tuning.tailnet_metric_label_limit data-toc-label="tailnet_metric_label_limit" }

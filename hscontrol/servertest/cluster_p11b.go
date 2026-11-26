@@ -212,6 +212,15 @@ func (tc *TestCluster) ProcessGet(tb testing.TB, p *ClusterProcess, path string)
 	return tc.processDo(tb, p, http.MethodGet, path, nil)
 }
 
+// ProcessDo sends method path straight to p (not through the front door),
+// with the cluster hostname as Host, hdr and no body; it returns the status
+// code, 0 on error.
+func (tc *TestCluster) ProcessDo(tb testing.TB, p *ClusterProcess, method, path string, hdr http.Header) int {
+	tb.Helper()
+
+	return tc.processDo(tb, p, method, path, hdr)
+}
+
 func (tc *TestCluster) processDo(tb testing.TB, p *ClusterProcess, method, path string, hdr http.Header) int {
 	tb.Helper()
 

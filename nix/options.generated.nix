@@ -1198,6 +1198,14 @@ in
         '';
         example = 16;
       };
+      max_split_domains = lib.mkOption {
+        type = lib.types.int;
+        default = 64;
+        description = ''
+          The most split DNS domains a tailnet may store, counting a domain mapped to an empty list of nameservers.
+        '';
+        example = 16;
+      };
       max_config_bytes = lib.mkOption {
         type = lib.types.int;
         default = 262144;
@@ -1331,6 +1339,30 @@ in
           The bucket size of `tuning.tenant_api.preauth_rate`.
         '';
         example = 200;
+      };
+      config_write_rate = lib.mkOption {
+        type = lib.types.int;
+        default = 30;
+        description = ''
+          Writes per minute per tailnet of its policy and DNS settings (policy set and validate, the DNS endpoints), on top of the request buckets: each write recompiles the tailnet's policy or sends a map to every one of its devices.
+        '';
+        example = 60;
+      };
+      config_write_burst = lib.mkOption {
+        type = lib.types.int;
+        default = 10;
+        description = ''
+          The bucket size of `tuning.tenant_api.config_write_rate`.
+        '';
+        example = 20;
+      };
+      max_policy_bytes = lib.mkOption {
+        type = lib.types.int;
+        default = 262144;
+        description = ''
+          The largest policy file a tenant may store or validate through /api/v2, at most 1048576.
+        '';
+        example = 524288;
       };
     };
     tailnet_metric_label_limit = lib.mkOption {

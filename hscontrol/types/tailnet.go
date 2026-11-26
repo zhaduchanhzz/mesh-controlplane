@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 // TailnetStatus is the lifecycle state of a tailnet.
 type TailnetStatus string
@@ -31,3 +34,17 @@ type Tailnet struct {
 	// moved (P12b); bootstrap refuses it then (P11). Nil otherwise.
 	MovingToClusterID *string `gorm:"column:moving_to_cluster_id"`
 }
+
+// TailnetSettings is a tailnet's row of tailnet_settings (P06, ADR 0008
+// §2), a tenant table: its DNS settings as validated JSON ([TenantDNS]),
+// NULL for the defaults. Written by the operator (platform handle) and,
+// since P12d, by the tenant through its runtime's scoped and fenced handle.
+type TailnetSettings struct {
+	// TailnetID is the tenant this row belongs to and its primary key; the
+	// tenantscope plugin stamps and confines it.
+	TailnetID string         `gorm:"column:tailnet_id;primaryKey"`
+	DNSConfig sql.NullString `gorm:"column:dns_config"`
+}
+
+// TableName is the v0.1 table.
+func (TailnetSettings) TableName() string { return "tailnet_settings" }

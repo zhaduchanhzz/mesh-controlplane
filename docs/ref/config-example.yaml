@@ -549,6 +549,9 @@ tuning:
     max_nameservers: 64
     # The most search domains a tailnet may store.
     max_search_domains: 64
+    # The most split DNS domains a tailnet may store, counting a domain mapped
+    # to an empty list of nameservers.
+    max_split_domains: 64
     # The largest a tailnet's DNS settings may be, as stored JSON.
     max_config_bytes: 262144
   # Updates peer relationships for a joining or deleted node without rebuilding
@@ -601,6 +604,16 @@ tuning:
     preauth_rate: 50
     # The bucket size of `tuning.tenant_api.preauth_rate`.
     preauth_burst: 100
+    # Writes per minute per tailnet of its policy and DNS settings (policy set
+    # and validate, the DNS endpoints), on top of the request buckets: each
+    # write recompiles the tailnet's policy or sends a map to every one of its
+    # devices.
+    config_write_rate: 30
+    # The bucket size of `tuning.tenant_api.config_write_rate`.
+    config_write_burst: 10
+    # The largest policy file a tenant may store or validate through /api/v2, at
+    # most 1048576.
+    max_policy_bytes: 262144
   # How many tailnets get a `tailnet` label of their own on the per-tailnet
   # metrics of a cluster process (headscale_tailnet_*, operator metrics listener
   # only); the others are summed under tailnet="other". The label is the tailnet

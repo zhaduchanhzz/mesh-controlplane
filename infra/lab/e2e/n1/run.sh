@@ -18,9 +18,13 @@
 # S01, S02, S03, S11 (n1probe switch-tenant), S15 (relay region, relay path,
 # unknown key refused by derp-check). Batch 2 (cases2.sh): S07, S08, S10,
 # S12, S14, S16, S17, S18, M06. Batch 3 (cases3.sh): S04, S05, S06, S09, S13,
-# S13b (bootstrap flood; needs BOOT_BIN).
+# S13b (bootstrap flood; needs BOOT_BIN). Batch 4 (cases4.sh): S08b. Batch 5
+# (cases5.sh): S08c.0-.6 (P12d subnet routers through the tenant API only).
 #
 # Usage: MODE=off|on V=1.104.7|1.84.3 BIN=… PROBE_BIN=… BOOT_BIN=… infra/lab/e2e/n1/run.sh
+# CASES="t_s01 t_s08c" (optional): setup, only these cases in this order, S99,
+# cleanup; default: every case. t_s01 enrols the four clients: list it first
+# for any case that uses them. Names: CASES_ALL below.
 # Exit: 0 no FAIL, 1 any FAIL, 2 setup error or cleanup not proven.
 # shellcheck disable=SC2029
 set -u -o pipefail
@@ -209,6 +213,8 @@ cleanup() {
   log "cleanup"
   local n ip
   binsrv_stop || { log "n1-binsrv not stopped"; CLEAN_OK=0; }
+  # S08c objects (router netns, LAN bridge, nft, ip_forward) left by an aborted run.
+  for ip in $A1 $A2 $B2; do s08c_vm_undo "$ip" >/dev/null 2>&1 || { log "$ip: S08c objects not removed"; CLEAN_OK=0; }; done
   for ip in $A1 $A2 $B1 $B2; do
     vm "$ip" "sudo journalctl -u $TSU --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/ts-$ip.log" || true
     vm "$ip" "sudo nft delete table inet n1test 2>/dev/null; true" >/dev/null 2>&1
@@ -537,39 +543,29 @@ NFT" || p="$p; nft on a2"
 . "$(dirname "$0")/cases3.sh"
 # shellcheck source=cases4.sh
 . "$(dirname "$0")/cases4.sh"
+# shellcheck source=cases5.sh
+. "$(dirname "$0")/cases5.sh"
 
 # --------------------------------------------------------------------- main ---
+# Cases taking arguments, as names CASES can list.
+t_s17_c1() { t_s17 c1 "${F02_ROUNDS:-3}"; }
+t_s17_c2() { t_s17 c2 "${F02_ROUNDS:-3}"; }
+t_s16_c1() { t_s16 S16 c1; }
+CASES_ALL="t_e00 t_s01 t_s02 t_s03 t_s11 t_s15 t_s07 t_s08 t_s08b t_s08c t_s10 t_s12 t_s14 t_m06
+  t_s05 t_s06 t_s09 t_s04 t_s17_c1 t_s17_c2 t_s16_c1 t_s18 t_s13 t_s13b"
+CASES=${CASES:-$CASES_ALL}
+for c in $CASES; do
+  [[ " $(echo $CASES_ALL) " == *" $c "* ]] || { echo "CASES: unknown case $c (one of: $(echo $CASES_ALL))" >&2; rm -rf "$TMPD"; exit 2; }
+done
 T0=$(date +%s)
 log "N1 E2E $RUN_ID at $SHA: MODE=$MODE V=$V (artifacts: ${ART_DIR#"$REPO"/})"
 if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
   log "setup failed (see logs/setup.log)"; cleanup; exit 2
 fi
-{ echo "client: $V"; echo "incremental_netmap: $MODE"; echo "commit: $SHA"; echo "database: $PG_DB"
+{ echo "client: $V"; echo "incremental_netmap: $MODE"; echo "commit: $SHA"; echo "database: $PG_DB"; echo "cases: $(echo $CASES)"
   if [ -n "$CI_BINDIR" ]; then echo "binaries: built on mc-ci in $CI_BINDIR, fetched over the LAN"; else echo "binaries: copied from the laptop"; fi
   echo "cluster binary: $(binsha headscale | cut -c1-16)"; echo "n1probe: $(binsha n1probe | cut -c1-16)"; } >>"$ART_DIR/env.txt"
-t_e00
-t_s01
-t_s02
-t_s03
-t_s11
-t_s15
-t_s07
-t_s08
-t_s08b
-t_s10
-t_s12
-t_s14
-t_m06
-t_s05
-t_s06
-t_s09
-t_s04
-t_s17 c1 "${F02_ROUNDS:-3}"
-t_s17 c2 "${F02_ROUNDS:-3}"
-t_s16 S16 c1
-t_s18
-t_s13
-t_s13b
+for c in $CASES; do "$c"; done
 for n in cp c1b c2 c2b; do on $n "sudo journalctl -u $UNIT --since -$(( $(date +%s) - T0 + 5 ))s --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/$n-process.log"; done
 hits=$(grep -rlE 'hskey-(auth|api)-[A-Za-z0-9]{6,}|privkey:[0-9a-f]{64}|nodekey:[0-9a-f]{64}|mkey:[0-9a-f]{64}|BEGIN [A-Z ]*PRIVATE KEY|secret=[A-Za-z0-9]{20,}' "$ART_DIR" 2>/dev/null | grep -v results.tsv)
 [ -z "$hits" ] && record S99 PASS "no auth key, private key, full key or verify secret in the artifacts" || record S99 FAIL "unredacted in: $hits"
