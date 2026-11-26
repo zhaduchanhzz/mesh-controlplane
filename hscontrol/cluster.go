@@ -137,6 +137,8 @@ type Cluster struct {
 
 	// healthPing replaces the database ping of /health in tests.
 	healthPing func(context.Context) error
+	// health is the last database ping of /health (P12c L1).
+	health healthCache
 
 	// loadHook, when set (tests, SetLoadHook), runs between building a
 	// tailnet's runtime and starting it. Under mu.
@@ -981,7 +983,43 @@ func (c *Cluster) PingResponseHandler(w http.ResponseWriter, req *http.Request) 
 	http.Error(w, "unknown or expired ping", http.StatusNotFound)
 }
 
-// HealthHandler reports whether the shared database answers.
+// healthCacheTTL is how long /health reuses a database ping (P12c L1).
+const healthCacheTTL = time.Second
+
+// healthPingTimeout bounds one database ping of /health.
+const healthPingTimeout = 3 * time.Second
+
+// healthCache is the last database ping of /health. Requests within
+// healthCacheTTL of it reuse its result; a request that finds it stale
+// pings, and concurrent ones wait for that ping instead of sending theirs.
+type healthCache struct {
+	mu  sync.Mutex
+	at  time.Time
+	err error
+}
+
+func (hc *healthCache) check(ctx context.Context, ping func(context.Context) error) error {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+
+	if !hc.at.IsZero() && time.Since(hc.at) < healthCacheTTL {
+		return hc.err
+	}
+
+	// The ping outlives a client that hangs up: its result serves the next
+	// requests.
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), healthPingTimeout)
+	defer cancel()
+
+	hc.err = ping(pctx)
+	hc.at = time.Now()
+
+	return hc.err
+}
+
+// HealthHandler reports whether the shared database answers. The listener
+// is public and unauthenticated, so the database is pinged at most once per
+// healthCacheTTL however many requests arrive (P12c L1).
 func (c *Cluster) HealthHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/health+json")
 
@@ -990,7 +1028,7 @@ func (c *Cluster) HealthHandler(w http.ResponseWriter, req *http.Request) {
 		ping = c.platform.Ping
 	}
 
-	err := ping(req.Context())
+	err := c.health.check(req.Context(), ping)
 	if err != nil {
 		log.Error().Err(err).Msg("health check failed")
 		w.WriteHeader(http.StatusInternalServerError)
