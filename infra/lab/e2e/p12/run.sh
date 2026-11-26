@@ -324,6 +324,11 @@ backend c1
 EOF
   cp_ "sudo systemctl reset-failed mesh-c1-ha 2>/dev/null; sudo systemd-run --quiet --unit=mesh-c1-ha /usr/sbin/haproxy -Ws -f /etc/haproxy/mesh-c1-p12.cfg" || return 1
 
+  # P13d (ADR 0013): cluster processes, mesh-placement and the admin CLI never
+  # migrate; the operator step creates the schema of the fresh database.
+  log "schema: migrate step"
+  cli c1 "migrate" >"$ART_DIR/logs/migrate.json" || { log "migrate step failed"; return 1; }
+
   log "mesh-placement on mc-cp loopback (throwaway CA under $PLDIR)"
   scp -q -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes "$PLBIN" "$CP_SSH:/tmp/p12-pl" || return 1
   cp_ "set -e; sudo install -m 0755 /tmp/p12-pl /usr/local/bin/mesh-placement-p12; rm -f /tmp/p12-pl

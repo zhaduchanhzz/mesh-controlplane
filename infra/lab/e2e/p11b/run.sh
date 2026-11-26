@@ -271,6 +271,10 @@ backend c1
 EOF
   cp_ "sudo systemctl reset-failed mesh-c1-ha 2>/dev/null; sudo systemd-run --quiet --unit=mesh-c1-ha /usr/sbin/haproxy -Ws -f /etc/haproxy/mesh-c1.cfg" || return 1
 
+  # P13d (ADR 0013): cluster processes, mesh-placement and the admin CLI never
+  # migrate; the operator step creates the schema of the fresh database.
+  log "schema: migrate step"
+  cp_ "$HSC migrate" >"$ART_DIR/logs/migrate.json" || { log "migrate step failed"; return 1; }
   # P12 (owner decision 2026-11-25): tailnets are created only on a
   # registered ACTIVE cluster whose process holds its lease: register, start
   # both processes, then create the tailnets live (the active one loads them).

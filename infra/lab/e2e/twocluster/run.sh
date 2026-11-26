@@ -226,6 +226,10 @@ setup() {
     sudo sed -i 's/^    name: .*/    name: $PG_DB/' $CFG
     sudo grep -q '^    name: $PG_DB\$' $CFG" || return 1
 
+  # P13d (ADR 0013): cluster processes, mesh-placement and the admin CLI never
+  # migrate; the operator step creates the schema of the fresh database.
+  log "schema: migrate step"
+  cp_ "$HSC1 migrate" >"$ART_DIR/logs/migrate.json" || { log "migrate step failed"; return 1; }
   # P12 (owner decision 2026-11-25): tailnets are created only on a
   # registered ACTIVE cluster whose process holds its lease: register and
   # start both clusters, then create the tailnets live.
