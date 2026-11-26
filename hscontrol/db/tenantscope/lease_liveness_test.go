@@ -289,3 +289,144 @@ func TestLeaseTakeoverWaitsForInFlightFencedWrite(t *testing.T) {
 
 	assertAllWritesFenced(t, db, oldCtx, leaseCtx(t, a.l.Holder, a.l.Epoch))
 }
+
+// TestLeaseFenceIdleTransactionReleasedForTakeover (P12c B2): the active
+// process is paused (SIGSTOP) or cut off between a fenced write and its
+// COMMIT. Its open transaction must not keep the standby from taking the
+// expired lease over: the database ends it within the bound set by the
+// fence, and the takeover follows.
+func TestLeaseFenceIdleTransactionReleasedForTakeover(t *testing.T) {
+	db, s := postgresLeaseDB(t)
+
+	const ttl = 2 * time.Second
+
+	old, err := s.Acquire(context.Background(), testCluster, "a", ttl)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx := db.WithContext(leaseCtx(t, old.Holder, old.Epoch)).Begin()
+	defer tx.Rollback()
+
+	err = tx.Model(&item{}).Where("name LIKE ?", "i0-%").Update("name", "abandoned").Error
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idleFrom := time.Now()
+
+	// The standby polls as lease.Manager does, each try bounded.
+	var (
+		nl  lease.Lease
+		got bool
+	)
+
+	for time.Since(idleFrom) < 15*time.Second {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		l, err := s.Acquire(ctx, testCluster, "b", time.Minute)
+
+		cancel()
+
+		if err == nil {
+			nl, got = l, true
+
+			break
+		}
+
+		time.Sleep(100 * time.Millisecond) //nolint:forbidigo // the standby's acquire interval
+	}
+
+	took := time.Since(idleFrom)
+	bound := ttl + selfFenceDeadline/2 + time.Second
+
+	if !got {
+		t.Fatalf("standby could not take the lease %s after the active process left a fenced transaction open", took)
+	}
+
+	t.Logf("takeover %s after the fenced transaction went idle (lease ttl %s, bound %s)", took, ttl, bound)
+
+	if took > bound {
+		t.Fatalf("takeover took %s, want <= %s", took, bound)
+	}
+
+	if nl.Epoch != old.Epoch+1 {
+		t.Fatalf("takeover lease %+v", nl)
+	}
+
+	err = tx.Commit().Error
+	if err == nil {
+		t.Fatal("the abandoned transaction committed after the takeover")
+	}
+
+	var it item
+
+	err = db.WithContext(leaseCtx(t, nl.Holder, nl.Epoch)).Where("name = ?", "abandoned").First(&it).Error
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("write of the abandoned transaction visible: %+v err=%v", it, err)
+	}
+}
+
+// TestFenceTimeoutsAreTransactionLocal (P12c B2, ADR 0006): a fenced write
+// bounds the rest of its transaction (idle in transaction, statement, lock
+// wait) with transaction-local settings only, so a pooled server connection
+// (PgBouncer transaction mode) returns to the pool with its defaults.
+func TestFenceTimeoutsAreTransactionLocal(t *testing.T) {
+	db, s := postgresLeaseDB(t)
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sqlDB.SetMaxOpenConns(1)
+
+	l, err := s.Acquire(context.Background(), testCluster, "a", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	show := func(tx *gorm.DB, name string) string {
+		t.Helper()
+
+		var v string
+
+		err := tx.Raw("SELECT current_setting('" + name + "')").Scan(&v).Error
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return v
+	}
+
+	settings := []string{"idle_in_transaction_session_timeout", "statement_timeout", "lock_timeout"}
+	want := fmt.Sprintf("%dms", (selfFenceDeadline / 2).Milliseconds())
+
+	for name, ctx := range map[string]context.Context{
+		"lease fence":    leaseCtx(t, l.Holder, l.Epoch),
+		"operator fence": ctxFor(t, idA),
+	} {
+		err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			err := tx.Model(&item{}).Where("name LIKE ?", "i0-%").Update("name", "bounded").Error
+			if err != nil {
+				return err
+			}
+
+			for _, set := range settings {
+				if got := show(tx, set); got != want && got != (selfFenceDeadline/2).String() {
+					t.Errorf("%s: %s inside the fenced transaction = %q, want %s", name, set, got, want)
+				}
+			}
+
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, set := range settings {
+			if got := show(db, set); got != "0" {
+				t.Errorf("%s: %s after the transaction = %q, want the default 0", name, set, got)
+			}
+		}
+	}
+}
