@@ -514,6 +514,7 @@ func TestManagerRenewsDuringSlowOnAcquire(t *testing.T) {
 
 	// While loading, the process is active as long as the renewals succeed.
 	time.Sleep(fast.TTL) //nolint:forbidigo // past the first deadline
+
 	if _, ok := m.Current(); !ok {
 		t.Error("lease reported lost while onAcquire was still loading and renewals succeed")
 	}
@@ -558,7 +559,9 @@ func TestManagerSelfFencesDuringSlowOnAcquire(t *testing.T) {
 
 	go m.Run(ctx, func(context.Context, Lease) error {
 		acquired <- time.Now()
+
 		<-release
+
 		returned <- time.Now()
 
 		return nil

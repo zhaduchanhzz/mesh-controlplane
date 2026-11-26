@@ -159,6 +159,7 @@ func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease
 		go func() {
 			reason := m.hold(hctx, l)
 			m.clear()
+
 			ended <- reason
 		}()
 

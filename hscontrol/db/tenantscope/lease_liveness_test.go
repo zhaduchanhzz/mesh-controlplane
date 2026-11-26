@@ -122,10 +122,9 @@ func TestLeaseRenewNotStarvedByFencedWriters(t *testing.T) {
 
 	const renewals = 5
 
-	var (
-		took   []time.Duration
-		failed []error
-	)
+	took := make([]time.Duration, 0, renewals)
+
+	var failed []error
 
 	for range renewals {
 		ctx, cancel := context.WithTimeout(context.Background(), selfFenceDeadline)

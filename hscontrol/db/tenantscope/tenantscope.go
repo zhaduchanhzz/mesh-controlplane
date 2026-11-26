@@ -388,8 +388,8 @@ func checkFence(db *gorm.DB) {
 // SetTransactionBound), lease or not.
 func checkLease(db *gorm.DB, f tailnet.Fence) {
 	holder, epoch, ok := f.Lease()
-	pg := db.Name() == "postgres"
 
+	pg := db.Name() == "postgres"
 	if !ok {
 		if pg {
 			boundTransaction(db, "")
