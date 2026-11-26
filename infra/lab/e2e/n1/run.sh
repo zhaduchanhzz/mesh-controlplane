@@ -21,6 +21,10 @@
 # S13b (bootstrap flood; needs BOOT_BIN). Batch 4 (cases4.sh): S08b. Batch 5
 # (cases5.sh): S08c.0-.6 (P12d subnet routers through the tenant API only).
 # Batch 6 (cases6.sh): S08d.0-.6 (P12d exit nodes through the tenant API only).
+# Batch 7 (cases7.sh): M06x.0-.d (P14f F6: tag/route/setACL/delete changes reach
+# a real client through the delta path only, <= M06X_BOUND s per round).
+# N1_RECONCILE_INTERVAL / N1_FULL_MAP_INTERVAL (default 1h each): the
+# incremental netmap safety nets; 1h keeps them out of every case's window.
 #
 # Usage: MODE=off|on V=1.104.7|1.84.3 BIN=… PROBE_BIN=… BOOT_BIN=… infra/lab/e2e/n1/run.sh
 # CASES="t_s01 t_s08c" (optional): setup, only these cases in this order, S99,
@@ -222,6 +226,7 @@ cleanup() {
     vm "$ip" "sudo journalctl -u $TSU --no-pager" 2>/dev/null | redact >"$ART_DIR/logs/ts-$ip.log" || true
     vm "$ip" "sudo nft delete table inet n1test 2>/dev/null; true" >/dev/null 2>&1
     ts_stop "$ip" >/dev/null 2>&1 || { log "$ip tailscaled not stopped"; CLEAN_OK=0; }
+    vm "$ip" "sudo rm -rf $TSDIR.keep" >/dev/null 2>&1 || true  # state parked by M06/M06x (ts_aside)
   done
   vps "rm -f /tmp/n1s13-$RUN_ID-*" >/dev/null 2>&1 || true
   cp_ "sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null; sudo systemctl reset-failed mesh-bootstrap-e2e 2>/dev/null; sudo rm -f /usr/local/bin/mesh-bootstrap; true" >/dev/null 2>&1
@@ -305,6 +310,7 @@ EOF
     skip && /^[^ ]/ { skip = 0 }
     !skip { print }' "$REPO/infra/lab/mc-cp/cluster/config.yaml" >"$TMPD/c1.yaml"
   local inc=0; [ "$MODE" = on ] && inc=1
+  local ivl="--reconcile=${N1_RECONCILE_INTERVAL:-1h} --fullmap=${N1_FULL_MAP_INTERVAL:-1h}"
   sed "s#^listen_addr: .*#listen_addr: 192.168.1.241:8443#" "$TMPD/c1.yaml" >"$TMPD/c1-cp.yaml"
   sed "s#^listen_addr: .*#listen_addr: 0.0.0.0:8443#" "$TMPD/c1.yaml" >"$TMPD/c1-b.yaml"
 
@@ -329,13 +335,13 @@ EOF
   cp_ "cat >/tmp/c1-src.yaml" <"$TMPD/c1-cp.yaml" || return 1
   on c1b "cat >/tmp/c1-src.yaml" <"$TMPD/c1-b.yaml" || return 1
   for n in cp c1b; do
-    on $n "set -e; sudo python3 /tmp/cfg-n1.py /tmp/c1-src.yaml /tmp/c1-n1.yaml $DERPMAP $VSECRET $inc
+    on $n "set -e; sudo python3 /tmp/cfg-n1.py $ivl /tmp/c1-src.yaml /tmp/c1-n1.yaml $DERPMAP $VSECRET $inc
       sudo install -o root -g headscale -m 0640 /tmp/c1-n1.yaml $CFG; sudo rm -f /tmp/c1-src.yaml /tmp/c1-n1.yaml /tmp/cfg-n1.py" || return 1
   done
   log "mc-c2, mc-c2b: stop long-lived c2; run config = theirs on $PG_DB with the relay"
   for n in c2 c2b; do
     on $n "set -e; sudo systemctl stop headscale-cluster
-      sudo python3 /tmp/cfg-n1.py /etc/headscale/cluster/config.yaml /tmp/c2-n1.yaml $DERPMAP $VSECRET $inc $PG_DB
+      sudo python3 /tmp/cfg-n1.py $ivl /etc/headscale/cluster/config.yaml /tmp/c2-n1.yaml $DERPMAP $VSECRET $inc $PG_DB
       sudo install -o root -g headscale -m 0640 /tmp/c2-n1.yaml $CFG; sudo rm -f /tmp/c2-n1.yaml /tmp/cfg-n1.py
       sudo grep -q '^    name: $PG_DB\$' $CFG" || return 1
   done
@@ -545,6 +551,8 @@ NFT" || p="$p; nft on a2"
 . "$(dirname "$0")/cases5.sh"
 # shellcheck source=cases6.sh
 . "$(dirname "$0")/cases6.sh"
+# shellcheck source=cases7.sh
+. "$(dirname "$0")/cases7.sh"
 
 # --------------------------------------------------------------------- main ---
 # Cases taking arguments, as names CASES can list.
@@ -552,7 +560,7 @@ t_s17_c1() { t_s17 c1 "${F02_ROUNDS:-3}"; }
 t_s17_c2() { t_s17 c2 "${F02_ROUNDS:-3}"; }
 t_s16_c1() { t_s16 S16 c1; }
 CASES_ALL="t_e00 t_s01 t_s02 t_s03 t_s11 t_s15 t_s07 t_s08 t_s08b t_s08c t_s08d t_s10 t_s12 t_s14 t_m06
-  t_s05 t_s06 t_s09 t_s04 t_s17_c1 t_s17_c2 t_s16_c1 t_s18 t_s13 t_s13b"
+  t_s05 t_s06 t_s09 t_s04 t_s17_c1 t_s17_c2 t_s16_c1 t_s18 t_s13 t_s13b t_m06x"
 CASES=${CASES:-$CASES_ALL}
 for c in $CASES; do
   [[ " $(echo $CASES_ALL) " == *" $c "* ]] || { echo "CASES: unknown case $c (one of: $(echo $CASES_ALL))" >&2; rm -rf "$TMPD"; exit 2; }
@@ -562,7 +570,7 @@ log "N1 E2E $RUN_ID at $SHA: MODE=$MODE V=$V (artifacts: ${ART_DIR#"$REPO"/})"
 if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
   log "setup failed (see logs/setup.log)"; cleanup; exit 2
 fi
-{ echo "client: $V"; echo "incremental_netmap: $MODE"; echo "commit: $SHA"; echo "database: $PG_DB"; echo "cases: $(echo $CASES)"
+{ echo "client: $V"; echo "incremental_netmap: $MODE (reconcile ${N1_RECONCILE_INTERVAL:-1h}, full map ${N1_FULL_MAP_INTERVAL:-1h})"; echo "commit: $SHA"; echo "database: $PG_DB"; echo "cases: $(echo $CASES)"
   if [ -n "$CI_BINDIR" ]; then echo "binaries: built on mc-ci in $CI_BINDIR, fetched over the LAN"; else echo "binaries: copied from the laptop"; fi
   echo "cluster binary: $(binsha headscale | cut -c1-16)"; echo "n1probe: $(binsha n1probe | cut -c1-16)"; } >>"$ART_DIR/env.txt"
 for c in $CASES; do "$c"; done

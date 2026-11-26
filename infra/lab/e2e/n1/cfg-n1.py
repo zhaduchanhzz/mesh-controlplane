@@ -1,5 +1,7 @@
 # Rewrite a cluster config for the N1 E2E (runs on the cluster host):
-#   python3 cfg-n1.py SRC DST DERPMAP VERIFY_SECRET_PATH INCREMENTAL(0|1) [DBNAME]
+#   python3 cfg-n1.py [--reconcile=DUR] [--fullmap=DUR] SRC DST DERPMAP VERIFY_SECRET_PATH INCREMENTAL(0|1) [DBNAME]
+# --reconcile/--fullmap: tuning.incremental_netmap reconcile_interval and
+# full_map_interval (default 1h each: out of every case's window).
 # Replaces the top-level `derp:` block (own relay region, no public DERP,
 # external-DERP verify secret), sets tuning.incremental_netmap.enabled and,
 # when DBNAME is given, the postgres database name. Text-based on purpose
@@ -7,8 +9,18 @@
 import re
 import sys
 
-src, dst, derpmap, secret, inc = sys.argv[1:6]
-dbname = sys.argv[6] if len(sys.argv) > 6 else ""
+opts = {"reconcile": "1h", "fullmap": "1h"}
+args = []
+for a in sys.argv[1:]:
+    m = re.match(r"^--(reconcile|fullmap)=([0-9]+[smh])$", a)
+    if m:
+        opts[m.group(1)] = m.group(2)
+    elif a.startswith("--"):
+        sys.exit(f"cfg-n1: bad option {a!r} (want --reconcile=/--fullmap=<n>[smh])")
+    else:
+        args.append(a)
+src, dst, derpmap, secret, inc = args[0:5]
+dbname = args[5] if len(args) > 5 else ""
 lines = open(src, encoding="utf-8").read().splitlines()
 
 
@@ -39,8 +51,8 @@ lines += [
 inc_block = [
     "  incremental_netmap:",
     f"    enabled: {'true' if inc == '1' else 'false'}",
-    "    reconcile_interval: 1h",
-    "    full_map_interval: 1h",
+    f"    reconcile_interval: {opts['reconcile']}",
+    f"    full_map_interval: {opts['fullmap']}",
 ]
 if any(re.match(r"^tuning:\s*$", ln) for ln in lines):
     if any("incremental_netmap:" in ln for ln in lines):

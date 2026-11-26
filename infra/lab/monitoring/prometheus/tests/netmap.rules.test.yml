@@ -1,0 +1,81 @@
+# P14f F6: promtool unit tests of ../rules/netmap.rules.yml
+# (promtool test rules netmap.rules.test.yml).
+rule_files:
+  - ../rules/netmap.rules.yml
+
+evaluation_interval: 15s
+
+tests:
+  # cp-a: a reconciliation diverges at 5m with 2 extra and 0 missing (both
+  # series appear then). c2-a: its existing missing series grows at 10m.
+  - interval: 15s
+    input_series:
+      - series: 'headscale_nodestore_netmap_divergence_total{kind="extra",job="mesh-cluster",instance="192.168.1.241:9095"}'
+        values: '_x19 2x80'
+      - series: 'headscale_nodestore_netmap_divergence_total{kind="missing",job="mesh-cluster",instance="192.168.1.241:9095"}'
+        values: '_x19 0x80'
+      - series: 'headscale_nodestore_netmap_divergence_total{kind="extra",job="mesh-cluster",instance="192.168.1.244:9095"}'
+        values: '0x99'
+      - series: 'headscale_nodestore_netmap_divergence_total{kind="missing",job="mesh-cluster",instance="192.168.1.244:9095"}'
+        values: '0x39 3x60'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MeshNetmapDivergenceExtra
+        exp_alerts: []
+      # The series appeared at 4m45s with value 2: increase() cannot see it,
+      # the "unless offset 10m" term does.
+      - eval_time: 5m
+        alertname: MeshNetmapDivergenceExtra
+        exp_alerts:
+          - exp_labels: { severity: critical, kind: extra, job: mesh-cluster, instance: "192.168.1.241:9095" }
+            exp_annotations:
+              summary: "192.168.1.241:9095: incremental netmap listed peers the full build does not (possible isolation fault)"
+              description: "Reconciliation on 192.168.1.241:9095 found peer entries the full build does not allow (kind=extra) in the last 10 minutes. They were replaced and full maps sent; find the tenant in headscale_tailnet_netmap_divergence_total{kind=\"extra\"} and the redacted log 'netmap divergence'. If it repeats, set tuning.incremental_netmap.enabled: false (standby first, then switchover)."
+      # More than 10 minutes later, no new divergence: quiet again.
+      - eval_time: 16m
+        alertname: MeshNetmapDivergenceExtra
+        exp_alerts: []
+      # cp-a's missing series appeared at 0 (only extra diverged): no
+      # missing alert for it; c2-a's grew at 10m: warning.
+      - eval_time: 5m
+        alertname: MeshNetmapDivergenceMissing
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: MeshNetmapDivergenceMissing
+        exp_alerts:
+          - exp_labels: { severity: warning, kind: missing, job: mesh-cluster, instance: "192.168.1.244:9095" }
+            exp_annotations:
+              summary: "192.168.1.244:9095: incremental netmap missed peers the full build has"
+              description: "Reconciliation on 192.168.1.244:9095 found peer entries missing from the incremental adjacency (kind=missing) in the last 10 minutes; they were repaired and full maps sent. Repeated firing means a bug in the incremental path."
+      - eval_time: 24m
+        alertname: MeshNetmapDivergenceMissing
+        exp_alerts: []
+
+  # Reconciliation: cp-a (active) reconciles every minute until 10m, then
+  # stops; c1b-b (standby, lease 0) never reconciles after an old run;
+  # c2-a (active) never reconciled (no tenant runtime): only cp-a fires.
+  - interval: 15s
+    input_series:
+      - series: 'headscale_nodestore_netmap_reconcile_duration_seconds_count{job="mesh-cluster",instance="192.168.1.241:9095"}'
+        values: '0+0.25x40 10x40'
+      - series: 'headscale_nodestore_netmap_reconcile_duration_seconds_count{job="mesh-cluster",instance="192.168.1.245:9095"}'
+        values: '7x80'
+      - series: 'headscale_nodestore_netmap_reconcile_duration_seconds_count{job="mesh-cluster",instance="192.168.1.244:9095"}'
+        values: '0x80'
+      - series: 'headscale_cluster_lease_held{cluster="c1",holder="cp-a",job="mesh-cluster",instance="192.168.1.241:9095"}'
+        values: '1x80'
+      - series: 'headscale_cluster_lease_held{cluster="c1",holder="c1b-b",job="mesh-cluster",instance="192.168.1.245:9095"}'
+        values: '0x80'
+      - series: 'headscale_cluster_lease_held{cluster="c2",holder="c2-a",job="mesh-cluster",instance="192.168.1.244:9095"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: MeshNetmapReconcileStalled
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: MeshNetmapReconcileStalled
+        exp_alerts:
+          - exp_labels: { severity: warning, job: mesh-cluster, instance: "192.168.1.241:9095" }
+            exp_annotations:
+              summary: "192.168.1.241:9095: no netmap reconciliation for more than 3 minutes"
+              description: "The active process 192.168.1.241:9095 has reconciled before but not in the last 3 minutes (3 x reconcile_interval): the background check of the incremental netmap is not running, so a divergence would go unnoticed until the periodic full map."
