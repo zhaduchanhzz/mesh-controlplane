@@ -84,8 +84,8 @@ func TestNoiseKeyInstall(t *testing.T) {
 func TestNoiseKeyRotateAndShow(t *testing.T) {
 	for _, backend := range []string{"sqlite", "postgres"} {
 		t.Run(backend, func(t *testing.T) {
-			p := p12Platform(t, backend, "c1")
-			p12Register(t, p, "c1", placement.ClassShared, placement.ClusterActive)
+			p := p12Platform(t, backend, "nk1")
+			p12Register(t, p, "nk1", placement.ClassShared, placement.ClusterActive)
 
 			k1 := key.NewMachine()
 			path := writeKeyFile(t, k1)
@@ -97,7 +97,7 @@ func TestNoiseKeyRotateAndShow(t *testing.T) {
 			assert.False(t, st.Match)
 
 			// Default: the public key of the local key file.
-			c, err := rotateNoiseKeyCLI(t.Context(), p, "c1", "", path)
+			c, err := rotateNoiseKeyCLI(t.Context(), p, "nk1", "", path)
 			require.NoError(t, err)
 			assert.Equal(t, k1.Public().String(), c.NoisePublicKey)
 
@@ -106,11 +106,11 @@ func TestNoiseKeyRotateAndShow(t *testing.T) {
 			assert.True(t, st.Match)
 
 			// --public-key, validated.
-			_, err = rotateNoiseKeyCLI(t.Context(), p, "c1", "mkey:nope", path)
+			_, err = rotateNoiseKeyCLI(t.Context(), p, "nk1", "mkey:nope", path)
 			require.ErrorIs(t, err, placement.ErrInvalid)
 
 			k2 := key.NewMachine().Public().String()
-			c, err = rotateNoiseKeyCLI(t.Context(), p, "c1", k2, path)
+			c, err = rotateNoiseKeyCLI(t.Context(), p, "nk1", k2, path)
 			require.NoError(t, err)
 			assert.Equal(t, k2, c.NoisePublicKey)
 
