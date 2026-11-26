@@ -711,12 +711,29 @@ func (c *Cluster) awaitStopped(id tailnet.ID, epoch uint64, to string) bool {
 	return true
 }
 
-// tryHandOver flips right after a drain ended, if it can take leaseMu at
-// once: never blocking a lease change or shutdown (which wait for c.stopping
-// under leaseMu). Otherwise the next reconcile does it.
+// tryHandOver flips right after a drain ended. It polls leaseMu with
+// TryLock for at most one reconcile interval (the reconcile that retired the
+// runtime usually still holds it) and gives up as soon as the process stops
+// serving: a lease change or shutdown waits for c.stopping under leaseMu, so
+// this goroutine must never block on it. A give-up leaves the flip to the
+// next reconcile.
 func (c *Cluster) tryHandOver(id tailnet.ID, epoch uint64, to string) {
-	if !c.leaseMu.TryLock() {
-		return
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+
+	giveUp := time.NewTimer(reconcileInterval)
+	defer giveUp.Stop()
+
+	for !c.leaseMu.TryLock() {
+		if !c.ready.Load() {
+			return
+		}
+
+		select {
+		case <-poll.C:
+		case <-giveUp.C:
+			return
+		}
 	}
 	defer c.leaseMu.Unlock()
 
