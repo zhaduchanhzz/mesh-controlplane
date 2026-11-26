@@ -42,7 +42,7 @@ func TestDefaultHoldsDefaults(t *testing.T) {
 	assert.EqualValues(t, 1_000_000, d.Tuning.MaxPeerEntries, "P10d: a full mesh of 1000 nodes")
 	assert.Equal(t, types.TenantDNSLimits{MaxExtraRecords: 1000, MaxNameservers: 64, MaxSearchDomains: 64, MaxSplitDomains: 64, MaxConfigBytes: 256 << 10},
 		d.Tuning.TenantDNS, "P06 / ADR 0008 Q-a")
-	assert.False(t, d.Tuning.IncrementalNetmap.Enabled, "P00d: the incremental netmap is off by default")
+	assert.True(t, d.Tuning.IncrementalNetmap.Enabled, "P14f / ADR 0015 D1: the incremental netmap is on by default; off is the kill switch")
 	assert.Equal(t, 60*time.Second, d.Tuning.IncrementalNetmap.ReconcileInterval)
 	assert.Equal(t, 15*time.Minute, d.Tuning.IncrementalNetmap.FullMapInterval)
 	require.Equal(t, []string{"9.9.9.9:53", "149.112.112.112:53"}, d.DNSConfig.Challenge.Resolvers)
