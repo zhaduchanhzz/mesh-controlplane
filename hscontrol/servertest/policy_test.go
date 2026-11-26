@@ -97,10 +97,13 @@ func TestPolicyChanges(t *testing.T) {
 			counts[i] = c.UpdateCount()
 		}
 
-		// Change policy.
+		// Change policy so every node's filter changes (a second rule):
+		// with delta-first (ADR 0015 D2) only a change to what a node
+		// holds reaches it, and this one does reach every node.
 		h.ChangePolicy(t, []byte(`{
 			"acls": [
-				{"action": "accept", "src": ["*"], "dst": ["*:*"]}
+				{"action": "accept", "src": ["*"], "dst": ["*:*"]},
+				{"action": "accept", "src": ["*"], "dst": ["*:443"]}
 			]
 		}`))
 
@@ -210,13 +213,14 @@ func TestPolicyChanges(t *testing.T) {
 				return nm.SSHPolicy != nil && len(nm.SSHPolicy.Rules) > 0
 			})
 
-		countBefore := h.Client(0).UpdateCount()
-
+		// The group change alters neither filter nor SSH rules, so with
+		// delta-first no frame goes out; wait for the server to have
+		// handed out the change, then the client must still hold its rules.
 		h.ChangePolicy(t, withSSH("b"))
-		h.Client(0).WaitForCondition(t, "policy update with SSH rules kept", 10*time.Second,
+		h.Server.WaitMapsDelivered(t, 10*time.Second)
+		h.Client(0).WaitForCondition(t, "SSH rules kept after unrelated policy change", 10*time.Second,
 			func(nm *netmap.NetworkMap) bool {
-				return h.Client(0).UpdateCount() > countBefore &&
-					nm.SSHPolicy != nil && len(nm.SSHPolicy.Rules) > 0
+				return nm.SSHPolicy != nil && len(nm.SSHPolicy.Rules) > 0
 			})
 	})
 

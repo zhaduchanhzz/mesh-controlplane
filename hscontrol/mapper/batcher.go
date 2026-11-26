@@ -977,6 +977,32 @@ func (b *Batcher) DebugMapResponses() (map[types.NodeID][]tailcfg.MapResponse, e
 	return b.mapper.debugMapResponses()
 }
 
+// Idle reports whether every queued change has been rendered and handed
+// to the nodes' connections: no node has pending changes or a bundle in
+// flight. With delta-first (P14f F3) a change that alters nothing for a
+// node sends it no frame, so tests wait on this instead of on a frame.
+func (b *Batcher) Idle() bool {
+	idle := true
+
+	b.nodes.Range(func(_ types.NodeID, nc *multiChannelNodeConn) bool {
+		if nc == nil {
+			return true
+		}
+
+		nc.pendingMu.Lock()
+		pending := len(nc.pending)
+		nc.pendingMu.Unlock()
+
+		if pending > 0 || nc.inFlight.Load() {
+			idle = false
+		}
+
+		return idle
+	})
+
+	return idle
+}
+
 // WorkErrors returns the count of work errors encountered.
 // This is primarily useful for testing and debugging.
 func (b *Batcher) WorkErrors() int64 {
