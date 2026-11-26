@@ -292,18 +292,52 @@ func validateClusterConfig(cfg *types.Config) error {
 	return nil
 }
 
-// load builds the runtime of tn (not started) and registers it.
-func (c *Cluster) load(tn types.Tailnet) error {
+// serveTailnet loads tn's runtime, starts it, and only then makes it
+// routable (P12c B5): a request routed to a runtime that is built but not
+// started (no map batcher yet) panicked, and a long poll left its node
+// online. Until it is routable, its requests are refused like those of a
+// tailnet this process does not serve. A runtime that fails to start is
+// stopped, never routed. Callers hold leaseMu.
+func (c *Cluster) serveTailnet(tn types.Tailnet, why string) {
+	rt, err := c.load(tn)
+	if err != nil {
+		log.Error().Err(err).Str("tailnet", tn.ID).Msg(why + ": loading tailnet")
+
+		return
+	}
+
+	c.runLoadHook(rt.id)
+
+	err = c.start(rt)
+	if err != nil {
+		log.Error().Err(err).Str("tailnet", tn.ID).Msg(why + ": starting tailnet")
+
+		rt.h.retired.Store(true)
+		c.stopping.Go(func() { c.stopRuntime(rt) })
+
+		return
+	}
+
+	c.mu.Lock()
+	c.runtimes[rt.id] = rt
+	c.order = append(c.order, rt.id)
+	c.mu.Unlock()
+
+	log.Info().Str("tailnet", rt.id.String()).Str("slug", rt.slug).Uint64("epoch", rt.epoch).Msg("serving tailnet runtime")
+}
+
+// load builds the runtime of tn: not started, not routable.
+func (c *Cluster) load(tn types.Tailnet) (*tenantRuntime, error) {
 	id, err := tailnet.ParseID(tn.ID)
 	if err != nil {
-		return fmt.Errorf("tailnet %q: %w", tn.ID, err)
+		return nil, fmt.Errorf("tailnet %q: %w", tn.ID, err)
 	}
 
 	// TenantDB re-reads the row: owner, ACTIVE and the epoch the handle is
 	// fenced on come from the same read.
 	tdb, err := c.platform.TenantDB(id)
 	if err != nil {
-		return fmt.Errorf("tailnet %s: %w", id, err)
+		return nil, fmt.Errorf("tailnet %s: %w", id, err)
 	}
 
 	// The runtime's own config: the tailnet's DNS under <slug>.<base>, a
@@ -313,7 +347,7 @@ func (c *Cluster) load(tn types.Tailnet) error {
 	if err != nil {
 		_ = tdb.Close()
 
-		return fmt.Errorf("tailnet %s: %w", id, err)
+		return nil, fmt.Errorf("tailnet %s: %w", id, err)
 	}
 
 	rcfg := c.cfg.ForTailnet(tdb.Tailnet().Slug, dns)
@@ -324,7 +358,7 @@ func (c *Cluster) load(tn types.Tailnet) error {
 	if err != nil {
 		_ = tdb.Close()
 
-		return fmt.Errorf("tailnet %s runtime: %w", id, err)
+		return nil, fmt.Errorf("tailnet %s runtime: %w", id, err)
 	}
 
 	// The device quota is enforced in the node insert transaction (P10
@@ -353,14 +387,9 @@ func (c *Cluster) load(tn types.Tailnet) error {
 		configRev: tdb.Tailnet().ConfigRevision,
 	}
 
-	c.mu.Lock()
-	c.runtimes[id] = rt
-	c.order = append(c.order, id)
-	c.mu.Unlock()
-
 	log.Info().Str("tailnet", id.String()).Str("slug", tn.Slug).Uint64("epoch", rt.epoch).Msg("loaded tailnet runtime")
 
-	return nil
+	return rt, nil
 }
 
 // start runs rt's background work under the serve context.
@@ -490,25 +519,7 @@ func (c *Cluster) reconcile() {
 			continue
 		}
 
-		err := c.load(tn)
-		if err != nil {
-			log.Error().Err(err).Str("tailnet", tn.ID).Msg("reconcile: loading tailnet")
-
-			continue
-		}
-
-		id, _ := tailnet.ParseID(tn.ID)
-
-		c.mu.RLock()
-		rt := c.runtimes[id]
-		c.mu.RUnlock()
-
-		c.runLoadHook(id)
-
-		if err := c.start(rt); err != nil { //nolint:noinlineerr
-			log.Error().Err(err).Str("tailnet", tn.ID).Msg("reconcile: starting tailnet")
-			c.retire(rt, "failed to start")
-		}
+		c.serveTailnet(tn, "reconcile")
 	}
 
 	c.applyMoveNotices()
@@ -1056,25 +1067,7 @@ func (c *Cluster) onLeaseAcquired(ctx context.Context, l lease.Lease) error {
 			return nil // onLeaseLost follows and retires what was loaded
 		}
 
-		err := c.load(tn) //nolint:contextcheck // Platform bounds its own lookups (lookupContext); runtimes live on the cluster's serve context, not this callback's
-		if err != nil {
-			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: loading tailnet")
-
-			continue
-		}
-
-		id, _ := tailnet.ParseID(tn.ID)
-
-		c.mu.RLock()
-		rt := c.runtimes[id]
-		c.mu.RUnlock()
-
-		c.runLoadHook(id)
-
-		if err := c.start(rt); err != nil { //nolint:noinlineerr,contextcheck // runtimes live on the cluster's serve context, not this callback's
-			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: starting tailnet")
-			c.retire(rt, "failed to start") //nolint:contextcheck // runtimes live on the cluster's serve context, not this callback's
-		}
+		c.serveTailnet(tn, "cluster lease") //nolint:contextcheck // Platform bounds its own lookups (lookupContext); runtimes live on the cluster's serve context, not this callback's
 	}
 
 	c.ready.Store(true)
