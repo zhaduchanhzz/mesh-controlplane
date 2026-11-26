@@ -3410,7 +3410,7 @@ Holds performance settings that rarely need changing.
         max_split_domains: 64
         max_config_bytes: 262144
       incremental_netmap:
-        enabled: false
+        enabled: true
         reconcile_interval: 1m
         full_map_interval: 15m
       cluster_lease:
@@ -3807,14 +3807,14 @@ The largest a tailnet's DNS settings may be, as stored JSON.
 
 ### `tuning.incremental_netmap` { #tuning.incremental_netmap data-toc-label="incremental_netmap" }
 
-Updates peer relationships for a joining or deleted node without rebuilding them for the whole tailnet. Off by default.
+Updates peer relationships for a joining or deleted node without rebuilding them for the whole tailnet. On by default (ADR 0015); off is the kill switch.
 
 ??? example "All `tuning.incremental_netmap` keys and defaults"
 
     ```yaml
     tuning:
       incremental_netmap:
-        enabled: false
+        enabled: true
         reconcile_interval: 1m
         full_map_interval: 15m
     ```
@@ -3822,29 +3822,29 @@ Updates peer relationships for a joining or deleted node without rebuilding them
 #### `tuning.incremental_netmap.enabled` { #tuning.incremental_netmap.enabled data-toc-label="enabled" }
 
 - **Type:** [boolean](#type-boolean)
-- **Default:** `false`
+- **Default:** `true`
 - **Env:** `HEADSCALE_TUNING_INCREMENTAL_NETMAP_ENABLED`
 
-Turns the incremental path on. Experimental: keep off until it has passed security review.
+Turns the incremental path on; it is on by default. Off is the kill switch: every topology change then rebuilds peer relationships in full, as before the incremental netmap.
 
 === "YAML"
 
     ```yaml
     tuning:
       incremental_netmap:
-        enabled: true
+        enabled: false
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_TUNING_INCREMENTAL_NETMAP_ENABLED=true
+    export HEADSCALE_TUNING_INCREMENTAL_NETMAP_ENABLED=false
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.tuning.incremental_netmap.enabled = true;
+    services.headscale.settings.tuning.incremental_netmap.enabled = false;
     ```
 
 #### `tuning.incremental_netmap.reconcile_interval` { #tuning.incremental_netmap.reconcile_interval data-toc-label="reconcile_interval" }

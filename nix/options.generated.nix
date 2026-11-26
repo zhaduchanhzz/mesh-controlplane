@@ -1150,11 +1150,11 @@ in
     incremental_netmap = {
       enabled = lib.mkOption {
         type = lib.types.bool;
-        default = false;
+        default = true;
         description = ''
-          Turns the incremental path on. Experimental: keep off until it has passed security review.
+          Turns the incremental path on; it is on by default. Off is the kill switch: every topology change then rebuilds peer relationships in full, as before the incremental netmap.
         '';
-        example = true;
+        example = false;
       };
       reconcile_interval = lib.mkOption {
         type = t.duration;

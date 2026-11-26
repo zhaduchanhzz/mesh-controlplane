@@ -28,7 +28,7 @@ import (
 func p07Modes(t *testing.T, fn func(t *testing.T, tc *servertest.TestCluster)) {
 	for _, inc := range []bool{false, true} {
 		t.Run(fmt.Sprintf("incremental=%t", inc), func(t *testing.T) {
-			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{IncrementalNetmap: inc},
+			tc := servertest.NewTestClusterWith(t, servertest.ClusterOptions{IncrementalNetmap: inc, IncrementalNetmapOff: !inc},
 				servertest.TailnetSeed{Slug: tenantA}, servertest.TailnetSeed{Slug: tenantB})
 			tc.SetPolicy(t, tenantA, allowAll)
 			tc.SetPolicy(t, tenantB, allowAll)

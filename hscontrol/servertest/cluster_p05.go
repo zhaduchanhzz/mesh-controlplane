@@ -124,13 +124,18 @@ func NewTestCluster(tb testing.TB, seeds ...TailnetSeed) *TestCluster {
 
 // ClusterOptions are cluster-wide settings of a [TestCluster].
 type ClusterOptions struct {
-	// IncrementalNetmap turns tuning.incremental_netmap on (P00d). The
+	// IncrementalNetmap is kept for tests that name the mode: the
+	// incremental netmap is on by default (ADR 0015) unless
+	// IncrementalNetmapOff is set. While on, the
 	// reconciliation runs every hour and the periodic full map every 24h
 	// (it sends one share of nodes per interval/60, so even 1h would send
 	// a full map every minute), so a test sees only the frames its own
 	// steps cause; tests run a reconciliation with
 	// [hscontrol.Headscale.ReconcileNetmap].
 	IncrementalNetmap bool
+	// IncrementalNetmapOff turns tuning.incremental_netmap off: the kill
+	// switch, which behaves as before the incremental netmap.
+	IncrementalNetmapOff bool
 	// FullMapInterval, when set, replaces the 24h for the periodic full
 	// map (minimum 1m).
 	FullMapInterval time.Duration
@@ -283,7 +288,9 @@ func NewTestClusterWith(tb testing.TB, o ClusterOptions, seeds ...TailnetSeed) *
 		front:     front,
 	}
 
-	if o.IncrementalNetmap {
+	if o.IncrementalNetmapOff {
+		cfg.Tuning.IncrementalNetmap.Enabled = false
+	} else {
 		cfg.Tuning.IncrementalNetmap = types.IncrementalNetmapConfig{
 			Enabled:           true,
 			ReconcileInterval: time.Hour,

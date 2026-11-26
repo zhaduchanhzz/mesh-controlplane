@@ -461,7 +461,7 @@ func (h *Headscale) scheduledTasks(ctx context.Context) {
 		log.Info().
 			Dur("reconcile_interval", inc.ReconcileInterval).
 			Dur("full_map_interval", inc.FullMapInterval).
-			Msg("incremental netmap enabled (experimental)")
+			Msg("incremental netmap enabled")
 	}
 
 	for {

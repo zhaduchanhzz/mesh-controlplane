@@ -1036,8 +1036,8 @@ type Tuning struct {
 	TenantDNS TenantDNSLimits `koanf:"tenant_dns"`
 
 	// IncrementalNetmap updates peer relationships for a joining or
-	// deleted node without rebuilding them for the whole tailnet. Off by
-	// default.
+	// deleted node without rebuilding them for the whole tailnet. On by
+	// default (ADR 0015); off is the kill switch.
 	IncrementalNetmap IncrementalNetmapConfig `koanf:"incremental_netmap"`
 
 	// ClusterLease times the lease that elects the one active process of
@@ -1133,15 +1133,17 @@ type ClusterLeaseConfig struct {
 	SafetyMargin time.Duration `example:"\"5s\"" koanf:"safety_margin"`
 }
 
-// IncrementalNetmapConfig controls the incremental netmap (P00d, ADR 0005).
+// IncrementalNetmapConfig controls the incremental netmap (P00d, ADR 0005,
+// ADR 0015).
 // While off, every topology change rebuilds peer relationships in full.
 // While on, a narrow set of changes (a new node joining, a node deleted,
 // under a policy those changes do not alter) is applied incrementally; a
 // background full rebuild checks the result and replaces it on any
 // difference.
 type IncrementalNetmapConfig struct {
-	// Enabled turns the incremental path on. Experimental: keep off
-	// until it has passed security review.
+	// Enabled turns the incremental path on; it is on by default. Off
+	// is the kill switch: every topology change then rebuilds peer
+	// relationships in full, as before the incremental netmap.
 	Enabled bool `koanf:"enabled"`
 
 	// ReconcileInterval is how often a full rebuild runs in the
