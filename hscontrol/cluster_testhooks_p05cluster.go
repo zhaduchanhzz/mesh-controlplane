@@ -12,3 +12,17 @@ func (c *Cluster) SetLoadHook(f func(tailnet.ID)) {
 	c.loadHook = f
 	c.mu.Unlock()
 }
+
+// BoundSessions is how many Noise sessions are bound to h's tailnet (P12c
+// B6). Built only with the p05cluster tag (servertest).
+func (h *Headscale) BoundSessions() int {
+	n := 0
+
+	h.sessions.Range(func(_, _ any) bool {
+		n++
+
+		return true
+	})
+
+	return n
+}

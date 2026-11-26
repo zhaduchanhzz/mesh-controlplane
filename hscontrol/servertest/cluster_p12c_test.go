@@ -146,3 +146,38 @@ func TestP12cRuntimeNotRoutableBeforeStart(t *testing.T) {
 		return err == nil && r.OK()
 	}, 10*time.Second, 100*time.Millisecond, "B is served once its runtime started")
 }
+
+// TestP12cNoiseSessionsForgottenOnClose (B6): a Noise session bound to a
+// tailnet's runtime is forgotten when its connection closes, so reconnects
+// do not grow the runtime's session set until it retires.
+func TestP12cNoiseSessionsForgottenOnClose(t *testing.T) {
+	tc := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: tenantA, SeedNode: true})
+	a := tc.Tailnet(t, tenantA)
+	h := tc.Runtime(t, tenantA)
+	noiseKey := tc.NoiseKey(t)
+
+	const n = 10
+
+	for round := range 3 {
+		sessions := make([]*servertest.RawNoiseSession, 0, n)
+
+		for range n {
+			s := servertest.NewRawNoiseSession(t, tc.URL, noiseKey, a.NodeMachine)
+
+			r, err := s.LiteMap(t.Context(), a.NodeKey, a.NodeDisco, "192.0.2.1:41641")
+			require.NoError(t, err)
+			require.True(t, r.OK(), "round %d: map request: %d %s", round, r.Status, r.Body)
+
+			sessions = append(sessions, s)
+		}
+
+		assert.Equal(t, n, h.BoundSessions(), "round %d: every open session is bound", round)
+
+		for _, s := range sessions {
+			require.NoError(t, s.Close())
+		}
+
+		assert.Eventually(t, func() bool { return h.BoundSessions() == 0 }, 10*time.Second, 50*time.Millisecond,
+			"round %d: closed sessions are forgotten; %d still bound", round, h.BoundSessions())
+	}
+}
