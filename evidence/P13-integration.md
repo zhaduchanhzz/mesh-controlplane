@@ -69,7 +69,8 @@
 | `nix shell --inputs-from . nixpkgs#golangci-lint -c golangci-lint run --concurrency 4 ./...` | `56ea3ad` | **1** | 1 issue: gocyclo `cmd/mesh-placement/main.go run` 31 |
 | như trên; và `--build-tags benchpprof ./hscontrol/` | `00138ae` | **0**; **0** | `0 issues.` |
 | `CGO_ENABLED=1 go test -race -count=1 -p 4 -timeout 60m $(go list ./... \| grep -v -e /integration -e /hscontrol/servertest)` (throwaway PG 16 + PgBouncer 1.26.1, `MESH_TEST_REQUIRE_POSTGRES=1`) | `00138ae` | **0** | 61 package: 48 ok, 13 không có test, 0 FAIL (policy/v2 593 s, hscontrol 539 s, state 427 s, db 189 s) |
-| `nix shell --inputs-from . nixpkgs#tscli nixpkgs#opentofu -c bash infra/lab/scripts/shard-test.sh -n 8 -race -tags p05cluster -o ~/p13int-shard ./hscontrol/servertest/` | `00138ae` | **đang chạy** lúc viết | kết quả trong `~/p13int-shard/summary.txt` và `~/p13int-shard-00138ae.log` trên mc-ci (chưa ghi vào đây) |
+| `nix shell --inputs-from . nixpkgs#tscli nixpkgs#opentofu -c bash infra/lab/scripts/shard-test.sh -n 8 -race -tags p05cluster -o ~/p13int-shard ./hscontrol/servertest/` | `00138ae` | **1** | `tests=226 pass=225 fail=1 skip=0 missing=0 wall=1459s`; FAIL `TestP13dClusterDoesNotMigrateAtStart`: P13e kiểm file Noise key trước khi mở DB (`ErrNoiseKeyMissing`), helper `NewClusterOn` trỏ tới đường key trống → sửa ở `e1a3519` (chép key của cluster) |
+| `go test -race -tags p05cluster -count=1 -run 'TestP13d\|TestP13c\|TestP13e\|TestP13f' ./hscontrol/servertest/` | `e1a3519` | **0** | ok 46,9 s. Chưa chạy lại toàn bộ suite sau `e1a3519` (chỉ đổi helper test) |
 
 Commit sau `00138ae` (`0b3cdb3`, evidence này) chỉ đổi tài liệu.
 
@@ -85,7 +86,7 @@ Không đổi đường dữ liệu tenant khi tích hợp. Các test cô lập 
 3. P13c HWM vẫn chỉ trong bộ nhớ (`cluster_lease.epoch_hwm_path` chưa làm — trước đây chờ P13b/P13f vì chung config; nay đã gộp, có thể làm).
 4. Giới hạn đã ghi của từng nhánh giữ nguyên: versioncheck chặn canary khác minor (ADR 0013 §6, P13dc §1); renew treo khi mạng "mất không RST" (P13b §5); L10 `createDefaultTailnet` giữ hành vi single-tenant (P13f §8.1); PROXY v2 chỉ cho bootstrap (P13f §8.2).
 5. `tools/capload` đổi ở `c3b7bc6` chưa chạy lại smoke (`smoke-local.sh`).
-6. Suite `p05cluster` đầy đủ chưa có kết quả khi viết file này (§5).
+6. Suite `p05cluster` đầy đủ: 225/226 ở `00138ae`; test hỏng đã sửa ở `e1a3519` và chạy lại nhóm P13 xanh; chưa chạy lại cả suite.
 
 ## 8. Drill lab cần gì tiếp (chưa làm)
 
