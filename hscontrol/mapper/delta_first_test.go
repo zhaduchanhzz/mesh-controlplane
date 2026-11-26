@@ -374,7 +374,9 @@ func TestDeltaFirstUserProfileChangeNoFullMap(t *testing.T) {
 // tailnet written while its clients enrol) must carry the node's current
 // filter: a client never holds a peer ahead of the filter that lets it in.
 func TestDeltaFirstPeerDeltaCarriesCurrentFilter(t *testing.T) {
-	td, cleanup := setupBatcherWithTestData(t, NewBatcherAndMapper, 1, 2, normalBufferSize)
+	// Two users with one node each: nodes of one user always see each
+	// other, so the deny below needs them apart.
+	td, cleanup := setupBatcherWithTestData(t, NewBatcherAndMapper, 2, 1, normalBufferSize)
 	defer cleanup()
 
 	td.Config.Tuning.IncrementalNetmap.Enabled = true
