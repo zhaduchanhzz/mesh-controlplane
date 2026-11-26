@@ -125,7 +125,9 @@ func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.db) }
 // migrations, validates the schema (SQLite) and registers tenantscope on the
 // pool. It never creates a tailnet.
 func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
-	dbConn, err := openDB(cfg.Database, cfg.SQLitePath())
+	dbCfg := writableDatabase(cfg.Database)
+
+	dbConn, err := openDB(dbCfg, cfg.SQLitePath())
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +192,18 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 	}
 
 	return &Platform{db: dbConn, cfg: cfg, cluster: clusterIDOf(cfg)}, nil
+}
+
+// writableDatabase is cfg for a process that writes (P13b, ADR 0011 §D):
+// on PostgreSQL an unset target_session_attrs becomes read-write, so with a
+// host list (one PgBouncer per PostgreSQL node) a server that answers
+// read-only, a replica, is skipped instead of failing every write.
+func writableDatabase(cfg types.DatabaseConfig) types.DatabaseConfig {
+	if cfg.Type == types.DatabasePostgres && cfg.Postgres.TargetSessionAttrs == "" {
+		cfg.Postgres.TargetSessionAttrs = types.PostgresTargetReadWrite
+	}
+
+	return cfg
 }
 
 // ClusterID returns the cluster this platform serves for.

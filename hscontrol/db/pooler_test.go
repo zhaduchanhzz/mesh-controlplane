@@ -186,7 +186,7 @@ func TestOpenPlatformMultiHostSkipsReadOnly(t *testing.T) {
 }
 
 // TestOpenPlatformMultiHostSkipsDeadHost: a host that refuses connections
-// (PgBouncer killed) is skipped. Regression: pgx already does this.
+// (PgBouncer killed) is skipped and the next one used.
 func TestOpenPlatformMultiHostSkipsDeadHost(t *testing.T) {
 	rw := poolerEnv(t, "MESH_TEST_PG_RW")
 	pgb := poolerEnv(t, "MESH_TEST_PGBOUNCER")
@@ -195,6 +195,29 @@ func TestOpenPlatformMultiHostSkipsDeadHost(t *testing.T) {
 	createDBOn(t, name, rw)
 
 	p, err := OpenPlatform(p13bConfig(t, name, closedPort(t)+","+pgb))
+	require.NoError(t, err)
+
+	defer p.Close()
+
+	assert.Equal(t, portOf(t, rw), serverPort(t, p.db))
+}
+
+// TestOpenPlatformHostsKey: the same through database.postgres.hosts, with
+// a bracketed IPv6 entry first (nothing listens on that port of ::1), which
+// pgx must parse and skip.
+func TestOpenPlatformHostsKey(t *testing.T) {
+	rw := poolerEnv(t, "MESH_TEST_PG_RW")
+	ro := poolerEnv(t, "MESH_TEST_PG_RO")
+	pgb := poolerEnv(t, "MESH_TEST_PGBOUNCER")
+
+	name := p13bDBName()
+	createDBOn(t, name, rw, ro)
+
+	cfg := p13bConfig(t, name, pgb)
+	cfg.Database.Postgres.Host, cfg.Database.Postgres.Port = "", 0
+	cfg.Database.Postgres.Hosts = []string{"[::1]:" + portOf(t, closedPort(t)), ro, pgb}
+
+	p, err := OpenPlatform(cfg)
 	require.NoError(t, err)
 
 	defer p.Close()
