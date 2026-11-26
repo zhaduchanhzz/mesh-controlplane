@@ -1,19 +1,25 @@
-// Command capseed builds a seeded tailnet for the P00c server-only harness:
-// users, one reusable pre-auth key per user and N registered nodes, written
-// through the same State paths the server uses (State.CreateUser,
-// State.CreatePreAuthKey, State.HandleNodeFromPreAuthKey), so the schema,
-// constraints, IP allocation and NodeStore checks all apply. No SQL.
+// Command capseed seeds tailnets for the server-only capacity harness.
 //
-// It writes, into -out (mode 0700):
+// -mode serve (P00c, default) builds one seeded tailnet for `headscale
+// serve` on SQLite: users, one reusable pre-auth key per user and N
+// registered nodes, written through the same State paths the server uses
+// (State.CreateUser, State.CreatePreAuthKey, State.HandleNodeFromPreAuthKey),
+// so the schema, constraints, IP allocation and NodeStore checks all apply.
+// No SQL. It writes, into -out (mode 0700):
 //   - nodes.keys: per node "machine-private node-private", the client-side
-//     key fixtures capload -connect uses to open map sessions for the
+//     key fixtures capload -node-keys uses to open map sessions for the
 //     pre-registered nodes without registering again;
 //   - users.keys: one reusable pre-auth key per user, for registration
 //     samples on top of the seeded tailnet.
 //
-// Both are lab test fixtures: they stay in the bench working directory and
-// are never committed or printed. The database is the server's own file
-// from the config; copy it after capseed exits to make the snapshot.
+// -mode cluster (P14a.0) provisions T tailnets with their users, keys and
+// policy on a running cluster process (see cluster.go); capload enrolls the
+// devices. -mode policy-flip toggles the probe grant in one tailnet's policy.
+//
+// Keys are lab test fixtures: they stay in the bench working directory and
+// are never committed or printed. In serve mode the database is the
+// server's own file from the config; copy it after capseed exits to make
+// the snapshot.
 package main
 
 import (
@@ -28,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
@@ -39,25 +46,57 @@ var errRegistrations = errors.New("registrations failed")
 
 func main() {
 	var (
+		mode        string
 		cfgPath     string
 		out         string
 		nodes       int
 		perUser     int
 		concurrency int
+		co          clusterOpts
 	)
 
+	flag.StringVar(&mode, "mode", "serve", "serve (P00c, SQLite, one tailnet), cluster (P14a) or policy-flip")
 	flag.StringVar(&cfgPath, "config", "", "headscale config (database, prefixes, policy)")
-	flag.StringVar(&out, "out", "", "directory for nodes.keys and users.keys")
-	flag.IntVar(&nodes, "nodes", 5000, "nodes to register")
+	flag.StringVar(&out, "out", "", "output directory")
+	flag.IntVar(&nodes, "nodes", 5000, "serve: nodes to register")
 	flag.IntVar(&perUser, "per-user", 10, "nodes per user")
-	flag.IntVar(&concurrency, "concurrency", 256, "concurrent registrations")
+	flag.IntVar(&concurrency, "concurrency", 256, "serve: concurrent registrations; cluster: tailnets provisioned at once")
+	flag.StringVar(&co.clusterID, "cluster-id", "", "cluster: ID of the (running) cluster that owns the tailnets")
+	flag.IntVar(&co.tailnets, "tailnets", 1, "cluster: number of tailnets")
+	flag.IntVar(&co.devices, "devices", 100, "cluster: devices per tailnet")
+	flag.StringVar(&co.shape, "policy", shapePersonalDevices, "cluster: allow_all, isolated, personal_devices, tag_heavy or mix (70/20/10)")
+	flag.IntVar(&co.big, "big", 0, "cluster: also one large tailnet <prefix>-big with this many devices (mixed shared cell)")
+	flag.StringVar(&co.bigShape, "big-policy", shapePersonalDevices, "cluster: policy of the large tailnet")
+	flag.IntVar(&co.extra, "extra", 0, "cluster: register-phase devices, round-robin over the tailnets (user keys)")
+	flag.StringVar(&co.prefix, "prefix", "bench", "cluster: tailnet slug prefix")
+	flag.Uint64Var(&co.seed, "seed", 1, "cluster: seed of the layout (mix shapes, tag_heavy role graph)")
+	flag.DurationVar(&co.keyTTL, "key-ttl", 72*time.Hour, "cluster: pre-auth key lifetime")
+	flag.StringVar(&co.slug, "slug", "", "policy-flip: tailnet slug")
 	flag.Parse()
 
-	if cfgPath == "" || out == "" {
-		log.Fatal("capseed: -config and -out are required")
+	// The library logs policy parsing at debug level; a seeding tool wants
+	// warnings and errors only.
+	zerolog.SetGlobalLevel(zerolog.WarnLevel)
+
+	var err error
+
+	switch mode {
+	case "serve":
+		if cfgPath == "" || out == "" {
+			log.Fatal("capseed: -config and -out are required")
+		}
+
+		err = run(cfgPath, out, nodes, perUser, concurrency)
+	case "cluster":
+		co.cfgPath, co.out, co.perUser = cfgPath, out, perUser
+		co.conc = min(concurrency, 16)
+		err = runCluster(co)
+	case "policy-flip":
+		err = runPolicyFlip(cfgPath, co.clusterID, co.slug)
+	default:
+		log.Fatalf("capseed: unknown -mode %q", mode)
 	}
 
-	err := run(cfgPath, out, nodes, perUser, concurrency)
 	if err != nil {
 		log.Fatalf("capseed: %v", err)
 	}
