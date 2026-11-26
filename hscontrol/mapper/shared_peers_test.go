@@ -169,7 +169,7 @@ func TestSharedPeersPerViewerParts(t *testing.T) {
 	for name, pol := range sharedSamplePolicies(t) {
 		t.Run(name, func(t *testing.T) {
 			td := setupSharedTailnet(t, 3, 4, pol)
-			connectAll(t, td)
+			connectAllShared(t, td)
 			requireSharedEqualsFresh(t, td, "initial")
 
 			// Routes: a subnet router, an exit node, both approved.
@@ -245,7 +245,7 @@ func TestSharedPeersProperty(t *testing.T) {
 		td, cleanup := newSharedTailnet(t, 3, 4, allowAllPolicyJSON)
 		defer cleanup()
 
-		connectAll(rt, td)
+		connectAllShared(rt, td)
 
 		steps := rapid.IntRange(1, 12).Draw(rt, "steps")
 		for s := range steps {
@@ -307,7 +307,7 @@ func sharedSamplePolicies(t *testing.T) map[string]string {
 	}
 }
 
-func connectAll(t tb, td *TestData) {
+func connectAllShared(t tb, td *TestData) {
 	t.Helper()
 
 	for i := range td.Nodes {
