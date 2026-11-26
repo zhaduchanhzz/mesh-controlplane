@@ -432,14 +432,18 @@ t_s08c_3() {
   s08c_done S08c.3 "IPv6 subnet $S08C_V6 behind n1-ar1: a1 ping 3/3 and TCP [$b]" "$A1" $S08C_HOST6
 }
 
-# s08c_gap LOG KILL_MS -> "<max gap ms> <replies before> <replies after> <first after - kill ms>"
+# s08c_gap LOG KILL_MS -> "<max gap ms> <replies before> <replies after> <end of the max gap - kill ms>"
+# (a reply can land between the kill timestamp and SIGKILL: "first reply after
+# the kill" said 1 ms in run 20261126T140829Z; the end of the gap is when
+# traffic came back).
 s08c_gap() {
   py 'import re
 ts = [float(m.group(1)) * 1000 for m in (re.match(r"\[(\d+\.\d+)\] \d+ bytes from", l) for l in open(sys.argv[1])) if m]
 k = float(sys.argv[2])
 after = [t for t in ts if t > k]
-gap = max((b - a for a, b in zip(ts, ts[1:])), default=-1)
-print("%d %d %d %d" % (gap, len(ts) - len(after), len(after), (after[0] - k) if after else -1))' "$1" "$2" | strip_cr
+i = max(range(1, len(ts)), key=lambda j: ts[j] - ts[j - 1], default=0)
+gap = ts[i] - ts[i - 1] if i else -1
+print("%d %d %d %d" % (gap, len(ts) - len(after), len(after), (ts[i] - k) if i else -1))' "$1" "$2" | strip_cr
 }
 s08c_ha_ready() { # second router joined, auto-approved, seen by a1
   s08c_router_start 2 || p="$p; router 2 netns/tailscaled"
@@ -471,8 +475,8 @@ t_s08c_2() {
   [ "${r[1]}" -ge 5 ] || p="$p; only ${r[1]} replies before the kill"
   [ "${r[2]}" -ge 5 ] || p="$p; only ${r[2]} replies after the kill"
   [ "${r[0]}" -ge 0 ] && [ "${r[0]}" -le "$S08C_GAP_MAX_MS" ] || p="$p; ping gap ${r[0]} ms > $S08C_GAP_MAX_MS"
-  printf 'S08c.2 HA: SIGKILL n1-ar%s (primary); a1 primary -> n1-ar%s after %s ms (harness clock); ping every 200 ms: max gap %s ms, first reply %s ms after the kill (a1 vs a2 clock), replies %s before / %s after; TCP before [%s] after [%s]\n' \
-    "$pn" "$sn" "$((ts < 0 ? -1 : ts - tk))" "${r[0]}" "${r[3]}" "${r[1]}" "${r[2]}" "$b0" "$b1" >>"$ART_DIR/timings.txt"
+  printf 'S08c.2 HA: SIGKILL n1-ar%s (primary); a1 primary -> n1-ar%s after %s ms (harness clock); ping every 200 ms: max gap %s ms, traffic back %s ms after the kill (end of the gap, a1 vs a2 clock; kill at %s), replies %s before / %s after; TCP before [%s] after [%s]\n' \
+    "$pn" "$sn" "$((ts < 0 ? -1 : ts - tk))" "${r[0]}" "${r[3]}" "$ka" "${r[1]}" "${r[2]}" "$b0" "$b1" >>"$ART_DIR/timings.txt"
   s08c_done S08c.2 "HA: n1-ar1 and n1-ar2 (same LAN, both auto-approved); primary n1-ar$pn SIGKILLed -> a1 moved to n1-ar$sn by itself, LAN host sees the new router; ping gap ${r[0]} ms (<= $S08C_GAP_MAX_MS)"
 }
 
