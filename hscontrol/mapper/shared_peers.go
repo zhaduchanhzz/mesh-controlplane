@@ -136,11 +136,13 @@ func (c *sharedPeers) sweep(exists func(types.NodeID) bool) {
 	})
 }
 
-// sharedPeerHashes memoises [hashPeer] for shared entries: a shared entry is
+// sharedPeerHashes memoises [hashPeer] (the entry's hash and its presence,
+// which is part of the entry and of the node revision it was rendered from)
+// for shared entries: a shared entry is
 // in every full map of the tailnet, and delta-first hashes every entry of
 // every response it sends. Keyed by the entry's address; entries are never
 // modified, and are dropped here when the cache drops them.
-var sharedPeerHashes sync.Map // *tailcfg.Node -> uint64
+var sharedPeerHashes sync.Map // *tailcfg.Node -> peerSent (hash and presence)
 
 func rememberPeerHash(node *tailcfg.Node) {
 	if v, ok := hashPeerUncached(node); ok {
