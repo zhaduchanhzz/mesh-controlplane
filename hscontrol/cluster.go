@@ -135,6 +135,9 @@ type Cluster struct {
 	// api is the public /api/v2 (P08b): rate limits by key and tailnet.
 	api *clusterAPI
 
+	// healthPing replaces the database ping of /health in tests.
+	healthPing func(context.Context) error
+
 	// loadHook, when set (tests, SetLoadHook), runs between building a
 	// tailnet's runtime and starting it. Under mu.
 	loadHook func(tailnet.ID)
@@ -982,7 +985,12 @@ func (c *Cluster) PingResponseHandler(w http.ResponseWriter, req *http.Request) 
 func (c *Cluster) HealthHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/health+json")
 
-	err := c.platform.Ping(req.Context())
+	ping := c.healthPing
+	if ping == nil {
+		ping = c.platform.Ping
+	}
+
+	err := ping(req.Context())
 	if err != nil {
 		log.Error().Err(err).Msg("health check failed")
 		w.WriteHeader(http.StatusInternalServerError)
