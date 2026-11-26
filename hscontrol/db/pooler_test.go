@@ -295,6 +295,29 @@ func TestLeaseStoreHasOwnPool(t *testing.T) {
 	require.NoError(t, p.LeaseStore().Renew(ctx, l, 10*time.Second))
 }
 
+// TestLeaseDatabase: the lease pool uses lease_name (a PgBouncer alias) and
+// lease_max_open_conns, the rest of the data pool's settings, and never more
+// than its own cap.
+func TestLeaseDatabase(t *testing.T) {
+	base := types.DatabaseConfig{Type: types.DatabasePostgres, Postgres: types.PostgresConfig{
+		Hosts: []string{"a:6432", "b:6432"}, Name: "meshlab", User: "headscale",
+		MaxOpenConnections: 10, MaxIdleConnections: 10, TargetSessionAttrs: types.PostgresTargetReadWrite,
+	}}
+
+	got := leaseDatabase(base).Postgres
+	assert.Equal(t, "meshlab", got.Name, "no alias: the same database")
+	assert.Equal(t, 2, got.MaxOpenConnections, "unset cap: 2")
+	assert.Equal(t, 2, got.MaxIdleConnections)
+	assert.Equal(t, base.Postgres.Hosts, got.Hosts)
+	assert.Equal(t, types.PostgresTargetReadWrite, got.TargetSessionAttrs)
+
+	base.Postgres.LeaseName, base.Postgres.LeaseMaxOpenConnections = "mesh_lease", 4
+	got = leaseDatabase(base).Postgres
+	assert.Equal(t, "mesh_lease", got.Name)
+	assert.Equal(t, 4, got.MaxOpenConnections)
+	assert.Equal(t, "meshlab", base.Postgres.Name, "the data pool's config is not changed")
+}
+
 func atoiOr(s string, def int) int {
 	var n int
 
