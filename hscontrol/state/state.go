@@ -2243,7 +2243,7 @@ func (s *State) SetInstalledRevisions(policy, config uint64) {
 // InstalledRevisions returns the tailnets.policy_revision and
 // config_revision of the policy and DNS settings this runtime has
 // installed, or last tried to (cluster mode).
-func (s *State) InstalledRevisions() (policy, config uint64) {
+func (s *State) InstalledRevisions() (uint64, uint64) {
 	return s.policyRev.Load(), s.configRev.Load()
 }
 
@@ -2254,14 +2254,14 @@ func (s *State) InstalledRevisions() (policy, config uint64) {
 // revision a write stored and installed is never installed again, and
 // what is read is at least that revision. The revision is recorded even
 // when the policy does not load: the previous one stays enforced (never
-// allow-all) and the error is reported once. changes is empty when the
-// stored policy is the one in force. reloaded reports whether a new
-// revision was found.
-func (s *State) ReloadTenantPolicy() (changes []change.Change, rev uint64, reloaded bool, err error) {
+// allow-all) and the error is reported once. It returns the changes to
+// send (none when the stored policy is the one in force), the revision
+// read, and whether it was a new one.
+func (s *State) ReloadTenantPolicy() ([]change.Change, uint64, bool, error) {
 	s.policyMu.Lock()
 	defer s.policyMu.Unlock()
 
-	rev, _, err = s.db.TailnetRevisions()
+	rev, _, err := s.db.TailnetRevisions()
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -2276,6 +2276,8 @@ func (s *State) ReloadTenantPolicy() (changes []change.Change, rev uint64, reloa
 	if err != nil {
 		return nil, rev, true, err
 	}
+
+	var changes []change.Change
 
 	if changed {
 		changes = append(changes, change.PolicyChange())
@@ -2296,13 +2298,13 @@ func (s *State) ReloadTenantPolicy() (changes []change.Change, rev uint64, reloa
 // settings a write installed, and a revision a write installed is not
 // installed again. check validates the settings read (nil: the defaults);
 // an error keeps the previous settings, and the revision is recorded so
-// it is reported once. installed reports whether the settings were
-// replaced; the caller then sends [change.DNSConfig].
-func (s *State) ReloadTenantDNS(check func(*types.TenantDNS) error) (rev uint64, installed bool, err error) {
+// it is reported once. It returns the revision read and whether the
+// settings were replaced; the caller then sends [change.DNSConfig].
+func (s *State) ReloadTenantDNS(check func(*types.TenantDNS) error) (uint64, bool, error) {
 	s.tenantDNSMu.Lock()
 	defer s.tenantDNSMu.Unlock()
 
-	_, rev, err = s.db.TailnetRevisions()
+	_, rev, err := s.db.TailnetRevisions()
 	if err != nil {
 		return 0, false, err
 	}

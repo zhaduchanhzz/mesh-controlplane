@@ -255,7 +255,7 @@ func TestTenantPolicyIfMatchInTransaction(t *testing.T) {
 
 			stored, gerr := a.GetPolicy()
 			require.NoError(t, gerr)
-			assert.Equal(t, p1, stored.Data, "the operator's write is never lost")
+			assert.JSONEq(t, p1, stored.Data, "the operator's write is never lost")
 
 			polRev, _ := revisions(t, p, id)
 
@@ -274,7 +274,7 @@ func TestTenantPolicyIfMatchInTransaction(t *testing.T) {
 
 			stored, gerr = a.GetPolicy()
 			require.NoError(t, gerr)
-			assert.Equal(t, p1, stored.Data)
+			assert.JSONEq(t, p1, stored.Data)
 
 			after, _ := revisions(t, p, id)
 			assert.Equal(t, polRev, after)

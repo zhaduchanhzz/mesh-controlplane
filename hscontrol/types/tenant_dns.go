@@ -239,7 +239,7 @@ func (d *TenantDNS) ValidateStored(slug, clusterBase string) error {
 	return d.validate(slug, clusterBase, unlimitedTenantDNS, false)
 }
 
-//nolint:gocyclo,cyclop // one check per field; every violation is collected
+//nolint:gocyclo // one check per field; every violation is collected
 func (d *TenantDNS) validate(slug, clusterBase string, lim TenantDNSLimits, strict bool) error {
 	if d == nil {
 		return nil

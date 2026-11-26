@@ -93,7 +93,7 @@ func (hsdb *HSDatabase) Fenced() bool {
 
 // TailnetRevisions returns the policy_revision and config_revision of the
 // tailnet the handle is scoped to (its own tailnets row).
-func (hsdb *HSDatabase) TailnetRevisions() (policy, config uint64, err error) {
+func (hsdb *HSDatabase) TailnetRevisions() (uint64, uint64, error) {
 	s, err := tailnet.FromContext(hsdb.DB.Statement.Context)
 	if err != nil {
 		return 0, 0, err
