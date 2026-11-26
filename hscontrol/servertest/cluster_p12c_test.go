@@ -4,6 +4,7 @@ package servertest_test
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -180,4 +181,26 @@ func TestP12cNoiseSessionsForgottenOnClose(t *testing.T) {
 		assert.Eventually(t, func() bool { return h.BoundSessions() == 0 }, 10*time.Second, 50*time.Millisecond,
 			"round %d: closed sessions are forgotten; %d still bound", round, h.BoundSessions())
 	}
+}
+
+// TestP12cReadyBodyHasNoLeaseEpoch (L2): the public /ready says only
+// whether this process serves; it does not expose the lease epoch (how
+// often, and when, the cluster failed over). Status codes are unchanged:
+// 200 on the active process, 503 on a standby (HAProxy and the E2E
+// harnesses read only the code).
+func TestP12cReadyBodyHasNoLeaseEpoch(t *testing.T) {
+	tc := servertest.NewTestCluster(t, servertest.TailnetSeed{Slug: tenantA})
+
+	resp, err := http.Get(tc.URL + "/ready") //nolint:noctx // test client, bounded by the test timeout
+	require.NoError(t, err)
+
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.JSONEq(t, `{"status":"ready"}`, string(body))
+	assert.NotContains(t, string(body), "epoch")
+
+	standby := tc.StartProcess(t)
+	assert.Equal(t, http.StatusServiceUnavailable, tc.ProcessGet(t, standby, "/ready"), "standby /ready")
 }
