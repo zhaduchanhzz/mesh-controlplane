@@ -256,12 +256,16 @@ func TestSharedPeersPerViewerParts(t *testing.T) {
 			requireSharedEqualsFresh(t, td, "routes")
 
 			// Expiry passing while the entry is cached.
-			soon := time.Now().Add(150 * time.Millisecond)
+			// Far enough ahead that "before expiry" never straddles the
+			// instant on a loaded machine (want and got are rendered a few
+			// milliseconds apart; a straddle compares a non-expired render
+			// with an expired one).
+			soon := time.Now().Add(3 * time.Second)
 			_, _, err := td.State.SetNodeExpiry(td.Nodes[3].n.ID, &soon)
 			require.NoError(t, err)
 			requireSharedEqualsFresh(t, td, "before expiry")
 			require.Eventually(t, func() bool { return time.Now().After(soon.Add(10 * time.Millisecond)) },
-				2*time.Second, 20*time.Millisecond)
+				10*time.Second, 50*time.Millisecond)
 			requireSharedEqualsFresh(t, td, "after expiry")
 
 			// Rename, disconnect.
