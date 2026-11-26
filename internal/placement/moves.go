@@ -239,15 +239,26 @@ func (r *Registry) CancelScheduledMove(ctx context.Context, op Op, moveID string
 				return Move{}, "", err
 			}
 
-			if tn.OwnerClusterID != m.FromClusterID {
-				return Move{}, "", fmt.Errorf("%w: tailnet %s was already handed over", ErrConflict, m.TailnetID)
+			// P12c L7: owner AND epoch: back at the source at a later
+			// epoch means handed over (and moved back), not cancellable.
+			if tn.OwnerClusterID != m.FromClusterID || tn.OwnerEpoch != m.FromEpoch {
+				return Move{}, "", fmt.Errorf("%w: tailnet %s was already handed over (owner %s at epoch %d)",
+					ErrConflict, m.TailnetID, tn.OwnerClusterID, tn.OwnerEpoch)
 			}
 
-			res := tx.Exec(`UPDATE tailnets SET moving_to_cluster_id = NULL, updated_at = ?
-				WHERE id = ? AND owner_cluster_id = ? AND moving_to_cluster_id = ? AND deleted_at IS NULL`,
-				r.now(), m.TailnetID, m.FromClusterID, m.ToClusterID)
-			if res.Error != nil {
-				return Move{}, "", fmt.Errorf("withdrawing move request: %w", res.Error)
+			// Withdraw this move's request; one already withdrawn (or
+			// replaced by another request made by hand) is left alone.
+			if tn.MovingToClusterID != nil && *tn.MovingToClusterID == m.ToClusterID {
+				res := tx.Exec(`UPDATE tailnets SET moving_to_cluster_id = NULL, updated_at = ?
+					WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id = ? AND deleted_at IS NULL`,
+					r.now(), m.TailnetID, m.FromClusterID, int64(m.FromEpoch), m.ToClusterID) //nolint:gosec // epochs are positive int64
+				if res.Error != nil {
+					return Move{}, "", fmt.Errorf("withdrawing move request: %w", res.Error)
+				}
+
+				if res.RowsAffected != 1 {
+					return Move{}, "", fmt.Errorf("%w: the request of move %s changed concurrently", ErrConflict, moveID)
+				}
 			}
 		case MoveHandedOver, MoveCancelled, MoveFailed:
 			return Move{}, "", fmt.Errorf("%w: move %s is %s", ErrConflict, moveID, m.State)
@@ -339,30 +350,16 @@ func (r *Registry) RunDueMoves(ctx context.Context, op Op) (RunReport, error) {
 			return rep, err
 		}
 
-		var (
-			state   MoveState
-			errText string
-			at      = r.now()
-		)
-
-		switch {
-		case tn.OwnerClusterID == m.ToClusterID && tn.MovingToClusterID == nil:
-			state, at = MoveHandedOver, tn.UpdatedAt
-		case tn.OwnerClusterID == m.FromClusterID && tn.MovingToClusterID == nil:
-			state = MoveCancelled
-		case tn.MovingToClusterID != nil && *tn.MovingToClusterID != m.ToClusterID,
-			tn.OwnerClusterID != m.FromClusterID && tn.OwnerClusterID != m.ToClusterID:
-			state, errText = MoveFailed, fmt.Sprintf("tailnet moved elsewhere (owner %s)", tn.OwnerClusterID)
-		default:
+		state, _, final := moveOutcome(tn, m)
+		if !final {
 			continue // still waiting for the hand-over
 		}
 
-		_, err = mutate(ctx, r, op, "MoveFinished", m.ID, map[string]any{"state": state},
-			func(tx *gorm.DB) (Move, string, error) {
-				out, err := r.setMoveState(tx, m, MoveRequested, state, errText, at)
+		err = r.recordOutcome(ctx, op, m, state)
+		if errors.Is(err, errMoveClosed) {
+			continue // recorded meanwhile by the flip or a cancel, or not final any more
+		}
 
-				return out, m.TailnetID, err
-			})
 		if err != nil {
 			return rep, err
 		}
@@ -380,6 +377,60 @@ func (r *Registry) RunDueMoves(ctx context.Context, op Op) (RunReport, error) {
 	}
 
 	return rep, nil
+}
+
+// moveOutcome says what became of the REQUESTED move m, from tailnet tn,
+// when the flip or the cancel did not record it (they do since P12c L7;
+// this is the fallback, e.g. for a flip made by hand). It decides by the
+// epoch, which only grows and names one owner: at m's epoch with m's
+// request still there it is waiting (final false); at m's epoch without it,
+// the request was withdrawn (CANCELLED); at the next epoch owned by m's
+// target it was handed over; anything else cannot be told apart from the
+// row alone and is reported FAILED, never guessed.
+func moveOutcome(tn types.Tailnet, m Move) (MoveState, string, bool) {
+	switch {
+	case tn.OwnerEpoch == m.FromEpoch && tn.OwnerClusterID == m.FromClusterID:
+		if tn.MovingToClusterID != nil && *tn.MovingToClusterID == m.ToClusterID {
+			return MoveRequested, "", false
+		}
+
+		return MoveCancelled, "", true
+	case tn.OwnerEpoch == m.FromEpoch+1 && tn.OwnerClusterID == m.ToClusterID:
+		return MoveHandedOver, "", true
+	default:
+		return MoveFailed, fmt.Sprintf("tailnet is owned by %s at epoch %d (move requested at epoch %d from %s); "+
+			"the outcome of this move was not recorded", tn.OwnerClusterID, tn.OwnerEpoch, m.FromEpoch, m.FromClusterID), true
+	}
+}
+
+// recordOutcome records state, the outcome of the REQUESTED move m, under
+// LockOwnership after re-reading the tailnet in the transaction, at the time
+// it is recorded (never tailnets.updated_at, which other changes move). A
+// move closed meanwhile, or whose outcome changed, is errMoveClosed.
+func (r *Registry) recordOutcome(ctx context.Context, op Op, m Move, state MoveState) error {
+	_, err := mutate(ctx, r, op, "MoveFinished", m.ID, map[string]any{"state": state},
+		func(tx *gorm.DB) (Move, string, error) {
+			err := tenantscope.LockOwnership(tx, m.TailnetID)
+			if err != nil {
+				return Move{}, "", err
+			}
+
+			tn, err := loadTailnet(tx, m.TailnetID)
+			if err != nil {
+				return Move{}, "", err
+			}
+
+			now, errText, final := moveOutcome(tn, m)
+			if !final || now != state {
+				return Move{}, "", fmt.Errorf("%w: move %s changed while recording it", errMoveClosed, m.ID)
+			}
+
+			out, err := r.setMoveState(tx, m, MoveRequested, state, errText, r.now())
+
+			return out, m.TailnetID, err
+		})
+
+	return err
 }
 
 // runDueMove requests the hand-over of the due move m (MoveOwner, ADR 0010)

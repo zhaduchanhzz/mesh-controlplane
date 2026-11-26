@@ -104,8 +104,11 @@ func (p *Platform) HandOver(id tailnet.ID, epoch uint64) (string, error) {
 			    WHERE l.cluster_id = ? AND l.holder = ? AND l.epoch = ? AND l.expires_at > `+p.dbNow()+`)`+dedicatedFree,
 			now, id.String(), p.cluster, int64(epoch), to, p.cluster, holder, int64(leaseEpoch), //nolint:gosec // epochs are positive int64 in the database
 			to, id.String())
+		if res.Error != nil || res.RowsAffected != 1 {
+			return res.RowsAffected, res.Error
+		}
 
-		return res.RowsAffected, res.Error
+		return 1, recordHandedOver(tx, id, p.cluster, epoch, to, now)
 	})
 	if err != nil {
 		return "", err
@@ -134,9 +137,29 @@ func (p *Platform) TakeOver(id tailnet.ID, from string, epoch uint64) error {
 			    WHERE l.cluster_id = ? AND l.holder = ? AND l.epoch = ? AND l.expires_at > `+dbNow+`)`+dedicatedFree,
 			now, id.String(), from, int64(epoch), p.cluster, from, p.cluster, holder, int64(leaseEpoch), //nolint:gosec // see HandOver
 			p.cluster, id.String())
+		if res.Error != nil || res.RowsAffected != 1 {
+			return res.RowsAffected, res.Error
+		}
 
-		return res.RowsAffected, res.Error
+		return 1, recordHandedOver(tx, id, from, epoch, p.cluster, now)
 	})
+}
+
+// recordHandedOver closes, in the flip's transaction, the planned move
+// (P12b tailnet_moves) whose request this flip completes: REQUESTED with the
+// same source, epoch and target becomes HANDED_OVER at the flip's time
+// (P12c L7: the schedule records what happened, not what the scheduler later
+// infers from the tailnet row). A move made without a schedule has no row.
+// Explicit SQL: tailnet_moves is a platform table, not a tenant scope.
+func recordHandedOver(tx *gorm.DB, id tailnet.ID, from string, epoch uint64, to string, now time.Time) error {
+	err := tx.Exec(`UPDATE tailnet_moves SET state = 'HANDED_OVER', finished_at = ?, updated_at = ?
+		WHERE tailnet_id = ? AND state = 'REQUESTED' AND from_cluster_id = ? AND from_epoch = ? AND to_cluster_id = ?`,
+		now, now, id.String(), from, int64(epoch), to).Error //nolint:gosec // epochs are positive int64 in the database
+	if err != nil {
+		return fmt.Errorf("recording the planned move: %w", err)
+	}
+
+	return nil
 }
 
 // dedicatedFree ends the WHERE of a flip (args: target cluster, tailnet id):

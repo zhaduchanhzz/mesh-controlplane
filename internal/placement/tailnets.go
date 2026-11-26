@@ -407,7 +407,9 @@ func moveRefused(tn types.Tailnet, fromCluster string, fromEpoch uint64) error {
 
 // CancelMove withdraws the move of tailnet id requested at epoch (ADR 0010),
 // while the owner has not handed it over yet: owner and epoch unchanged.
-// No move pending is ErrConflict; another epoch is ErrStaleEpoch.
+// No move pending is ErrConflict; another epoch is ErrStaleEpoch. The
+// planned move (P12b) that made this request, if any, is closed CANCELLED in
+// the same transaction (P12c L7).
 func (r *Registry) CancelMove(ctx context.Context, op Op, id string, epoch uint64) (types.Tailnet, error) {
 	if epoch == 0 {
 		return types.Tailnet{}, fmt.Errorf("%w: epoch is required", ErrInvalid)
@@ -415,6 +417,11 @@ func (r *Registry) CancelMove(ctx context.Context, op Op, id string, epoch uint6
 
 	return mutate(ctx, r, op, "CancelMove", id, map[string]any{"epoch": epoch}, func(tx *gorm.DB) (types.Tailnet, string, error) {
 		err := tenantscope.LockOwnership(tx, id)
+		if err != nil {
+			return types.Tailnet{}, "", err
+		}
+
+		before, err := loadTailnet(tx, id)
 		if err != nil {
 			return types.Tailnet{}, "", err
 		}
@@ -437,6 +444,16 @@ func (r *Registry) CancelMove(ctx context.Context, op Op, id string, epoch uint6
 			}
 
 			return types.Tailnet{}, "", fmt.Errorf("%w: no move of tailnet %s pending", ErrConflict, id)
+		}
+
+		now := r.now().UTC()
+
+		err = tx.Exec(`UPDATE tailnet_moves SET state = ?, finished_at = ?, updated_at = ?
+			WHERE tailnet_id = ? AND state = ? AND from_cluster_id = ? AND from_epoch = ? AND to_cluster_id = ?`,
+			string(MoveCancelled), now, now, id, string(MoveRequested), before.OwnerClusterID,
+			int64(epoch), *before.MovingToClusterID).Error //nolint:gosec // epochs are positive int64 in the database
+		if err != nil {
+			return types.Tailnet{}, "", fmt.Errorf("closing the planned move: %w", err)
 		}
 
 		return tn, "", nil
