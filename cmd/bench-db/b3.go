@@ -22,7 +22,97 @@ import (
 
 	hsdb "github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
+
+// registryDesign is the real P12b path (ADR 0010): mesh-placement's
+// Registry.MoveOwner (moving_to set, owner and epoch kept), then the owner
+// cluster's Platform.HandOver (owner = target, epoch + 1), each a short
+// transaction on the tailnets row under LockOwnership with its audit/lease
+// checks. Its probes write like a cluster runtime (FOR SHARE fence).
+const registryDesign = "registry"
+
+// regEnv holds the real move path: the registry and one Platform per
+// cluster, each holding a (bench) lease of its cluster.
+type regEnv struct {
+	reg  *placement.Registry
+	plat map[string]*hsdb.Platform
+	// lastTo is the target cluster of the last move: MoveOwner counts the
+	// devices the target already owns (capacity check), so it matters.
+	lastTo string
+}
+
+var benchOp = placement.Op{Actor: "spiffe://mesh/operator/bench-b3"}
+
+func setupRegistry(t pgTarget, adb *gorm.DB) (*regEnv, error) {
+	reg, err := placement.New(adb, placement.Config{})
+	if err != nil {
+		return nil, err
+	}
+
+	env := &regEnv{reg: reg, plat: map[string]*hsdb.Platform{}}
+
+	for _, c := range []string{"src", "dst"} {
+		_, err := reg.CreateCluster(context.Background(), benchOp, placement.ClusterSpec{
+			ID: c, EndpointURL: "https://" + c + ".bench.invalid:8443", Class: placement.ClassShared,
+			State: placement.ClusterActive, MaxDevices: 1_000_000,
+		})
+		if err != nil && !errors.Is(err, placement.ErrConflict) {
+			return nil, fmt.Errorf("cluster %s: %w", c, err)
+		}
+
+		// A lease held by "bench-<c>" at epoch 1 for a day: MoveOwner needs
+		// the target's live lease, HandOver the owner's own.
+		err = adb.Exec(`INSERT INTO cluster_leases (cluster_id, holder, epoch, expires_at, updated_at)
+			VALUES (?, ?, 1, now() + interval '1 day', now())
+			ON CONFLICT (cluster_id) DO UPDATE SET expires_at = EXCLUDED.expires_at, updated_at = now()`, c, "bench-"+c).Error
+		if err != nil {
+			return nil, fmt.Errorf("lease %s: %w", c, err)
+		}
+
+		p, err := hsdb.OpenPlatform(t.config(c, "", 4, 4))
+		if err != nil {
+			return nil, fmt.Errorf("platform %s: %w", c, err)
+		}
+
+		p.SetLease("bench-"+c, 1)
+		env.plat[c] = p
+	}
+
+	return env, nil
+}
+
+func (e *regEnv) close() {
+	for _, p := range e.plat {
+		_ = p.Close()
+	}
+}
+
+// move runs the real two-step move of tailnet id away from its current
+// owner and returns the time of each step.
+func (e *regEnv) move(ctx context.Context, db *sql.DB, id string) (float64, float64, error) {
+	var cur ownerRow
+	if err := db.QueryRowContext(ctx, `SELECT owner_cluster_id, owner_epoch FROM tailnets WHERE id = $1`, id).Scan(&cur.owner, &cur.epoch); err != nil {
+		return 0, 0, err
+	}
+
+	e.lastTo = flip(cur.owner)
+	t0 := time.Now()
+
+	if _, err := e.reg.MoveOwner(ctx, benchOp, id, cur.owner, uint64(cur.epoch), flip(cur.owner)); err != nil { //nolint:gosec
+		return 0, 0, fmt.Errorf("MoveOwner: %w", err)
+	}
+
+	request := msSince(t0)
+	t1 := time.Now()
+
+	if _, err := e.plat[cur.owner].HandOver(tailnet.MustParseID(id), uint64(cur.epoch)); err != nil { //nolint:gosec
+		return 0, 0, fmt.Errorf("HandOver: %w", err)
+	}
+
+	return request, msSince(t1), nil
+}
 
 // blogTables are the tenant tables that the per-row design ("cluster_id on
 // every row", ownding.com blog) must rewrite when a tenant moves.
@@ -37,7 +127,8 @@ type b3Trial struct {
 	TotalMs  float64          `json:"total_ms"`
 	Rows     int64            `json:"rows"`
 	WALBytes float64          `json:"wal_bytes"`
-	Locks    map[string]int64 `json:"locks,omitempty"` // pg_locks of the moving backend before COMMIT
+	Locks    map[string]int64 `json:"locks,omitempty"`  // pg_locks of the moving backend before COMMIT
+	Target   string           `json:"target,omitempty"` // registry: cluster the tailnet moved to
 }
 
 type b3Probe struct {
@@ -50,6 +141,7 @@ type b3Probe struct {
 	OtherBase   float64 `json:"other_tenant_baseline_p50_ms"`
 	OtherMaxIn  float64 `json:"other_tenant_max_during_move_ms"`
 	SameN       int     `json:"same_ops"`
+	Target      string  `json:"target,omitempty"` // registry: cluster the tailnet moved to
 }
 
 type b3Result struct {
@@ -74,6 +166,7 @@ func runB3(args []string) error {
 		sizesFlag    = fs.String("sizes", "1000,5000,10000", "device counts of the tenants that are moved")
 		users        = fs.Int("users", 20, "users per tenant")
 		trials       = fs.Int("trials", 7, "trials per design and size")
+		designsFlag  = fs.String("designs", "owner_cas,row_rewrite,registry", "designs to measure (registry: the real MoveOwner + HandOver path)")
 		out          = fs.String("out", "", "write JSON result here")
 	)
 
@@ -176,18 +269,30 @@ func runB3(args []string) error {
 
 	ctx := context.Background()
 
+	designs := strings.Split(*designsFlag, ",")
+
+	var env *regEnv
+
+	if slices.Contains(designs, registryDesign) {
+		env, err = setupRegistry(t, adb)
+		if err != nil {
+			return fmt.Errorf("registry design: %w", err)
+		}
+		defer env.close()
+	}
+
 	// Phase 1: isolated trials (time, WAL, locks).
 	for _, size := range moveSizes {
 		slug := fmt.Sprintf("mv-%05d", size)
 
 		for trial := range *trials {
-			designs := []string{"owner_cas", "row_rewrite"}
+			order := slices.Clone(designs)
 			if trial%2 == 1 {
-				slices.Reverse(designs)
+				slices.Reverse(order)
 			}
 
-			for _, d := range designs {
-				tr, err := moveOnce(ctx, sqlDB, d, ids[slug], size, trial)
+			for _, d := range order {
+				tr, err := moveOnce(ctx, sqlDB, env, d, ids[slug], size, trial)
 				if err != nil {
 					return fmt.Errorf("%s %s trial %d: %w", d, slug, trial, err)
 				}
@@ -210,6 +315,14 @@ func runB3(args []string) error {
 	sqlDB, _ = adb.DB()
 	sqlDB.SetMaxOpenConns(8)
 
+	// The registry held the pool closed above: give it the new one.
+	if env != nil {
+		env.reg, err = placement.New(adb, placement.Config{})
+		if err != nil {
+			return fmt.Errorf("registry design: %w", err)
+		}
+	}
+
 	time.Sleep(1500 * time.Millisecond)
 
 	_ = adb.Raw(`SELECT schemaname || '.' || relname AS rel, n_tup_upd, n_tup_hot_upd, n_dead_tup, n_live_tup
@@ -224,8 +337,8 @@ func runB3(args []string) error {
 		slug := fmt.Sprintf("mv-%05d", size)
 
 		for trial := range min(*trials, 5) {
-			for _, d := range []string{"owner_cas", "row_rewrite"} {
-				p, err := probeMove(ctx, sqlDB, d, ids[slug], other, size, trial)
+			for _, d := range designs {
+				p, err := probeMove(ctx, sqlDB, env, d, ids[slug], other, size, trial)
 				if err != nil {
 					return fmt.Errorf("probe %s %s: %w", d, slug, err)
 				}
@@ -376,7 +489,8 @@ func flip(owner string) string {
 func moveStatements(ctx context.Context, tx *sql.Tx, design, id string, cur ownerRow, blogCur string) (int64, error) {
 	switch design {
 	case "owner_cas":
-		// Simulated P12b statement (not implemented yet): CAS on one row.
+		// Simplified owner move: one CAS statement (the registry design runs
+		// the real two-step path of ADR 0010).
 		r, err := tx.ExecContext(ctx, `UPDATE tailnets SET owner_cluster_id = $1, owner_epoch = owner_epoch + 1, updated_at = now()
 			WHERE id = $2 AND owner_cluster_id = $3 AND owner_epoch = $4`, flip(cur.owner), id, cur.owner, cur.epoch)
 		if err != nil {
@@ -407,8 +521,12 @@ func moveStatements(ctx context.Context, tx *sql.Tx, design, id string, cur owne
 	}
 }
 
-func moveOnce(ctx context.Context, db *sql.DB, design, id string, size, trial int) (b3Trial, error) {
+func moveOnce(ctx context.Context, db *sql.DB, env *regEnv, design, id string, size, trial int) (b3Trial, error) {
 	tr := b3Trial{Design: design, Size: size, Trial: trial, Locks: map[string]int64{}}
+
+	if design == registryDesign {
+		return moveRegistryOnce(ctx, db, env, id, tr)
+	}
 
 	mc, err := db.Conn(ctx)
 	if err != nil {
@@ -489,6 +607,37 @@ func moveOnce(ctx context.Context, db *sql.DB, design, id string, size, trial in
 	return tr, nil
 }
 
+// moveRegistryOnce: StmtMs is MoveOwner (the request), CommitMs HandOver,
+// each its own committed transaction; WAL covers both.
+func moveRegistryOnce(ctx context.Context, db *sql.DB, env *regEnv, id string, tr b3Trial) (b3Trial, error) {
+	oc, err := db.Conn(ctx)
+	if err != nil {
+		return tr, err
+	}
+	defer oc.Close()
+
+	if _, err := oc.ExecContext(ctx, `CHECKPOINT`); err != nil {
+		return tr, err
+	}
+
+	var lsn0, lsn1 string
+	_ = oc.QueryRowContext(ctx, `SELECT pg_current_wal_insert_lsn()::text`).Scan(&lsn0)
+
+	tr.StmtMs, tr.CommitMs, err = env.move(ctx, db, id)
+	if err != nil {
+		return tr, err
+	}
+
+	tr.TotalMs = tr.StmtMs + tr.CommitMs
+	tr.Rows = 2
+	tr.Target = env.lastTo
+
+	_ = oc.QueryRowContext(ctx, `SELECT pg_current_wal_insert_lsn()::text`).Scan(&lsn1)
+	_ = oc.QueryRowContext(ctx, `SELECT pg_wal_lsn_diff($1::pg_lsn, $2::pg_lsn)`, lsn1, lsn0).Scan(&tr.WALBytes)
+
+	return tr, nil
+}
+
 type probeSample struct {
 	start time.Time
 	dur   time.Duration
@@ -535,7 +684,7 @@ func probeLoop(ctx context.Context, db *sql.DB, design, id string, stop <-chan s
 		nid := ids[rand.IntN(len(ids))]
 		s := time.Now()
 
-		if design == "owner_cas" {
+		if design == "owner_cas" || design == registryDesign {
 			tx, err := c.BeginTx(ctx, nil)
 			if err != nil {
 				return err
@@ -545,7 +694,18 @@ func probeLoop(ctx context.Context, db *sql.DB, design, id string, stop <-chan s
 
 			var epoch int64
 
-			err = tx.QueryRowContext(ctx, `SELECT owner_cluster_id, owner_epoch FROM tailnets WHERE id = $1 FOR SHARE`, id).Scan(&owner, &epoch)
+			// owner_cas keeps the 2026-11-22 probe (FOR SHARE only) so its
+			// numbers stay comparable; registry uses the fence of
+			// tenantscope.checkFence (shared advisory lock, then FOR SHARE),
+			// which waits on LockOwnership of a move like a cluster write.
+			q := `SELECT owner_cluster_id, owner_epoch FROM tailnets WHERE id = $1 FOR SHARE`
+			if design == registryDesign {
+				q = `SELECT t.owner_cluster_id, t.owner_epoch
+					FROM pg_advisory_xact_lock_shared(hashtextextended('tenantscope/ownership/' || $1, 0)) AS l, tailnets t
+					WHERE t.id = $1 FOR SHARE OF t`
+			}
+
+			err = tx.QueryRowContext(ctx, q, id).Scan(&owner, &epoch)
 			if err == nil {
 				_, err = tx.ExecContext(ctx, `UPDATE nodes SET last_seen = now() WHERE tailnet_id = $1 AND id = $2`, id, nid)
 			}
@@ -572,7 +732,7 @@ func probeLoop(ctx context.Context, db *sql.DB, design, id string, stop <-chan s
 	}
 }
 
-func probeMove(ctx context.Context, db *sql.DB, design, id, other string, size, trial int) (b3Probe, error) {
+func probeMove(ctx context.Context, db *sql.DB, env *regEnv, design, id, other string, size, trial int) (b3Probe, error) {
 	p := b3Probe{Design: design, Size: size, Trial: trial}
 	stop := make(chan struct{})
 
@@ -601,7 +761,20 @@ func probeMove(ctx context.Context, db *sql.DB, design, id, other string, size, 
 
 	mStart := time.Now()
 
-	tr, err := moveNoCheckpoint(ctx, db, design, id)
+	var (
+		tr  float64
+		err error
+	)
+
+	if design == registryDesign {
+		var req, ho float64
+
+		req, ho, err = env.move(ctx, db, id)
+		tr = req + ho
+		p.Target = env.lastTo
+	} else {
+		tr, err = moveNoCheckpoint(ctx, db, design, id)
+	}
 
 	mEnd := time.Now()
 

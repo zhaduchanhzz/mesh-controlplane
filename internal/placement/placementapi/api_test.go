@@ -526,3 +526,75 @@ func TestOperatorReconcile(t *testing.T) {
 		assert.NotContains(t, a.Action, "econcile", "a read is not audited as a mutation")
 	}
 }
+
+// P12b (owner Q2): the move schedule through the operator API: schedule
+// (Idempotency-Key required, replay gives the same move), get, list,
+// cancel; operator-only like the rest.
+func TestOperatorMoves(t *testing.T) {
+	e := newEnv(t)
+	c := e.client(e.opCA.issue(t, "alice", x509.ExtKeyUsageClientAuth, alice))
+
+	for _, id := range []string{"c1", "c2"} {
+		cl := map[string]any{"id": id, "endpoint_url": "https://" + id + ".cp.example.test:8443", "class": "shared", "state": "ACTIVE", "max_devices": 100}
+		code, _ := e.do(t, c, call{method: http.MethodPost, path: "/v1/clusters", key: id, body: cl})
+		require.Equal(t, http.StatusCreated, code)
+		e.live(t, id)
+	}
+
+	code, tn := e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets", key: "t1", body: map[string]any{"slug": "acme", "class": "shared"}})
+	require.Equal(t, http.StatusCreated, code, tn)
+	id, _ := tn["id"].(string)
+	owner, _ := tn["owner_cluster_id"].(string)
+
+	require.NotEmpty(t, id)
+	require.NotEmpty(t, owner)
+	target := map[string]string{"c1": "c2", "c2": "c1"}[owner]
+
+	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/tailnets/" + id + "/activate", key: "a1", body: map[string]any{"expected_epoch": 1}})
+	require.Equal(t, http.StatusOK, code)
+
+	when := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	sched := call{
+		method: http.MethodPost, path: "/v1/tailnets/" + id + "/moves", key: "s1",
+		body: map[string]any{"to_cluster": target, "scheduled_at": when, "reason": "rebalance"},
+	}
+
+	code, _ = e.do(t, e.client(), call{method: sched.method, path: sched.path, key: "s0", body: sched.body})
+	assert.Equal(t, http.StatusUnauthorized, code, "no certificate")
+
+	code, _ = e.do(t, c, call{method: sched.method, path: sched.path, body: sched.body})
+	assert.Equal(t, http.StatusUnprocessableEntity, code, "Idempotency-Key is required")
+
+	code, m := e.do(t, c, sched)
+	require.Equal(t, http.StatusCreated, code, m)
+	assert.Equal(t, "SCHEDULED", m["state"])
+	assert.Equal(t, owner, m["from_cluster_id"])
+	assert.Equal(t, target, m["to_cluster_id"])
+	moveID, _ := m["id"].(string)
+	require.NotEmpty(t, moveID)
+
+	code, again := e.do(t, c, sched)
+	require.Equal(t, http.StatusCreated, code)
+	assert.Equal(t, moveID, again["id"], "replay")
+
+	code, _ = e.do(t, c, call{method: http.MethodPost, path: sched.path, key: "s2", body: sched.body})
+	assert.Equal(t, http.StatusConflict, code, "one open move per tailnet")
+
+	code, got := e.do(t, c, call{method: http.MethodGet, path: "/v1/moves/" + moveID})
+	require.Equal(t, http.StatusOK, code)
+	assert.Equal(t, moveID, got["id"])
+
+	code, list := e.do(t, c, call{method: http.MethodGet, path: "/v1/tailnets/" + id + "/moves"})
+	require.Equal(t, http.StatusOK, code)
+	assert.Len(t, list["moves"], 1)
+
+	code, cancelled := e.do(t, c, call{method: http.MethodPost, path: "/v1/moves/" + moveID + "/cancel", key: "x1"})
+	require.Equal(t, http.StatusOK, code, cancelled)
+	assert.Equal(t, "CANCELLED", cancelled["state"])
+
+	code, _ = e.do(t, c, call{method: http.MethodPost, path: "/v1/moves/" + moveID + "/cancel", key: "x2"})
+	assert.Equal(t, http.StatusConflict, code)
+
+	code, _ = e.do(t, c, call{method: http.MethodGet, path: "/v1/moves/nope"})
+	assert.Equal(t, http.StatusNotFound, code)
+}

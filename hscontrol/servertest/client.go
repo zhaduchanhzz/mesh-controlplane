@@ -71,6 +71,11 @@ type TestClient struct {
 	updatesReceived int
 	noHistory       bool
 
+	// controlMsgs: the netmap's DisplayMessages as "Title: Text", copied
+	// when the netmap arrives (the client's map session keeps mutating the
+	// map it hands out).
+	controlMsgs []string
+
 	// streams and streamMaps: see [TestClient.Stream].
 	streams, streamMaps int
 
@@ -468,6 +473,7 @@ func (c *TestClient) startPollLoop() {
 func (c *TestClient) resetNetmapState() {
 	c.mu.Lock()
 	c.netmap = nil
+	c.controlMsgs = nil
 	c.mu.Unlock()
 
 	for {
@@ -482,8 +488,14 @@ func (c *TestClient) resetNetmapState() {
 // UpdateFullNetmap implements [controlclient.NetmapUpdater].
 // Called by [controlclient.Direct] when a new [netmap.NetworkMap] is received.
 func (c *TestClient) UpdateFullNetmap(nm *netmap.NetworkMap) {
+	msgs := make([]string, 0, len(nm.DisplayMessages))
+	for _, m := range nm.DisplayMessages {
+		msgs = append(msgs, m.Title+": "+m.Text)
+	}
+
 	c.mu.Lock()
 	c.netmap = nm
+	c.controlMsgs = msgs
 	c.updatesReceived++
 	c.streamMaps++
 
@@ -872,6 +884,16 @@ func (c *TestClient) ReconnectAfter(tb testing.TB, d time.Duration) {
 }
 
 // --- State accessors ---
+
+// HealthMessages returns the messages the control plane sent the client
+// (MapResponse.Health / DisplayMessages, as the client keeps them in its
+// netmap), each as "Title: Text".
+func (c *TestClient) HealthMessages() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return slices.Clone(c.controlMsgs)
+}
 
 // Netmap returns the latest [netmap.NetworkMap], or nil if none received yet.
 func (c *TestClient) Netmap() *netmap.NetworkMap {

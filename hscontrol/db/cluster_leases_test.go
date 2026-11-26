@@ -16,5 +16,5 @@ func TestClusterLeasesDDLInSchemaFiles(t *testing.T) {
 	norm := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 	assert.Contains(t, norm(dbSchema), lease.SQLiteDDL)
 	assert.Contains(t, norm(dbSchemaPostgres), lease.PostgresDDL)
-	assert.Equal(t, lease.MigrationID, LatestMigrationID())
+	assert.Contains(t, migrationIDs(), lease.MigrationID)
 }

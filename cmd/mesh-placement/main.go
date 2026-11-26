@@ -57,6 +57,7 @@ func run() error {
 		operators   = flag.String("operators", "", "comma-separated allowed operator identities (URI or DNS SANs)")
 		sharedLimit = flag.Int64("shared-tenant-limit", placement.DefaultSharedTenantLimit, "device limit of a tailnet on a shared cluster")
 		openapi     = flag.Bool("openapi", false, "print the OpenAPI 3.1 document and exit")
+		schedEvery  = flag.Duration("schedule-interval", 5*time.Second, "how often due tailnet moves are requested and their hand-over recorded (P12b); 0 disables the scheduler")
 	)
 
 	flag.Parse()
@@ -129,6 +130,10 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if *schedEvery > 0 {
+		go placement.RunScheduler(ctx, reg, *schedEvery, log.Printf)
+	}
 
 	errc := make(chan error, 1)
 

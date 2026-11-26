@@ -256,3 +256,23 @@ WHEN NEW.epoch < OLD.epoch OR (NEW.holder <> OLD.holder AND NEW.epoch <= OLD.epo
 BEGIN
   SELECT RAISE(ABORT, 'lease epoch must grow with a holder change and never decrease');
 END;
+
+-- Planned tailnet moves (P12b): see hscontrol/db/tailnet_moves.go.
+CREATE TABLE tailnet_moves(
+  id text PRIMARY KEY,
+  tailnet_id text NOT NULL,
+  from_cluster_id text NOT NULL,
+  to_cluster_id text NOT NULL,
+  from_epoch integer NOT NULL CHECK(from_epoch >= 1),
+  scheduled_at datetime NOT NULL,
+  reason text NOT NULL DEFAULT '',
+  state text NOT NULL CHECK(state IN ('SCHEDULED','REQUESTED','HANDED_OVER','CANCELLED','FAILED')),
+  error text NOT NULL DEFAULT '',
+  requested_at datetime,
+  finished_at datetime,
+  created_at datetime NOT NULL,
+  updated_at datetime NOT NULL,
+  CONSTRAINT fk_tailnet_moves_tailnet FOREIGN KEY(tailnet_id) REFERENCES tailnets(id)
+);
+CREATE UNIQUE INDEX idx_tailnet_moves_open ON tailnet_moves(tailnet_id) WHERE state IN ('SCHEDULED','REQUESTED');
+CREATE INDEX idx_tailnet_moves_due ON tailnet_moves(state, scheduled_at);

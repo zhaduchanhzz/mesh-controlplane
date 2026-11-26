@@ -232,3 +232,22 @@ END;
 $$;
 CREATE TRIGGER trg_cluster_leases_epoch_monotonic BEFORE UPDATE OF epoch, holder ON cluster_leases
   FOR EACH ROW EXECUTE FUNCTION cluster_leases_epoch_monotonic();
+
+-- Planned tailnet moves (P12b): see hscontrol/db/tailnet_moves.go.
+CREATE TABLE tailnet_moves(
+  id text PRIMARY KEY,
+  tailnet_id text NOT NULL REFERENCES tailnets(id),
+  from_cluster_id text NOT NULL,
+  to_cluster_id text NOT NULL,
+  from_epoch bigint NOT NULL CHECK(from_epoch >= 1),
+  scheduled_at timestamptz NOT NULL,
+  reason text NOT NULL DEFAULT '',
+  state text NOT NULL CHECK(state IN ('SCHEDULED','REQUESTED','HANDED_OVER','CANCELLED','FAILED')),
+  error text NOT NULL DEFAULT '',
+  requested_at timestamptz,
+  finished_at timestamptz,
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX idx_tailnet_moves_open ON tailnet_moves(tailnet_id) WHERE state IN ('SCHEDULED','REQUESTED');
+CREATE INDEX idx_tailnet_moves_due ON tailnet_moves(state, scheduled_at);
