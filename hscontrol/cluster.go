@@ -134,6 +134,21 @@ type Cluster struct {
 
 	// api is the public /api/v2 (P08b): rate limits by key and tailnet.
 	api *clusterAPI
+
+	// loadHook, when set (tests, SetLoadHook), runs between building a
+	// tailnet's runtime and starting it. Under mu.
+	loadHook func(tailnet.ID)
+}
+
+// runLoadHook runs the test hook of the load-to-start window (P12c B5).
+func (c *Cluster) runLoadHook(id tailnet.ID) {
+	c.mu.RLock()
+	hook := c.loadHook
+	c.mu.RUnlock()
+
+	if hook != nil {
+		hook(id)
+	}
 }
 
 // tenantRuntime is one loaded tailnet: its runtime, the ownership epoch it
@@ -487,6 +502,8 @@ func (c *Cluster) reconcile() {
 		c.mu.RLock()
 		rt := c.runtimes[id]
 		c.mu.RUnlock()
+
+		c.runLoadHook(id)
 
 		if err := c.start(rt); err != nil { //nolint:noinlineerr
 			log.Error().Err(err).Str("tailnet", tn.ID).Msg("reconcile: starting tailnet")
@@ -1051,6 +1068,8 @@ func (c *Cluster) onLeaseAcquired(ctx context.Context, l lease.Lease) error {
 		c.mu.RLock()
 		rt := c.runtimes[id]
 		c.mu.RUnlock()
+
+		c.runLoadHook(id)
 
 		if err := c.start(rt); err != nil { //nolint:noinlineerr,contextcheck // runtimes live on the cluster's serve context, not this callback's
 			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: starting tailnet")

@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/servertest"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
 // P12c group B (review 2026-11-26): availability of a cluster process under
@@ -81,4 +83,66 @@ func TestP12cAPIOneTenantCannotStarveAnother(t *testing.T) {
 
 	assert.Positive(t, codesG[http.StatusTooManyRequests], "the lookups of unauthenticated keys are bounded: %v", codesG)
 	assert.Equal(t, http.StatusOK, get(keyB), "B after a flood of garbage keys: garbage got %v", codesG)
+}
+
+// TestP12cRuntimeNotRoutableBeforeStart (B5): a tailnet's runtime is
+// reachable only once it started. A request that arrives while the runtime
+// is built but not started (its map batcher does not exist yet) is refused
+// cleanly, with no panic, and served once the runtime started.
+func TestP12cRuntimeNotRoutableBeforeStart(t *testing.T) {
+	const other = "p12c-other-cluster"
+
+	tc := servertest.NewTestCluster(t,
+		servertest.TailnetSeed{Slug: tenantA},
+		servertest.TailnetSeed{Slug: tenantB, Owner: other, SeedNode: true})
+
+	b := tc.Tailnet(t, tenantB)
+
+	inWindow := make(chan struct{})
+	release := make(chan struct{})
+
+	var once bool
+
+	tc.Cluster.SetLoadHook(func(id tailnet.ID) {
+		if id != b.ID || once {
+			return
+		}
+
+		once = true
+
+		close(inWindow)
+		<-release
+	})
+	t.Cleanup(func() { tc.Cluster.SetLoadHook(nil) })
+
+	// B moves to this cluster: the next reconcile loads it.
+	row := tc.TailnetRow(t, tenantB)
+	tc.SetTailnetOwner(t, tenantB, tc.ClusterID, row.OwnerEpoch+1)
+
+	select {
+	case <-inWindow:
+	case <-time.After(15 * time.Second):
+		close(release)
+		t.Fatal("B's runtime was never loaded")
+	}
+
+	noiseKey := tc.NoiseKey(t)
+
+	sess := servertest.NewRawNoiseSession(t, tc.URL, noiseKey, b.NodeMachine)
+	resp, err := sess.LiteMap(t.Context(), b.NodeKey, b.NodeDisco, "192.0.2.1:41641")
+
+	close(release)
+
+	require.NoError(t, err, "map request in the load-to-start window")
+	assert.Contains(t, []int{http.StatusUnauthorized, http.StatusServiceUnavailable}, resp.Status,
+		"map request to a runtime not started yet: %d %s", resp.Status, resp.Body)
+
+	tc.WaitRuntime(t, tenantB, true, 15*time.Second)
+
+	require.Eventually(t, func() bool {
+		s := servertest.NewRawNoiseSession(t, tc.URL, noiseKey, b.NodeMachine)
+		r, err := s.LiteMap(t.Context(), b.NodeKey, b.NodeDisco, "192.0.2.1:41641")
+
+		return err == nil && r.OK()
+	}, 10*time.Second, 100*time.Millisecond, "B is served once its runtime started")
 }
