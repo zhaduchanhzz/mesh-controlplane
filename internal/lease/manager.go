@@ -85,6 +85,10 @@ type Manager struct {
 
 	// regressions counts acquire attempts refused with ErrEpochRegression.
 	regressions atomic.Int64
+
+	// down asks the hold of the current lease to end ([Manager.StepDown]);
+	// a new channel for every lease, so a request never outlives it.
+	down chan string
 }
 
 // NewManager builds the manager of holder for cluster.
@@ -144,7 +148,30 @@ func (m *Manager) Current() (Lease, bool) {
 func (m *Manager) set(l Lease, deadline time.Time) {
 	m.mu.Lock()
 	m.cur, m.active, m.deadline = l, true, deadline
+	m.down = make(chan string, 1)
 	m.mu.Unlock()
+}
+
+// StepDown ends the lease this process holds now, from outside the loop
+// (P13e, ADR 0014 §3: the registry names another Noise key): Run reports
+// it lost (onLose), releases it at once so that a standby takes over
+// without waiting for the TTL, and waits a whole TTL before trying to take
+// it again, so that a standby that may serve gets it first. It reports
+// whether a lease was held; it never blocks.
+func (m *Manager) StepDown(reason string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.active || m.down == nil {
+		return false
+	}
+
+	select {
+	case m.down <- reason:
+	default: // already asked
+	}
+
+	return true
 }
 
 func (m *Manager) extend(deadline time.Time) {
@@ -167,9 +194,9 @@ func (m *Manager) deadlineFrom(start time.Time) time.Time {
 // it starts renewing it at once and, meanwhile, calls onAcquire (load and
 // start serving) with a context that ends with the lease; if onAcquire fails
 // the lease is released and the process stays standby. When the lease ends
-// (lost, self-fence deadline, shutdown) [Manager.Current] reports false at
-// once, and onLose is called after onAcquire returned. On shutdown the
-// lease is released.
+// (lost, self-fence deadline, shutdown, [Manager.StepDown]) [Manager.Current]
+// reports false at once, and onLose is called after onAcquire returned. On
+// shutdown and on a step-down the lease is released.
 //
 // Renewing during onAcquire (P12c B3): the self-fence deadline runs from the
 // acquire, so a load longer than TTL - SafetyMargin used to self-fence the
@@ -182,13 +209,13 @@ func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease
 		}
 
 		hctx, stopHold := context.WithCancel(ctx)
-		ended := make(chan string, 1)
+		ended := make(chan holdEnd, 1)
 
 		go func() {
-			reason := m.hold(hctx, l)
+			e := m.hold(hctx, l)
 			m.clear()
 
-			ended <- reason
+			ended <- e
 		}()
 
 		err = onAcquire(hctx, l)
@@ -208,19 +235,35 @@ func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease
 			continue
 		}
 
-		reason := <-ended
+		end := <-ended
 
 		stopHold()
 		log.Warn().Str("cluster", m.cluster).Str("holder", m.holder).Uint64("lease_epoch", l.Epoch).
-			Str("reason", reason).Msg("cluster lease ended: standby")
-		onLose(l, reason)
+			Str("reason", end.reason).Msg("cluster lease ended: standby")
+		onLose(l, end.reason)
 
 		if ctx.Err() != nil {
 			m.release(l) //nolint:contextcheck // the lease is given back after ctx ended; release bounds itself by the safety margin
 
 			return
 		}
+
+		if end.steppedDown {
+			// Given back at once, then a whole TTL before trying again: the
+			// process that should serve takes it first.
+			m.release(l) //nolint:contextcheck // release bounds itself by the safety margin
+
+			if !sleepCtx(ctx, m.cfg.TTL) {
+				return
+			}
+		}
 	}
+}
+
+// holdEnd is why a hold ended; steppedDown when [Manager.StepDown] asked.
+type holdEnd struct {
+	reason      string
+	steppedDown bool
 }
 
 // acquire tries every AcquireInterval until it holds the lease.
@@ -274,11 +317,11 @@ func (m *Manager) acquire(ctx context.Context) (Lease, error) {
 	}
 }
 
-// hold renews l until it is lost, the self-fence deadline passes or ctx
-// ends, and says why.
-func (m *Manager) hold(ctx context.Context, l Lease) string {
+// hold renews l until it is lost, the self-fence deadline passes, ctx
+// ends or StepDown asks, and says why.
+func (m *Manager) hold(ctx context.Context, l Lease) holdEnd {
 	m.mu.Lock()
-	deadline := m.deadline
+	deadline, down := m.deadline, m.down
 	m.mu.Unlock()
 
 	fence := time.NewTimer(time.Until(deadline))
@@ -298,9 +341,11 @@ func (m *Manager) hold(ctx context.Context, l Lease) string {
 	for {
 		select {
 		case <-ctx.Done():
-			return "shutdown"
+			return holdEnd{reason: "shutdown"}
 		case <-fence.C:
-			return "self-fence deadline passed"
+			return holdEnd{reason: "self-fence deadline passed"}
+		case why := <-down:
+			return holdEnd{reason: "stepped down: " + why, steppedDown: true}
 		case <-renew.C:
 			if inFlight {
 				continue // a renewal stuck on the database: the deadline decides
@@ -332,7 +377,7 @@ func (m *Manager) hold(ctx context.Context, l Lease) string {
 
 				fence.Reset(time.Until(deadline))
 			case errors.Is(r.err, ErrLost):
-				return "lease lost (expired or taken over)"
+				return holdEnd{reason: "lease lost (expired or taken over)"}
 			default:
 				if ctx.Err() == nil {
 					log.Error().Err(r.err).Str("cluster", m.cluster).Uint64("lease_epoch", l.Epoch).

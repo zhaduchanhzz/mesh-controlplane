@@ -43,6 +43,10 @@ func (s ClusterSpec) validate() error {
 		return fmt.Errorf("%w: max_devices must be positive", ErrInvalid)
 	}
 
+	if s.NoisePublicKey != "" {
+		return ValidateNoisePublicKey(s.NoisePublicKey)
+	}
+
 	return nil
 }
 
@@ -94,6 +98,15 @@ func (r *Registry) UpdateCluster(ctx context.Context, op Op, id string, p Cluste
 	}
 
 	if p.NoisePublicKey != nil {
+		// "" clears it: the next process to take the lease records its own
+		// (P12). Anything else must be a key (P13e).
+		if *p.NoisePublicKey != "" {
+			err := ValidateNoisePublicKey(*p.NoisePublicKey)
+			if err != nil {
+				return Cluster{}, err
+			}
+		}
+
 		set["noise_public_key"] = *p.NoisePublicKey
 	}
 

@@ -245,6 +245,19 @@ func (m *PostgresQueryExecMode) UnmarshalText(text []byte) error {
 	})
 }
 
+func (PostgresTargetSessionAttrs) Allowed() []string {
+	return []string{
+		string(PostgresTargetAny), string(PostgresTargetReadWrite), string(PostgresTargetReadOnly),
+		string(PostgresTargetPrimary), string(PostgresTargetStandby), string(PostgresTargetPreferStandby),
+	}
+}
+
+func (a *PostgresTargetSessionAttrs) UnmarshalText(text []byte) error {
+	return setEnum(a, string(text), a.Allowed(), ConfigError{
+		Hint: "pick one of the allowed values; read-write never connects to a replica",
+	})
+}
+
 // ACMEChallenge is the ACME challenge type. "" decodes without error to the
 // zero value (unset).
 type ACMEChallenge string //nolint:recvcheck // UnmarshalText needs a pointer; the rest read the value

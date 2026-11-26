@@ -13,6 +13,27 @@ import (
 // with: the process must not serve (P12, owner decision Q6, fail closed).
 var ErrNoiseKeyMismatch = errors.New("cluster Noise public key differs from the registered one")
 
+// RegisteredNoiseKey returns the Noise public key the registry names for
+// this cluster, "" when none is recorded or the cluster is not registered
+// (P13e: a process must not create a key when one is registered).
+func (p *Platform) RegisteredNoiseKey() (string, error) {
+	ctx, cancel := p.lookupContext()
+	defer cancel()
+
+	var keys []string
+
+	err := p.db.WithContext(ctx).Raw(`SELECT COALESCE(noise_public_key, '') FROM clusters WHERE id = ?`, p.cluster).Scan(&keys).Error
+	if err != nil {
+		return "", fmt.Errorf("reading the registered Noise key of %s: %w", p.cluster, err)
+	}
+
+	if len(keys) == 0 {
+		return "", nil
+	}
+
+	return keys[0], nil
+}
+
 // RecordNoiseKey checks this process's Noise public key pub against the
 // cluster's registry row (P12, Q6): an empty key is recorded (write-once),
 // an equal one is fine, a different one is ErrNoiseKeyMismatch. A cluster

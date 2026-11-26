@@ -517,7 +517,7 @@ func TestOperatorReconcile(t *testing.T) {
 	e.live(t, "c1")
 	assert.Equal(t, []any{map[string]any{"code": "R6_CLUSTER_NO_NOISE_KEY", "cluster_id": "c1"}}, findings())
 
-	code, _ = e.do(t, c, call{method: http.MethodPatch, path: "/v1/clusters/c1", key: "k1", body: map[string]any{"noise_public_key": "mkey:c1"}})
+	code, _ = e.do(t, c, call{method: http.MethodPatch, path: "/v1/clusters/c1", key: "k1", body: map[string]any{"noise_public_key": p13eKey}})
 	require.Equal(t, http.StatusOK, code)
 	assert.Empty(t, findings(), "clean")
 

@@ -658,6 +658,76 @@ func validateDatabase(c *types.Config, v *configValidator) {
 			Hint: `set database.sqlite.path, e.g. "/var/lib/headscale/db.sqlite"`,
 			See:  see,
 		})
+	case t == types.DatabasePostgres:
+		validatePostgres(c.Database.Postgres, v)
+	}
+}
+
+// validatePostgres records a ConfigError for a host list that cannot be
+// used (P13b, ADR 0011 §D) and for negative limits.
+func validatePostgres(pg types.PostgresConfig, v *configValidator) {
+	if len(pg.Hosts) > 0 && pg.Host != "" {
+		v.Add(&types.ConfigError{
+			Reason:        "database.postgres.host and database.postgres.hosts are mutually exclusive",
+			Current:       []types.KV{{Key: "database.postgres.host", Value: pg.Host}},
+			ConflictsWith: []types.KV{{Key: "database.postgres.hosts", Value: strings.Join(pg.Hosts, ",")}},
+			Hint:          "list every server in database.postgres.hosts and remove database.postgres.host",
+		})
+	}
+
+	list := pg.Hosts
+	if len(list) == 0 && strings.Contains(pg.Host, ",") {
+		list = strings.Split(pg.Host, ",")
+	}
+
+	for _, e := range list {
+		e = strings.TrimSpace(e)
+		if e == "" || strings.HasPrefix(e, "/") {
+			v.Add(&types.ConfigError{
+				Reason:  "database.postgres host list entry is empty or a Unix socket",
+				Current: []types.KV{{Key: "database.postgres.hosts", Value: strings.Join(list, ",")}},
+				Hint:    `list TCP servers as "host" or "host:port"; a Unix socket works only as the single database.postgres.host`,
+			})
+
+			continue
+		}
+
+		if _, port, err := net.SplitHostPort(e); err == nil { //nolint:noinlineerr
+			n, err := strconv.Atoi(port)
+			if err != nil || n < 1 || n > 65535 {
+				v.Add(&types.ConfigError{
+					Reason:  "database.postgres host list entry has an invalid port",
+					Current: []types.KV{{Key: "database.postgres.hosts", Value: e}},
+					Hint:    `use "host:port" with a port from 1 to 65535`,
+				})
+			}
+		}
+	}
+
+	limits := []struct {
+		key string
+		val int64
+	}{
+		{"database.postgres.connect_timeout_secs", int64(pg.ConnectTimeoutSecs)},
+		{"database.postgres.lease_max_open_conns", int64(pg.LeaseMaxOpenConnections)},
+		{"database.postgres.statement_timeout", int64(pg.StatementTimeout)},
+	}
+	for _, l := range limits {
+		if l.val < 0 {
+			v.Add(&types.ConfigError{
+				Reason:  l.key + " is negative",
+				Current: []types.KV{{Key: l.key, Value: strconv.FormatInt(l.val, 10)}},
+				Hint:    "use zero (unset) or a positive value",
+			})
+		}
+	}
+
+	if pg.StatementTimeout > 0 && pg.StatementTimeout < time.Millisecond {
+		v.Add(&types.ConfigError{
+			Reason:  "database.postgres.statement_timeout is below one millisecond",
+			Current: []types.KV{{Key: "database.postgres.statement_timeout", Value: pg.StatementTimeout.String()}},
+			Hint:    "PostgreSQL counts it in whole milliseconds; use zero (unset) or at least 1ms",
+		})
 	}
 }
 

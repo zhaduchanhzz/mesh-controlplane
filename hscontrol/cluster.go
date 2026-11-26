@@ -252,7 +252,16 @@ type tenantRuntime struct {
 // ACTIVE tailnet owned by cfg.ClusterID. cfg is shared by the runtimes:
 // per-tailnet DNS and IP settings come with the tailnet config revision
 // (later ticket); policy, users, nodes and keys are per tailnet already.
-func NewCluster(cfg *types.Config) (*Cluster, error) {
+//
+// The cluster's Noise key file must exist (P13e, ADR 0014 §3): only
+// [WithNoiseKeyInit] creates a missing one, and only for a cluster whose
+// registry entry names no key yet.
+func NewCluster(cfg *types.Config, opts ...ClusterOption) (*Cluster, error) {
+	var o clusterOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	err := config.Validate(cfg)
 	if err != nil {
 		return nil, err
@@ -266,14 +275,25 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 	// A tenant without access rules is denied, not allow-all (AGENTS rule 8).
 	cfg.PolicyEmptyDenies = true
 
-	noiseKey, err := readOrCreatePrivateKey(cfg.AbsPath(cfg.Noise.PrivateKeyPath))
+	keyPath := cfg.AbsPath(cfg.Noise.PrivateKeyPath)
+
+	noiseKey, err := readClusterNoiseKey(keyPath, o.initNoiseKey)
 	if err != nil {
-		return nil, fmt.Errorf("reading or creating Noise protocol private key: %w", err)
+		return nil, err
 	}
 
 	platform, err := db.OpenPlatform(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("opening platform database: %w", err)
+	}
+
+	if noiseKey == nil {
+		noiseKey, err = initClusterNoiseKey(platform, keyPath)
+		if err != nil {
+			_ = platform.Close()
+
+			return nil, err
+		}
 	}
 
 	registry, err := placement.New(platform.RegistryDB(), placement.Config{})
@@ -501,6 +521,37 @@ func (c *Cluster) Runtime(id tailnet.ID) (*Headscale, bool) {
 	return rt.h, true
 }
 
+// noiseKeyRotated re-checks, on every reconcile tick, the Noise key the
+// registry names for this cluster (P13e, ADR 0014 §3, owner D8). Checked
+// only when the lease was taken, a rotation in the registry (an emergency:
+// the old key is considered leaked) left this process serving with the old
+// key until its next takeover. On a mismatch it stops serving at once (not
+// ready, no new tenant handle) and steps down: onLeaseLost retires every
+// runtime, the lease is released for a process with the registered key,
+// and this one stays standby. Any other error is logged only: writes are
+// fenced in the database regardless. Callers hold leaseMu.
+func (c *Cluster) noiseKeyRotated() bool {
+	err := c.platform.RecordNoiseKey(c.noiseKey.Public().String()) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
+
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, db.ErrNoiseKeyMismatch):
+		log.Error().Err(err).Str("cluster", c.platform.ClusterID()).
+			Msg("the registry names another Noise key for this cluster: stepping down")
+
+		c.ready.Store(false)
+		c.platform.ClearLease()
+		c.lease.StepDown("the registry names another Noise key")
+
+		return true
+	default:
+		log.Warn().Err(err).Msg("reconcile: checking the registered Noise key")
+
+		return false
+	}
+}
+
 // reconcile loads the ACTIVE tailnets this cluster owns and does not serve
 // yet, and retires runtimes whose tailnet is no longer owned by this cluster
 // at the epoch they were loaded with (moved, epoch bumped, not ACTIVE,
@@ -511,6 +562,10 @@ func (c *Cluster) reconcile() {
 
 	if !c.ready.Load() || !c.leaseHeld() {
 		return // standby, or the lease is ending: onLeaseLost retires
+	}
+
+	if c.noiseKeyRotated() {
+		return
 	}
 
 	// ADR 0010: first give away the tailnets with a move requested (they

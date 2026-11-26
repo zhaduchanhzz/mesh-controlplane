@@ -1294,6 +1294,12 @@ Where headscale stores nodes, users and keys. SQLite is recommended; PostgreSQL 
       postgres:
         host: ""
         port: 0
+        hosts: []
+        target_session_attrs: ""
+        connect_timeout_secs: 2
+        statement_timeout: 0s
+        lease_name: ""
+        lease_max_open_conns: 2
         name: ""
         user: ""
         pass: ""
@@ -1575,6 +1581,12 @@ PostgreSQL, read only when [`database.type`](#database.type) is `postgres`. An e
       postgres:
         host: ""
         port: 0
+        hosts: []
+        target_session_attrs: ""
+        connect_timeout_secs: 2
+        statement_timeout: 0s
+        lease_name: ""
+        lease_max_open_conns: 2
         name: ""
         user: ""
         pass: ""
@@ -1591,7 +1603,7 @@ PostgreSQL, read only when [`database.type`](#database.type) is `postgres`. An e
 - **Default:** `""`
 - **Env:** `HEADSCALE_DATABASE_POSTGRES_HOST`
 
-The server's host name or IP, or the directory of its Unix socket (a path starting with `/`).
+The server's host name or IP, or the directory of its Unix socket (a path starting with `/`). A comma-separated list of `host[:port]` is a list of servers, as [`database.postgres.hosts`](#database.postgres.hosts).
 
 === "YAML"
 
@@ -1621,7 +1633,7 @@ Replaces `db_host` ([removed](#db_host)).
 - **Default:** `0`
 - **Env:** `HEADSCALE_DATABASE_POSTGRES_PORT`
 
-The server's port or, with a Unix socket directory in [`database.postgres.host`](#database.postgres.host), the port in the socket's file name. Zero uses the driver's default.
+The server's port or, with a Unix socket directory in [`database.postgres.host`](#database.postgres.host), the port in the socket's file name. Zero uses the driver's default. It is also the port of a [`database.postgres.hosts`](#database.postgres.hosts) entry that names none.
 
 === "YAML"
 
@@ -1644,6 +1656,188 @@ The server's port or, with a Unix socket directory in [`database.postgres.host`]
     ```
 
 Replaces `db_port` ([removed](#db_port)).
+
+#### `database.postgres.hosts` { #database.postgres.hosts data-toc-label="hosts" }
+
+- **Type:** [list of strings](#type-list)
+- **Default:** `[]`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_HOSTS` ([space-separated or JSON array](#env))
+
+Lists the servers to try in order, each `host` or `host:port` (an IPv6 address in brackets), for instance one PgBouncer on each PostgreSQL node. A connection goes to the first server that accepts it and matches [`database.postgres.target_session_attrs`](#database.postgres.target_session_attrs); a server that refuses or times out ([`database.postgres.connect_timeout_secs`](#database.postgres.connect_timeout_secs)) is skipped. Set either this or [`database.postgres.host`](#database.postgres.host), which also takes a comma-separated list in the same form. A Unix socket cannot be listed.
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        hosts:
+          - pg-01.example.com:6432
+          - pg-02.example.com:6432
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_HOSTS='["pg-01.example.com:6432","pg-02.example.com:6432"]'
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.hosts = [
+      "pg-01.example.com:6432"
+      "pg-02.example.com:6432"
+    ];
+    ```
+
+#### `database.postgres.target_session_attrs` { #database.postgres.target_session_attrs data-toc-label="target_session_attrs" }
+
+- **Type:** [enum](#type-enum): `any`, `read-write`, `read-only`, `primary`, `standby`, `prefer-standby`
+- **Default:** `""`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_TARGET_SESSION_ATTRS`
+
+The kind of server a connection accepts, as libpq's `target_session_attrs`; with several hosts, a server of another kind is skipped. Empty means `read-write` for the processes that write (`headscale cluster`, its admin commands, `mesh-placement`), so none of them ever writes through a read-only replica, and the driver default (`any`) elsewhere.
+
+| Value            | Meaning                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| `any`            | Accepts any server.                                                                       |
+| `read-write`     | Accepts a server whose sessions can write (`transaction_read_only` off): never a replica. |
+| `read-only`      | Accepts only a server whose sessions are read-only.                                       |
+| `primary`        | Accepts a server that is not in recovery.                                                 |
+| `standby`        | Accepts only a server in recovery (a replica).                                            |
+| `prefer-standby` | Prefers a replica and falls back to any server.                                           |
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        target_session_attrs: read-write
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_TARGET_SESSION_ATTRS=read-write
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.target_session_attrs = "read-write";
+    ```
+
+#### `database.postgres.connect_timeout_secs` { #database.postgres.connect_timeout_secs data-toc-label="connect_timeout_secs" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `2`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_CONNECT_TIMEOUT_SECS`
+
+Bounds, in seconds, each attempt to open a connection to one server, from the TCP connect to the end of authentication, before the next host is tried. Zero leaves only the caller's own deadline.
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        connect_timeout_secs: 5
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_CONNECT_TIMEOUT_SECS=5
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.connect_timeout_secs = 5;
+    ```
+
+#### `database.postgres.statement_timeout` { #database.postgres.statement_timeout data-toc-label="statement_timeout" }
+
+- **Type:** [duration](#type-duration)
+- **Default:** `0s`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_STATEMENT_TIMEOUT`
+
+PostgreSQL's `statement_timeout` for every connection, sent as a startup parameter (whole milliseconds); zero leaves the server's setting. PgBouncer passes it on only when `track_extra_parameters` lists `statement_timeout` (PgBouncer 1.20 or later) and otherwise refuses the connection, so behind PgBouncer prefer `ALTER ROLE ... SET statement_timeout`.
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        statement_timeout: 30s
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_STATEMENT_TIMEOUT=30s
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.statement_timeout = "30s";
+    ```
+
+#### `database.postgres.lease_name` { #database.postgres.lease_name data-toc-label="lease_name" }
+
+- **Type:** [string](#type-string)
+- **Default:** `""`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_LEASE_NAME`
+
+The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6). Empty uses [`database.postgres.name`](#database.postgres.name), still on a pool of its own.
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        lease_name: mesh_lease
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_LEASE_NAME=mesh_lease
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.lease_name = "mesh_lease";
+    ```
+
+#### `database.postgres.lease_max_open_conns` { #database.postgres.lease_max_open_conns data-toc-label="lease_max_open_conns" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `2`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_LEASE_MAX_OPEN_CONNS`
+
+Caps the open connections of the lease pool.
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        lease_max_open_conns: 4
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_LEASE_MAX_OPEN_CONNS=4
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.lease_max_open_conns = 4;
+    ```
 
 #### `database.postgres.name` { #database.postgres.name data-toc-label="name" }
 

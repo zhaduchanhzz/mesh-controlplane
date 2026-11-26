@@ -42,6 +42,13 @@ func openReadOnly(cfg *types.Config, ch chain) (*gorm.DB, error) {
 		}
 	}
 
+	// P13b: the pooler must keep prepared statements (ADR 0006 §3.5); a
+	// read-only server is fine for a reader.
+	err := checkPooler(cfg.Database, false)
+	if err != nil {
+		return nil, err
+	}
+
 	conn, err := openDB(cfg.Database, cfg.SQLitePath())
 	if err != nil {
 		return nil, err

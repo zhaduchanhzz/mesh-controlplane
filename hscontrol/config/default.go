@@ -53,6 +53,10 @@ func Default() types.Config {
 				MaxIdleConnections:  10,
 				ConnMaxIdleTimeSecs: 3600,
 				QueryExecMode:       types.PostgresQueryExecCacheStatement,
+				// ADR 0011 §D: a dead host of the list costs 2 s, well
+				// within the cluster lease's self-fence deadline (8 s).
+				ConnectTimeoutSecs:      2,
+				LeaseMaxOpenConnections: 2,
 			},
 		},
 		DNSConfig: types.DNSConfig{
