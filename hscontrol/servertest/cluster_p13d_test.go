@@ -31,7 +31,8 @@ func TestP13dClusterDoesNotMigrateAtStart(t *testing.T) {
 	assert.Contains(t, err.Error(), "mesh-placement migrate")
 
 	// Nothing was created: the file is absent or holds no table.
-	if _, statErr := os.Stat(path); statErr == nil {
+	_, statErr := os.Stat(path)
+	if statErr == nil {
 		conn, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 		require.NoError(t, err)
 
