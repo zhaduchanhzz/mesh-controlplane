@@ -2,12 +2,17 @@
 // tenant table (one with a TailnetID / tailnet_id column) to the tailnet of
 // the verified scope carried by the statement's context
 // (internal/tailnet.WithScope). It is the application-layer tenant isolation
-// chosen in ADR 0005: there is no database-level backstop, so this plugin
-// fails closed.
+// chosen in ADR 0005: the database only backs it up with its constraints
+// and triggers (no row-level security), so this plugin fails closed.
 //
-//   - Query, Count, Row, Update and Delete get "AND <table>.tailnet_id = ?".
+//   - Query, Count, Row, Update and Delete get the WHERE
+//     "<table>.tailnet_id = ? AND (<caller's WHERE>)" (P12c A1).
 //   - Create stamps tailnet_id on every row and rejects rows already carrying
-//     another tailnet.
+//     another tailnet; an UPDATE may not assign another tailnet_id (A3).
+//   - A statement that names a tenant table (TenantTables) where the plugin
+//     cannot confine it (Table, table expressions, string joins, a
+//     destination without TailnetID, subqueries in strings on a tenant
+//     handle) fails with ErrUnscopable (A2).
 //   - Upserts (ON CONFLICT ... DO UPDATE, used by Save when an UPDATE hits no
 //     row) only update rows of the scope's tailnet, so a Save carrying another
 //     tenant's primary key can never rewrite or adopt that tenant's row.
@@ -22,8 +27,11 @@
 //     lease (P11b, internal/lease) also needs the cluster_leases row to name
 //     that holder and epoch and to be live by the database clock.
 //
-// Tables without the column are untouched. Raw SQL (db.Raw / db.Exec) is not
-// parsed and must be reviewed by hand; see evidence/source-inventory-P03b.md.
+// Other tables are untouched. Raw SQL (db.Raw / db.Exec and database/sql
+// calls) is not parsed here: every raw statement that names a tenant table
+// or cannot be resolved statically is reviewed one by one in the allowlist
+// of hscontrol/db/raw_sql_guard_test.go (P12c A4). The database refuses a
+// change of tailnet_id on its own (migration 202611261200, P12c A8).
 package tenantscope
 
 import (
