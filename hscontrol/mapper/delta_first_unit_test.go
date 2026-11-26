@@ -65,7 +65,7 @@ func TestSentStateStripsOnlyEqualAndNeverAdds(t *testing.T) {
 	assert.True(t, emptyMapResponse(again))
 }
 
-func TestSentStatePresenceIgnoredOtherFieldsSent(t *testing.T) {
+func TestSentStatePresenceTrackedOtherFieldsSent(t *testing.T) {
 	var s sentState
 
 	dfDeliver(&s, &tailcfg.MapResponse{Peers: []*tailcfg.Node{dfPeer(1, "a")}}, true)
@@ -73,17 +73,23 @@ func TestSentStatePresenceIgnoredOtherFieldsSent(t *testing.T) {
 	offline := dfPeer(1, "a")
 	f := false
 	offline.Online = &f
-	assert.Nil(t, s.strip(&tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{offline}},
-		hashResponse(&tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{offline}})).PeersChanged,
-		"presence alone moves by patches")
+	r := &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{offline}}
+	assert.Len(t, s.strip(r, hashResponse(r)).PeersChanged, 1,
+		"presence the client does not hold yet must be sent")
+
+	// Once a presence patch told the client, the same entry is redundant.
+	dfDeliver(&s, &tailcfg.MapResponse{OnlineChange: map[tailcfg.NodeID]bool{1: false}}, false)
+	assert.Nil(t, s.strip(r, hashResponse(r)).PeersChanged, "presence already held via patch")
 
 	expiry := dfPeer(1, "a")
+	expiry.Online = &f
 	expiry.KeyExpiry = time.Unix(1_800_000_000, 0)
-	r := &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{expiry}}
+	r = &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{expiry}}
 	assert.Len(t, s.strip(r, hashResponse(r)).PeersChanged, 1, "key expiry must be sent")
 
 	k := key.NewNode().Public()
 	rekey := dfPeer(1, "a")
+	rekey.Online = &f
 	rekey.Key = k
 	r = &tailcfg.MapResponse{PeersChanged: []*tailcfg.Node{rekey}}
 	assert.Len(t, s.strip(r, hashResponse(r)).PeersChanged, 1, "a new node key must be sent")
@@ -94,7 +100,7 @@ func TestSentStatePatchAndRemovalInvalidate(t *testing.T) {
 
 	dfDeliver(&s, &tailcfg.MapResponse{Peers: []*tailcfg.Node{dfPeer(1, "a"), dfPeer(2, "b"), dfPeer(3, "c")}}, true)
 
-	online := false
+	online := true // the entry's presence: a presence-only patch keeps the peer known
 	dfDeliver(&s, &tailcfg.MapResponse{PeersChangedPatch: []*tailcfg.PeerChange{
 		{NodeID: 1, Online: &online}, // presence only: hash kept
 		{NodeID: 2, DERPRegion: 7},   // other field: invalidated
