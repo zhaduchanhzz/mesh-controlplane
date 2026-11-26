@@ -77,6 +77,12 @@ func run() error {
 		}
 	}
 
+	return runServe()
+}
+
+// runServe is `mesh-placement [serve]`: the operator API over mTLS, the
+// move scheduler and, when asked, the operator metrics listener.
+func runServe() error {
 	var (
 		cfgPath     = flag.String("config", "", "Headscale configuration file (only database.* is used)")
 		listen      = flag.String("listen", "127.0.0.1:9443", "listen address (keep it on a private network)")
