@@ -47,7 +47,31 @@ Lượt `~/p13be-verify.sh 47e5544` trên mc-ci (tuần tự, `-p 4`, PostgreSQL
 |---|---|---|---|
 | `go vet ./hscontrol/... ./internal/... ./cmd/...` | `47e5544` | 0 | |
 | `go vet -tags p05cluster ./hscontrol/ ./hscontrol/servertest/` | `47e5544` | 0 | |
-| _(điền sau)_ | | | |
+| `nix shell --inputs-from . nixpkgs#golangci-lint -c golangci-lint run ./...` | `47e5544` | 1 | 2 issue trong file test (noctx, unparam) → sửa ở `1886808` |
+| như trên | `4520d80` | **0** | `0 issues.` |
+| `go test -race -p 4 -count=1 ./hscontrol/db/... ./internal/... ./cmd/headscale/... ./hscontrol/types/ ./hscontrol/config/ ./tools/configgen/...` (PostgreSQL tạm, `MESH_TEST_REQUIRE_POSTGRES=1`) | `47e5544` | **0** | 18 package ok, gồm raw SQL guard (`hscontrol/db` 343 s), `placement` 186 s, `cli` 76 s |
+| `go test -race -p 4 -count=1 ./hscontrol/` | `47e5544` | **0** | 501 s |
+| `nix shell … tscli opentofu -c go test -race -tags p05cluster -count=1 -run 'TestP11b\|TestP12c\|TestP08bTenantAPI\|TestP10\|TestP12\|TestTwoClusters\|TestP13e' ./hscontrol/servertest/` | `47e5544` | **0** | 21 PASS, 0 FAIL, 278 s |
+| như trên, `-run 'TestCluster\|TestFailoverInOneClusterLeavesTheOtherAlone\|TestScheduledMoveNotifiesOnlyItsClients\|TestN1Probe'` | `47e5544` | **0** | 40 PASS, 0 FAIL, 552 s |
+| Lượt P13b riêng: `go test -race -p 4 -count=1 ./hscontrol/db/... ./internal/lease/... ./internal/placement/... ./internal/bootstrap/... ./hscontrol/types/ ./hscontrol/config/` | `0772366` | **0** | |
+
+Không chạy toàn bộ suite `p05cluster` (mc-ci dùng chung; coordinator chạy khi tích hợp). Sau `47e5544` chỉ đổi file test (`1886808`) và tài liệu (`4520d80`, `3dfa719`); các test bị đổi được chạy lại ở `4520d80` (bảng dưới).
+
+**Can thiệp của agent khác vào worktree mc-ci (coordinator báo):** một agent khác chạy một script cùng tên (`sync.sh`) trong scratchpad dùng chung, reset `~/src/p13be` sang nhánh của nó trong phiên này. Vì không loại được việc một lượt RED/GREEN trong `~/src/p13be` chạy trên cây lẫn, **mọi bước RED/GREEN đã được chạy lại** trong worktree riêng `~/src/p13be-rg`, checkout đúng từng commit, kiểm `git status` sạch trước mỗi lượt (`~/p13be-redgreen.sh`). Lượt verify ở trên chạy trong worktree riêng `~/src/p13be-run` (không bị script kia chạm; sạch, đúng `47e5544`). Script của nhánh này đổi tên thành `p13be-*`. Kết quả lượt chạy lại:
+
+| Commit | Lượt | Exit | Kết quả |
+|---|---|---|---|
+| `111aa5d` (RED P13b) | db | 1 | FAIL: MultiHostSkipsReadOnly (direct, pgbouncer), SkipsDeadHost, RefusesPooler…, LeaseStoreHasOwnPool |
+| `d2186f1` | db | 1 | PASS: MultiHost×3, HostsKey; FAIL (chưa tới lượt): RefusesPooler…, LeaseStoreHasOwnPool |
+| `4556c82` | db | 1 | PASS thêm LeaseStoreHasOwnPool, LeaseDatabase; FAIL: RefusesPooler… |
+| `0772366` | db | 0 | mọi test P13b PASS |
+| `200a04d` (RED P13e) | api / st | 1 / 1 | FAIL: ClusterNoiseKeyFormat; ActiveStepsDown (`Condition never satisfied`), MissingNoiseKeyRefused (`An error is expected but got nil`) |
+| `b40d296` | api | 0 | PASS ClusterNoiseKeyFormat, OperatorReconcile |
+| `87343f0` | st / lease (race ×3) | 1 / 0 | PASS ActiveStepsDown (1,951 s), RecordsNoiseKey…; FAIL (chưa tới lượt) MissingNoiseKey; mọi TestManager* PASS |
+| `c84b854` | st | 0 | PASS P13e ×2, RecordsNoiseKey…, P11bStandbyServesNothing |
+| `5664888` (RED) | rot | 1 | build failed (`RotateNoiseKey`, `rotateNoiseKeyCLI`, `noiseKeyStatus` undefined) |
+| `47e5544` | rot | 0 | PASS RotateNoiseKey (sqlite, postgres), NoiseKeyInstall, NoiseKeyRotateAndShow (sqlite, postgres) |
+| `4520d80` | db (race) / st (race ×2) / rot (race) / lint | 0 / 0 / 0 / 0 | step down 1,951–1,952 s; switchover 803–827 ms; `0 issues.` |
 
 ## 5. Known limitations / security blockers
 
