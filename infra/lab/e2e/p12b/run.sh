@@ -28,8 +28,10 @@
 #       gives the target URL
 #   M04 mesh-rebootstrap (Q5), started before scheduled_at with -from <source
 #       URL>, re-logs all N clients, PAR at a time: t50/t90/t100 (Q7); every
-#       client back Running at the target with the same IP (Q4: nodes kept);
-#       ping gap of the pair over the whole move
+#       client back Running at the target with the same node ID and IP (Q4:
+#       nodes kept); ping gap of the pair over the whole move; a client not
+#       Running gets `tailscale debug restun` (owner decision (a)), counted
+#       and named as a manual intervention
 #   M05 control tailnet o untouched: owner/epoch, pings, no notice
 # Then:
 #   M06 audit: one owner per tailnet, reconcile report empty, no move open
@@ -94,6 +96,12 @@ PY=${PY:-python}
 REASON="p12b-e2e rebalance"
 NOTICE="moves to another control cluster"
 
+for t in $VM_TARGETS; do [[ $t =~ ^mesh@10\.77\.[0-9]+\.[0-9]+$ ]] || { echo "VM_TARGETS: mesh@10.77.x.y only ($t)" >&2; exit 2; }; done
+[[ $N =~ ^[0-9]+$ ]] && [ "$N" -ge 2 ] && [[ $PAR =~ ^[0-9]+$ ]] && [ "$PAR" -ge 1 ] || { echo "bad N/PAR" >&2; exit 2; }
+# M02 needs ~15 s for its API checks between the last notice poll and scheduled_at.
+[[ $LEAD =~ ^[0-9]+$ ]] && [ "$LEAD" -ge 45 ] || { echo "LEAD must be >= 45 s" >&2; exit 2; }
+for f in "$BIN" "$PLBIN" "$BOOT_BIN" "$RB_BIN"; do [ -s "$f" ] || { echo "missing binary $f" >&2; exit 2; }; done
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../../.." && pwd)
 SHA=$(git -C "$REPO" rev-parse --short HEAD)
@@ -120,11 +128,6 @@ VMSOCK=$VMDIR/tailscaled.sock
 VMVER=${IMAGES%% *}; VMVER=${VMVER##*:v} # VMs join round 1: the first image's version
 CLI1="sudo -u headscale timeout 60 $HS -c $CFG cluster --cluster-id $C1_ID"
 CLI2="sudo -u headscale timeout 60 $HS -c $CFG cluster --cluster-id $C2_ID"
-
-for t in $VM_TARGETS; do [[ $t =~ ^mesh@10\.77\.[0-9]+\.[0-9]+$ ]] || { echo "VM_TARGETS: mesh@10.77.x.y only ($t)" >&2; exit 2; }; done
-[[ $N =~ ^[0-9]+$ ]] && [ "$N" -ge 2 ] && [[ $PAR =~ ^[0-9]+$ ]] && [ "$PAR" -ge 1 ] || { echo "bad N/PAR" >&2; exit 2; }
-# M02 needs ~15 s for its API checks between the last notice poll and scheduled_at.
-[[ $LEAD =~ ^[0-9]+$ ]] && [ "$LEAD" -ge 45 ] || { echo "LEAD must be >= 45 s" >&2; exit 2; }
 
 redact() {
   sed -E \
@@ -275,7 +278,7 @@ enroll() {
   local s=$1 img=$2 u c n=0 rc=0; shift 2
   u=$(boot_url "$(boot_req "$TMPD/key-$s" "$s")"); [ "$u" = "$(urlof "$(owner "$s")")" ] || return 1
   for c in "$@"; do
-    { start_ts "$c" "$img" && ts_up "$c" "$u" "$TMPD/key-$s"; } >/dev/null 2>&1 || echo "$c" >>"$TMPD/enroll-failed" &
+    { start_ts "$c" "$img" </dev/null && ts_up "$c" "$u" "$TMPD/key-$s"; } >/dev/null 2>&1 || echo "$c" >>"$TMPD/enroll-failed" &
     n=$((n + 1)); [ $((n % PAR)) = 0 ] && wait
   done
   wait
