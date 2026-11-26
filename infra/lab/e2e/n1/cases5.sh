@@ -57,7 +57,7 @@ S08C_DNS=192.168.77.53
 S08C_DOM=corp.example
 S08C_NAME=svc.corp.example
 S08C_INDOM=corp.a.c1.tailnet.internal # under A's MagicDNS domain: refused
-S08C_GAP_MAX_MS=${S08C_GAP_MAX_MS:-30000} # 15 s reconnect grace (poll.go) + margin
+S08C_GAP_MAX_MS=${S08C_GAP_MAX_MS:-20000} # 15 s reconnect grace (poll.go) + margin
 S08C_POLICY_A='{
   // S08c: tenant A, subnet routers (written through /api/v2 with If-Match)
   "tagOwners": {"tag:router": ["n1-a@"]},
