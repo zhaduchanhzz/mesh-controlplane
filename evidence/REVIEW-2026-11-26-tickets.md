@@ -76,4 +76,4 @@ Cột "Kiểm lại": **đã** = coordinator đọc lại code và xác nhận; 
 
 ## Theo dõi
 
-Sửa: `tickets/P12c.md`. Sau P12c, từng ticket được ký `Reviewed` theo bảng ở evidence P12c.
+Sửa: `tickets/P12c.md` (`evidence/P12c.md`). **Chủ dự án ký `Reviewed` ngày 2026-11-26** cho P03b, P04, P05, P00d, P06, P07, P08, P08b, P11, P10, P10b–P10d, P11b, P12 sau khi P12c sửa xong; B7 và L3–L6, L9, phần còn lại của L10 chuyển P13f/P13.
