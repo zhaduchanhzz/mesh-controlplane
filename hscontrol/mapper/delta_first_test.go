@@ -368,3 +368,52 @@ func TestDeltaFirstUserProfileChangeNoFullMap(t *testing.T) {
 		})
 	}
 }
+
+// A peer delta rendered after a policy was installed but before that
+// policy's own change reached the node (S04: the first policy of a new
+// tailnet written while its clients enrol) must carry the node's current
+// filter: a client never holds a peer ahead of the filter that lets it in.
+func TestDeltaFirstPeerDeltaCarriesCurrentFilter(t *testing.T) {
+	td, cleanup := setupBatcherWithTestData(t, NewBatcherAndMapper, 1, 2, normalBufferSize)
+	defer cleanup()
+
+	td.Config.Tuning.IncrementalNetmap.Enabled = true
+
+	_, err := td.State.SetPolicy([]byte(`{"acls": []}`))
+	require.NoError(t, err)
+
+	self := &td.Nodes[0]
+	require.NoError(t, td.Batcher.AddNode(self.n.ID, self.ch, tailcfg.CapabilityVersion(100), nil))
+
+	initial := expectReceive(t, self.ch, "initial map")
+	require.Empty(t, initial.Peers, "deny: no peer")
+	require.Empty(t, initial.PacketFilters["base"], "deny: no rule")
+
+	// The policy is installed; its own change is not sent yet.
+	_, err = td.State.SetPolicy([]byte(`{"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]}`))
+	require.NoError(t, err)
+
+	nc, ok := td.Batcher.nodes.Load(self.n.ID)
+	require.True(t, ok)
+
+	nc.workMu.Lock()
+	require.NoError(t, handleNodeChange(nc, td.Batcher.mapper, change.NodeAdded(td.Nodes[1].n.ID)))
+	nc.workMu.Unlock()
+
+	frame := expectReceive(t, self.ch, "peer delta")
+	require.Len(t, frame.PeersChanged, 1, "the new peer")
+	require.NotNil(t, frame.PacketFilters, "the peer must come with the filter that allows it")
+	assert.NotEmpty(t, frame.PacketFilters["base"])
+
+	// The policy's own change then has nothing left to send.
+	nc.workMu.Lock()
+	require.NoError(t, handleNodeChange(nc, td.Batcher.mapper, change.PolicyChange()))
+	nc.workMu.Unlock()
+
+	select {
+	case f := <-self.ch:
+		assert.Nil(t, f.PacketFilters, "filter already held")
+		assert.Empty(t, f.PeersChanged, "peer already held")
+	case <-time.After(200 * time.Millisecond):
+	}
+}

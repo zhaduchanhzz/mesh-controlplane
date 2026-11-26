@@ -409,6 +409,15 @@ func (m *mapper) buildFromChange(
 			if peers := m.state.ListPeers(nodeID, resp.PeersChanged...); peers.Len() > 0 {
 				builder.WithUserProfiles(peers)
 				builder.WithPeerChanges(peers)
+
+				// Delta-first (P14f F3): a peer goes out with the
+				// recipient's current filter, so a client never holds a
+				// peer ahead of the filter that lets it in (S04). The
+				// connection drops the filter again when it already
+				// holds an equal one.
+				if !resp.IncludePolicy && m.deltaFirst() {
+					builder.WithPacketFilters()
+				}
 			}
 		}
 
