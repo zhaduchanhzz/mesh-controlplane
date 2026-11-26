@@ -184,4 +184,4 @@ Raw SQL guard và allowlist: không đổi (không thêm raw SQL; `TailnetRevisi
 
 Binary: `/home/mesh/binp12d` trên mc-ci (headscale `b1cd7663d43b3d3e`). Artifact (không commit): `artifacts/06c9f7b/N1/e2e-20261126T151208Z-off-1.84.3`, `artifacts/d1650fa/N1/e2e-20261126T153820Z-on-1.104.7`, `artifacts/d1650fa/P12b/…`. S99/M07: không có key/secret trong artifact.
 
-**Trạng thái sau §8:** `Verified`; merge vào `master` theo lệnh chủ dự án; chưa `Reviewed` (chờ chủ dự án). S08d (exit node, nhánh `feat/P12d-exitnode`) chưa merge: lượt ON bị dừng giữa chừng khi chủ dự án đổi hướng (S08d.1–3 PASS).
+**Trạng thái sau §8:** `Verified`; merge vào `master` theo lệnh chủ dự án; chưa `Reviewed` (chờ chủ dự án). S08d (exit node, nhánh `feat/P12d-exitnode`) chưa merge: một lượt ON/1.104.7 bị dừng giữa chừng khi chủ dự án đổi hướng: S08d.1 PASS, **S08d.2 FAIL** (a1 qua exit node n1-a2 tới 203.0.113.10 và 2001:db8:77::10: ping/TCP timeout, kể cả allow-lan on), S08d.3 PASS. Chưa điều tra; nghi harness/lab (SNAT trên a2), chưa loại trừ lỗi sản phẩm.

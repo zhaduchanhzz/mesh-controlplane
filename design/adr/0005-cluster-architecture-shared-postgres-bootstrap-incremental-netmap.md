@@ -23,6 +23,9 @@
 ## Biện pháp bắt buộc
 
 ### Netmap tăng dần
+
+> **Cập nhật 2026-11-26 (ADR 0015):** công tắc netmap tăng dần chuyển **ON mặc định**; mọi thay đổi chỉ gửi phần khác so với cái client đã nhận (delta-first). Biện pháp 1–5 dưới đây vẫn hiệu lực; §2 (đổi policy thì dựng lại toàn bộ) áp cho **tính** adjacency, không cho cái gửi đi.
+
 1. **Kiểm tra tương đương:** property test (`rapid`) so peer map tăng dần với bản dựng lại toàn bộ sau mỗi chuỗi thay đổi ngẫu nhiên (node, user, tag, route, exit node, policy, xóa, thu hồi). Hai kết quả phải giống hệt nhau.
 2. **Đổi policy thì luôn dựng lại toàn bộ.** Chỉ thay đổi topology mới được cập nhật tăng dần.
 3. **Đối chiếu khi chạy:** định kỳ (cấu hình được) dựng lại toàn bộ để so sánh. Có khác biệt thì ghi metric và log, rồi **thay bằng bản dựng lại toàn bộ** (fail safe).
