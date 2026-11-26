@@ -130,7 +130,12 @@ func drainAll(t *testing.T, td *TestData, quiet time.Duration) map[types.NodeID]
 		if !moved {
 			time.Sleep(quiet)
 
-			if !slices.ContainsFunc(td.Nodes, func(n node) bool { return len(n.ch) > 0 }) {
+			pending := false
+			for i := range td.Nodes {
+				pending = pending || len(td.Nodes[i].ch) > 0
+			}
+
+			if !pending {
 				return got
 			}
 		}
