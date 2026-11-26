@@ -399,6 +399,7 @@ func checkLease(db *gorm.DB, f tailnet.Fence) {
 	}
 
 	q := `SELECT holder, epoch, expires_at > ` + lease.SQLiteNow + ` FROM cluster_leases WHERE cluster_id = ?`
+
 	if pg {
 		if !boundTransaction(db, f.Cluster()) {
 			return

@@ -25,12 +25,12 @@ import (
 
 // garbageAPIKey returns a token shaped like a platform API key (it reaches
 // the database lookup) whose identifier names no key.
-func garbageAPIKey(t *testing.T, real string, n int) string {
+func garbageAPIKey(t *testing.T, minted string, n int) string {
 	t.Helper()
 
 	const prefix = "hskey-api-"
 
-	rest, ok := strings.CutPrefix(real, prefix)
+	rest, ok := strings.CutPrefix(minted, prefix)
 	require.True(t, ok, "minted key has the platform prefix")
 
 	i := strings.IndexByte(rest, '-')
