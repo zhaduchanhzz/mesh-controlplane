@@ -29,12 +29,22 @@ api_v2() {
 # tailnets of two clusters. Each profile sees only its own tailnet; switching
 # back restores A.
 t_s05() {
-  local p="" r i other n
-  printf 'S05 login start %s
-' "$(date -u +%T)" >>"$ART_DIR/timings.txt"
-  r=0; vm $A2 "sudo timeout 120 /opt/tailscale/$V/tailscale --socket=$TSS login --login-server=$URL2 --auth-key=file:/dev/stdin --hostname=n1-a2c --accept-dns=false" \
+  local p="" r i other n nudge=""
+  printf 'S05 login start %s\n' "$(date -u +%T)" >>"$ART_DIR/timings.txt"
+  r=0; vm $A2 "sudo timeout 45 /opt/tailscale/$V/tailscale --socket=$TSS login --login-server=$URL2 --auth-key=file:/dev/stdin --hostname=n1-a2c --accept-dns=false" \
     <"$TMPD/key-c" 2>&1 | redact >>"$ART_DIR/logs/n1-a2c.cli.log"; r=${PIPESTATUS[0]}
-  [ "$r" = 0 ] || p="$p; login to c at c2 rc=$r"
+  # Client 1.84.3 keeps the home DERP region of the previous profile (901,
+  # c1's relay) when the new profile's DERP map has only 902 (ADR 0009: one
+  # region per cluster): "derpMap.Regions[901] is nil", it never reaches
+  # Running and login waits (runs at 3ad5743, 5fd66e0). A re-STUN picks a
+  # home region from the new map. Recorded in the result, never silent.
+  if [ "$(field $A2 "d.get('BackendState', '')")" != Running ]; then
+    nudge=" (client needed 'debug restun' after login rc=$r: stale home DERP from the previous profile)"
+    printf 'S05 %s %s: not Running after login rc=%s; debug restun\n' "$MODE" "$V" "$r" >>"$ART_DIR/timings.txt"
+    TS $A2 "debug restun" >/dev/null 2>&1
+    for i in $(seq 1 30); do [ "$(field $A2 "d.get('BackendState', '')")" = Running ] && break; sleep 1; done
+    [ "$(field $A2 "d.get('BackendState', '')")" = Running ] || p="$p; profile c not Running after login rc=$r and restun"
+  fi
   for i in $(seq 1 40); do [ "$(field $A2 "d['Self']['HostName']")" = n1-a2c ] && [ -n "$(node_id c2 c n1-a2c)" ] && break; sleep 1; done
   [ -n "$(node_id c2 c n1-a2c)" ] || p="$p; no node n1-a2c in c"
   grep -qE 'n1-(a1|b1|b2)' <<<"$(ts_json $A2)" && p="$p; profile c sees an A or B node"
@@ -54,7 +64,7 @@ print(next((r[0] for r in rows if not any(c.endswith("*") for c in r)), ""))' "$
   ping_ok $A1 n1-a2 || p="$p; a1 cannot ping a2 after switch back"
   [ "$(peers $A2)" = n1-a1 ] || p="$p; a2 back in A sees [$(peers $A2)]"
   live c2 node delete --slug c --id "$(node_id c2 c n1-a2c)" >>"$ART_DIR/logs/s05.log" 2>&1 || p="$p; delete n1-a2c"
-  [ -z "$p" ] && record S05 PASS "one tailscaled (one machine key) as n1-a2 in A at c1 and n1-a2c in C at c2: two nodes in two tailnets, each profile sees only its own; switch back to A, a1<->a2 ping" || record S05 FAIL "${p#; }"
+  [ -z "$p" ] && record S05 PASS "one tailscaled (one machine key) as n1-a2 in A at c1 and n1-a2c in C at c2: two nodes in two tailnets, each profile sees only its own; switch back to A, a1<->a2 ping$nudge" || record S05 FAIL "${p#; }"
 }
 
 # S06: B gets a node named n1-a1, as A's. Neither is renamed; the name
@@ -268,8 +278,11 @@ t_s13b() {
   [ -n "${BOOT_BIN:-}" ] || { record S13b FAIL "BOOT_BIN not set: bootstrap flood not run"; return; }
   boot_start || { record S13b FAIL "bootstrap did not start (logs/bootstrap.log)"; boot_stop; return; }
   u=$(boot_url_of "$TMPD/key-b" b); [ "$u" = "$URL1" ] || p="$p; before: bootstrap for b -> [$u]"
-  scp -q "${VSSHO[@]}" "$PROBE_BIN" "$VPS:$VPS_RD-probe" && vps "umask 077; cat >$VPS_RD-key" <"$TMPD/key-a" \
-    && ssh_ $CI_SSH "umask 077; cat >/tmp/n1-s13b-kb" <"$TMPD/key-b" || { record S13b FAIL "copy probe/keys"; boot_stop; return; }
+  local e="$ART_DIR/logs/S13b-copy.err"
+  scp -q "${VSSHO[@]}" "$PROBE_BIN" "$VPS:$VPS_RD-probe" 2>>"$e" || { record S13b FAIL "copy probe to the VPS (logs/S13b-copy.err)"; boot_stop; return; }
+  vps "umask 077; cat >$VPS_RD-key" <"$TMPD/key-a" 2>>"$e" || { record S13b FAIL "key of a to the VPS (logs/S13b-copy.err)"; boot_stop; return; }
+  ssh_ $CI_SSH "umask 077; cat >/tmp/n1-s13b-kb" <"$TMPD/key-b" 2>>"$e" || { record S13b FAIL "key of b to mc-ci (logs/S13b-copy.err)"; boot_stop; return; }
+  ssh_ $CI_SSH "test -x /tmp/n1probe" 2>>"$e" || { record S13b FAIL "no /tmp/n1probe on mc-ci"; boot_stop; return; }
   vps "chmod 0755 $VPS_RD-probe; $VPS_RD-probe flood --kind bootstrap --bootstrap-url $BOOT_URL --tenant a --key $VPS_RD-key \
       --rate $S13B_RATE --duration ${S13B_SECONDS}s --max-inflight 16; rm -f $VPS_RD-*" \
     >"$ART_DIR/logs/S13b-flood-a.jsonl" 2> >(redact >"$ART_DIR/logs/S13b-flood-a.err") &
