@@ -87,8 +87,9 @@ func countEvent(cluster, event string) {
 	leaseEvents.WithLabelValues(cluster, event).Inc()
 }
 
-// observe reports the lease state of m: held, last epoch, time left.
-func (m *Manager) observe() (bool, uint64, time.Duration) {
+// leaseState reports the lease state of m for the metrics: held, last
+// epoch, time left.
+func (m *Manager) leaseState() (bool, uint64, time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -130,7 +131,7 @@ func (managerCollector) Collect(ch chan<- prometheus.Metric) {
 
 		seen[k] = true
 
-		held, epoch, left := m.observe()
+		held, epoch, left := m.leaseState()
 
 		h := 0.0
 		if held {
