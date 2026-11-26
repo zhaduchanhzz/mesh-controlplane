@@ -73,13 +73,13 @@
 == policy groups
   change type=policy target=0 origin=0 policy runtime
   1 <- removed=[5 7]
-  1 <- filter=8758cc9fe10b
+  1 <- changed=[6] filter=8758cc9fe10b
   2 <- removed=[5 7]
-  2 <- filter=8758cc9fe10b
+  2 <- changed=[6] filter=8758cc9fe10b
   3 <- removed=[5 7]
-  3 <- filter=ebedcc562f11
+  3 <- changed=[6] filter=ebedcc562f11
   5 <- removed=[1 2 3 6]
-  5 <- filter=8758cc9fe10b
+  5 <- changed=[7] filter=8758cc9fe10b
   6 <- removed=[5 7]
   6 <- filter=8758cc9fe10b
   7 <- removed=[1 2 3 6]
@@ -106,6 +106,8 @@
   1 <- changed=[9]
   2 <- changed=[9]
   3 <- changed=[9]
+  5 <- changed=[8]
+  7 <- changed=[8]
 == connect 9
   change type=patch target=0 origin=0 patches=[9]
   1 <- patch=[9:true]
@@ -126,7 +128,9 @@
   change type=peers target=9 origin=0 removed=[3] deleted=[3]
   change type=policy target=0 origin=0 policy runtime
   1 <- removed=[3]
+  1 <- changed=[9]
   2 <- removed=[3]
+  2 <- changed=[9]
   9 <- removed=[3]
 == policy self
   change type=policy target=0 origin=0 policy runtime
@@ -157,6 +161,7 @@
   7 <- filter=cdcdbfe3fde3
   8 <- removed=[5]
   8 <- filter=083b6be9d30d
+  9 <- changed=[10]
 == delete c2
   change type=peers target=7 origin=0 deleted=[7]
   change type=peers target=8 origin=0 removed=[7] deleted=[7]
@@ -228,16 +233,22 @@
   13 <- self dns derp ssh profiles=3 peers=[1 2 6 9 10 11 12] filter=9067b8c611c9
 == announce r1
   change type=peers target=0 origin=12 changed=[12]
+  1 <- changed=[12]
+  2 <- changed=[12]
+  6 <- changed=[12]
+  9 <- changed=[12]
+  10 <- changed=[12]
+  11 <- changed=[12]
   12 <- self
 == approve r1
   change type=policy target=0 origin=0 policy runtime
-  1 <- changed=[12] filter=e91b6663a1e1
-  2 <- changed=[12] filter=e91b6663a1e1
-  6 <- changed=[12] filter=e91b6663a1e1
-  9 <- changed=[12] filter=e91b6663a1e1
-  10 <- changed=[12] filter=e91b6663a1e1
-  11 <- changed=[12] filter=e91b6663a1e1
-  12 <- self filter=e91b6663a1e1
+  1 <- changed=[11 12 13] filter=e91b6663a1e1
+  2 <- changed=[11 12 13] filter=e91b6663a1e1
+  6 <- changed=[11 12 13] filter=e91b6663a1e1
+  9 <- changed=[11 12 13] filter=e91b6663a1e1
+  10 <- changed=[11 12 13] filter=e91b6663a1e1
+  11 <- changed=[12 13] filter=e91b6663a1e1
+  12 <- self changed=[13] filter=e91b6663a1e1
   13 <- changed=[12] filter=e91b6663a1e1
 == announce r2
   change type=peers target=0 origin=13 changed=[13]
