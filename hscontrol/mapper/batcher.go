@@ -379,6 +379,11 @@ func (b *Batcher) AddNode(
 		// Still pendingInitial, so no broadcast can race this.
 		newEntry.lastSSHPolicy.Store(initialMap.SSHPolicy)
 
+		// The initial map is this connection's delta-first baseline.
+		if b.mapper.deltaFirst() {
+			newEntry.sent.record(initialMap, hashResponse(initialMap), true)
+		}
+
 		// Record sent peers only after confirmed delivery, mirroring the async
 		// path, and under workMu so a concurrent async bundle for this node
 		// cannot interleave its own lastSentPeers update.

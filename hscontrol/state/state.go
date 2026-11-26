@@ -850,10 +850,26 @@ func (s *State) UpdateUser(userID types.UserID, updateFn func(*types.User) error
 	}
 
 	if profileChanged {
-		c = change.UserAdded()
+		c = s.userChange(change.UserAdded())
 	}
 
 	return user, c, nil
+}
+
+// userChange is full, the change a user being added, updated or removed
+// sends, unless the incremental netmap is on (P14f F3, ADR 0015 D2): then
+// it is a policy change, which recomputes every node's peers, filter and
+// profiles and sends each node only what differs from what it holds, instead
+// of a full map to every node.
+func (s *State) userChange(full change.Change) change.Change {
+	if s.cfg == nil || !s.cfg.Tuning.IncrementalNetmap.Enabled {
+		return full
+	}
+
+	c := change.PolicyChange()
+	c.Reason = full.Reason
+
+	return c
 }
 
 func credentialCreatedByUser(credential types.CredentialView, userID uint) bool {
@@ -909,7 +925,7 @@ func (s *State) DeleteUser(userID types.UserID) (change.Change, error) {
 	// If the policy manager doesn't detect changes, still return UserRemoved
 	// to ensure peer lists are refreshed
 	if c.IsEmpty() {
-		c = change.UserRemoved()
+		c = s.userChange(change.UserRemoved())
 	}
 
 	return c, nil

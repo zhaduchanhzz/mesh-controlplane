@@ -86,6 +86,11 @@ type connectionEntry struct {
 
 	// lastSSHPolicy is the last non-nil policy delivered to this connection.
 	lastSSHPolicy atomic.Pointer[tailcfg.SSHPolicy]
+
+	// sent is what delta-first compares against (P14f F3): hashes of the
+	// peers, user profiles and packet filter delivered to this connection.
+	// Used only while the incremental netmap is on.
+	sent sentState
 }
 
 // withSelfDelta returns data without its Node when this client already
@@ -514,8 +519,17 @@ func (mc *multiChannelNodeConn) send(data *tailcfg.MapResponse) error {
 	start := time.Now()
 	defer func() { mc.sendBlocked.Add(int64(time.Since(start))) }()
 
+	// Delta-first (P14f F3): hashed once, compared per connection.
+	var hashes *responseHashes
+	if mc.mapper.deltaFirst() {
+		hashes = hashResponse(data)
+	}
+
 	for _, conn := range snapshot {
 		stripped := conn.withSSHPolicyDelta(conn.withSelfDelta(data))
+		if hashes != nil {
+			stripped = conn.sent.strip(stripped, hashes)
+		}
 
 		// Stripping can leave this stream nothing new, like the visibility
 		// filtering at build time.
@@ -547,6 +561,12 @@ func (mc *multiChannelNodeConn) send(data *tailcfg.MapResponse) error {
 
 			if data.SSHPolicy != nil {
 				conn.lastSSHPolicy.Store(data.SSHPolicy)
+			}
+
+			// What the client now holds is data, stripped or not: only
+			// equal parts were stripped.
+			if hashes != nil {
+				conn.sent.record(data, hashes, false)
 			}
 		}
 	}
