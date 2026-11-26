@@ -205,3 +205,24 @@ func TestTenantDNSValidateReviewRules(t *testing.T) {
 		})
 	}
 }
+
+// Settings stored before the P12d review rules still load: ValidateStored
+// checks form only; Validate (every write) applies the newer rules.
+func TestTenantDNSValidateStored(t *testing.T) {
+	for _, d := range []TenantDNS{
+		{Nameservers: TenantNameservers{Global: []string{"127.0.0.1"}}},
+		{SearchDomains: []string{"b.mesh.test"}},
+		{Nameservers: TenantNameservers{Split: map[string][]string{"test": {"10.0.0.53"}}}},
+	} {
+		require.NoError(t, d.ValidateStored("a", "mesh.test"), "%+v", d)
+		require.ErrorIs(t, d.Validate("a", "mesh.test", DefaultTenantDNSLimits), ErrInvalidTenantDNS, "%+v", d)
+	}
+
+	for _, d := range []TenantDNS{
+		{Nameservers: TenantNameservers{Global: []string{"resolver"}}},
+		{SearchDomains: []string{"not a domain"}},
+		{Nameservers: TenantNameservers{Split: map[string][]string{"b.mesh.test": {"10.0.0.53"}}}},
+	} {
+		require.ErrorIs(t, d.ValidateStored("a", "mesh.test"), ErrInvalidTenantDNS, "%+v", d)
+	}
+}

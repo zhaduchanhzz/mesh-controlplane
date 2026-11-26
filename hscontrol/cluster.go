@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -588,8 +587,9 @@ func (c *Cluster) applyMoveNotices() {
 
 // tailnetDNS reads and checks tailnet id's stored DNS settings (ADR 0008):
 // nil for the defaults; an error when they do not parse or break a rule of
-// form. Settings over the size limits (lowered after they were stored)
-// still load, with a warning; the next write must fit.
+// form. Settings over the size limits (lowered after they were stored), or
+// breaking only a rule added since they were stored (P12d review 7), still
+// load, with a warning; the next write must pass.
 func (c *Cluster) tailnetDNS(id tailnet.ID, slug string) (*types.TenantDNS, error) {
 	dns, err := c.platform.TailnetDNS(id)
 	if err != nil {
@@ -611,24 +611,18 @@ func (c *Cluster) checkTailnetDNS(id tailnet.ID, slug string, dns *types.TenantD
 		return nil
 	}
 
-	err := dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, unlimitedTenantDNS)
+	err := dns.ValidateStored(slug, c.cfg.DNSConfig.BaseDomain)
 	if err != nil {
 		return fmt.Errorf("stored DNS settings: %w", err)
 	}
 
 	err = dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, c.cfg.Tuning.TenantDNS)
 	if err != nil {
-		log.Warn().Str("tailnet", id.String()).Msg("stored DNS settings exceed tuning.tenant_dns; " +
-			"they are served, the next write must fit")
+		log.Warn().Str("tailnet", id.String()).Msg("stored DNS settings exceed tuning.tenant_dns or break a rule " +
+			"added since they were stored; they are served, the next write must pass")
 	}
 
 	return nil
-}
-
-// unlimitedTenantDNS checks form only.
-var unlimitedTenantDNS = types.TenantDNSLimits{
-	MaxExtraRecords: math.MaxInt, MaxNameservers: math.MaxInt, MaxSearchDomains: math.MaxInt,
-	MaxSplitDomains: math.MaxInt, MaxConfigBytes: math.MaxInt,
 }
 
 func containsRuntime(rts []*tenantRuntime, id string) bool {
