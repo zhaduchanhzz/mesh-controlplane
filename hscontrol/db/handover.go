@@ -75,6 +75,8 @@ func (p *Platform) OrphanedIncoming() ([]types.Tailnet, error) {
 // epoch: owner = moving_to, owner_epoch + 1, moving_to cleared. Only while
 // this process holds the cluster lease it recorded with SetLease. It
 // returns the new owner. The caller must have stopped serving the tailnet.
+// The target must not be a dedicated cluster that already owns another live
+// tailnet (P12c C3: re-checked here, whatever admitted the request).
 func (p *Platform) HandOver(id tailnet.ID, epoch uint64) (string, error) {
 	var to string
 
@@ -90,12 +92,18 @@ func (p *Platform) HandOver(id tailnet.ID, epoch uint64) (string, error) {
 
 		to = targets[0]
 
+		err = p.lockTargetCluster(tx, to)
+		if err != nil {
+			return 0, err
+		}
+
 		res := tx.Exec(`UPDATE tailnets SET owner_cluster_id = moving_to_cluster_id, owner_epoch = owner_epoch + 1,
 				moving_to_cluster_id = NULL, updated_at = ?
 			WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id = ? AND deleted_at IS NULL
 			  AND EXISTS (SELECT 1 FROM cluster_leases l
-			    WHERE l.cluster_id = ? AND l.holder = ? AND l.epoch = ? AND l.expires_at > `+p.dbNow()+`)`,
-			now, id.String(), p.cluster, int64(epoch), to, p.cluster, holder, int64(leaseEpoch)) //nolint:gosec // epochs are positive int64 in the database
+			    WHERE l.cluster_id = ? AND l.holder = ? AND l.epoch = ? AND l.expires_at > `+p.dbNow()+`)`+dedicatedFree,
+			now, id.String(), p.cluster, int64(epoch), to, p.cluster, holder, int64(leaseEpoch), //nolint:gosec // epochs are positive int64 in the database
+			to, id.String())
 
 		return res.RowsAffected, res.Error
 	})
@@ -108,20 +116,55 @@ func (p *Platform) HandOver(id tailnet.ID, epoch uint64) (string, error) {
 
 // TakeOver completes the move of tailnet id from cluster from at epoch to
 // this cluster, when from has no live lease (no process of it serves the
-// tailnet). Only while this process holds this cluster's lease.
+// tailnet). Only while this process holds this cluster's lease, and, as
+// HandOver, not into a dedicated cluster that owns another live tailnet.
 func (p *Platform) TakeOver(id tailnet.ID, from string, epoch uint64) error {
 	return p.flip(id, func(tx *gorm.DB, now time.Time, holder string, leaseEpoch uint64) (int64, error) {
+		err := p.lockTargetCluster(tx, p.cluster)
+		if err != nil {
+			return 0, err
+		}
+
 		dbNow := p.dbNow()
 		res := tx.Exec(`UPDATE tailnets SET owner_cluster_id = moving_to_cluster_id, owner_epoch = owner_epoch + 1,
 				moving_to_cluster_id = NULL, updated_at = ?
 			WHERE id = ? AND owner_cluster_id = ? AND owner_epoch = ? AND moving_to_cluster_id = ? AND deleted_at IS NULL
 			  AND NOT EXISTS (SELECT 1 FROM cluster_leases o WHERE o.cluster_id = ? AND o.expires_at > `+dbNow+`)
 			  AND EXISTS (SELECT 1 FROM cluster_leases l
-			    WHERE l.cluster_id = ? AND l.holder = ? AND l.epoch = ? AND l.expires_at > `+dbNow+`)`,
-			now, id.String(), from, int64(epoch), p.cluster, from, p.cluster, holder, int64(leaseEpoch)) //nolint:gosec // see HandOver
+			    WHERE l.cluster_id = ? AND l.holder = ? AND l.epoch = ? AND l.expires_at > `+dbNow+`)`+dedicatedFree,
+			now, id.String(), from, int64(epoch), p.cluster, from, p.cluster, holder, int64(leaseEpoch), //nolint:gosec // see HandOver
+			p.cluster, id.String())
 
 		return res.RowsAffected, res.Error
 	})
+}
+
+// dedicatedFree ends the WHERE of a flip (args: target cluster, tailnet id):
+// a dedicated target must own no other live tailnet (ADR 0003: one tenant).
+// Placement admits at most one move into a dedicated cluster (P12c C3);
+// this is the last check, at the flip, under the target's row lock.
+const dedicatedFree = `
+			  AND NOT EXISTS (SELECT 1 FROM clusters c JOIN tailnets o ON o.owner_cluster_id = c.id
+			    WHERE c.id = ? AND c.class = 'dedicated' AND o.id <> ? AND o.deleted_at IS NULL)`
+
+// lockTargetCluster locks the clusters row of the flip's target on
+// PostgreSQL (FOR UPDATE, as placement's CreateTailnet and MoveOwner do), so
+// a flip and anything placement adds to that cluster serialise. Lock order:
+// tailnet ownership (flip), then cluster row. An unregistered target has no
+// row and nothing to lock.
+func (p *Platform) lockTargetCluster(tx *gorm.DB, cluster string) error {
+	if p.db.Name() != dialectPostgres {
+		return nil
+	}
+
+	var ids []string
+
+	err := tx.Raw(`SELECT id FROM clusters WHERE id = ? FOR UPDATE`, cluster).Scan(&ids).Error
+	if err != nil {
+		return fmt.Errorf("locking cluster %s: %w", cluster, err)
+	}
+
+	return nil
 }
 
 // flip runs one ownership change of tailnet id under LockOwnership with this

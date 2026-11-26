@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 	"gorm.io/gorm"
@@ -125,6 +126,7 @@ func TestEnrollmentRefusedWhileMoving(t *testing.T) {
 
 			q, err := r.EnrollmentAllowed(ctx, tailnet.MustParseID(a.ID))
 			require.Error(t, err, "a 7th device would land on c2 at the hand-over")
+			require.ErrorIs(t, err, ErrTailnetMoving)
 			require.NotErrorIs(t, err, ErrQuotaExceeded, "transient: the client retries, not a quota refusal")
 			assert.False(t, q.Allowed)
 		})
@@ -205,4 +207,51 @@ func TestMoveSerialisesWithEnrollmentIntoTarget(t *testing.T) {
 	require.ErrorIs(t, got, ErrNoCapacity, "4 + 1 enrolled + 6 moving in > 10")
 	assert.Empty(t, movingTo(t, gdb, a.ID))
 	assert.EqualValues(t, 5, count(t, gdb, `SELECT count(*) FROM nodes WHERE tailnet_id = ? AND deleted_at IS NULL`, own.ID))
+}
+
+// PostgreSQL: enrollment takes the tailnet's ownership lock (shared) before
+// any cluster lock, the lock LockOwnership takes exclusive: an owner change
+// in flight holds the enrollment back. This also checks that
+// ownershipLockPrefix names tenantscope's lock.
+func TestEnrollmentTakesOwnershipLockFirst(t *testing.T) {
+	gdb := backends()[1].open(t)
+	r := newRegistry(t, gdb, Config{})
+	addCluster(t, r, "c1", ClassShared, ClusterActive, 100)
+
+	a := tailnetOn(t, r, gdb, "a", "c1", 1)
+
+	locked, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+
+	go func() {
+		done <- gdb.Transaction(func(tx *gorm.DB) error {
+			err := tenantscope.LockOwnership(tx, a.ID)
+			if err != nil {
+				return err
+			}
+
+			close(locked)
+			<-release
+
+			return nil
+		})
+	}()
+
+	<-locked
+
+	enrolled := make(chan error, 1)
+
+	go func() {
+		_, err := r.EnrollmentAllowed(context.Background(), tailnet.MustParseID(a.ID))
+		enrolled <- err
+	}()
+
+	select {
+	case err := <-enrolled:
+		t.Fatalf("enrollment did not wait for the ownership lock: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	close(release)
+	require.NoError(t, <-done)
+	require.NoError(t, <-enrolled)
 }

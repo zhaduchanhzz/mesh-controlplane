@@ -150,13 +150,16 @@ func (r *Registry) CreateTailnetOn(ctx context.Context, op Op, slug, clusterID s
 }
 
 // admits reports whether cluster c can take a tailnet, not counting
-// tailnet except: c is ACTIVE and a dedicated c owns no other live
-// tailnet. With load (a new tailnet, or one moving in from another
-// cluster) c must also have a process holding a live lease (owner decision
-// 2026-11-25: nothing is created or moved where nothing serves it) and
-// room: c's live devices plus devices (the tailnet's; 0 for a new one,
-// which needs room for one) stay within max_devices. The caller holds c's
-// row lock. Failures are ErrNoCapacity (with ErrNoLiveLease for the lease).
+// tailnet except: c is ACTIVE and a dedicated c has no other live tailnet.
+// With load (a new tailnet, or one moving in from another cluster) c must
+// also have a process holding a live lease (owner decision 2026-11-25:
+// nothing is created or moved where nothing serves it) and room: c's live
+// devices plus devices (the tailnet's; 0 for a new one, which needs room
+// for one) stay within max_devices. P12c C3: c's tailnets and devices are
+// those it owns AND those moving in (moving_to_cluster_id = c): a move
+// admitted earlier holds its room until it is handed over or cancelled. The
+// caller holds c's row lock (and, for a move, its budget lock). Failures are
+// ErrNoCapacity (with ErrNoLiveLease for the lease).
 func admits(tx *gorm.DB, c Cluster, except string, devices int64, load bool) error {
 	if c.State != ClusterActive {
 		return fmt.Errorf("%w: cluster %s is %s", ErrNoCapacity, c.ID, c.State)
@@ -178,13 +181,14 @@ func admits(tx *gorm.DB, c Cluster, except string, devices int64, load bool) err
 	// Raw on purpose: nodes is a tenant table; counts only (as clusterUsage).
 	err := tx.Raw(`SELECT count(DISTINCT t.id) AS tailnets, count(n.id) AS devices
 		FROM tailnets t LEFT JOIN nodes n ON n.tailnet_id = t.id AND n.deleted_at IS NULL
-		WHERE t.deleted_at IS NULL AND t.owner_cluster_id = ? AND t.id <> ?`, c.ID, except).Scan(&u).Error
+		WHERE t.deleted_at IS NULL AND (t.owner_cluster_id = ? OR t.moving_to_cluster_id = ?) AND t.id <> ?`,
+		c.ID, c.ID, except).Scan(&u).Error
 	if err != nil {
 		return fmt.Errorf("counting cluster usage: %w", err)
 	}
 
 	if c.Class == ClassDedicated && u.Tailnets > 0 {
-		return fmt.Errorf("%w: dedicated cluster %s is taken", ErrNoCapacity, c.ID)
+		return fmt.Errorf("%w: dedicated cluster %s is taken (or a tailnet is moving in)", ErrNoCapacity, c.ID)
 	}
 
 	if load && ((devices == 0 && u.Devices >= c.MaxDevices) || u.Devices+devices > c.MaxDevices) {
@@ -327,6 +331,15 @@ func (r *Registry) moveOwnerTx(tx *gorm.DB, id, fromCluster string, fromEpoch ui
 	target, err := lockClusters(tx, "id = ?", toCluster)
 	if err != nil {
 		return types.Tailnet{}, err
+	}
+
+	// P12c C3: the target's enrollments count its room under this lock;
+	// the move takes it too, so the two never both use the last room.
+	if toCluster != fromCluster {
+		err = lockClusterBudget(tx, toCluster)
+		if err != nil {
+			return types.Tailnet{}, err
+		}
 	}
 
 	cur, err := loadTailnet(tx, id)

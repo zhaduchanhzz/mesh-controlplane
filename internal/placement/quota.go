@@ -52,6 +52,14 @@ func (r *Registry) EnrollmentAllowed(ctx context.Context, id tailnet.ID) (Quota,
 // transaction mode, PLAN §2), so concurrent enrollments into one tailnet
 // serialise until the caller commits and the limit is exact. Other tailnets
 // are never blocked.
+//
+// P12c C3: before that it takes the tailnet's ownership lock shared, as the
+// fence of the node insert later does (tenantscope.checkFence), so every
+// transaction takes the ownership lock before any cluster lock: a move
+// (LockOwnership, then the target's budget lock) and an enrollment can
+// never wait for each other in a cycle. A tailnet with a move pending
+// enrolls nothing (ErrTailnetMoving): its devices were counted against the
+// target when the move was admitted.
 func (r *Registry) EnrollmentAllowedTx(tx *gorm.DB, id tailnet.ID) (Quota, error) {
 	if id.IsZero() {
 		return Quota{}, fmt.Errorf("%w: empty tailnet id", ErrNotFound)
@@ -60,7 +68,12 @@ func (r *Registry) EnrollmentAllowedTx(tx *gorm.DB, id tailnet.ID) (Quota, error
 	tid := id.String()
 
 	if isPostgres(tx) {
-		err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended('placement/quota/' || ?, 0))`, tid).Error
+		err := tx.Exec(`SELECT pg_advisory_xact_lock_shared(hashtextextended(? || ?, 0))`, ownershipLockPrefix, tid).Error
+		if err != nil {
+			return Quota{}, fmt.Errorf("locking tailnet ownership: %w", err)
+		}
+
+		err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended('placement/quota/' || ?, 0))`, tid).Error
 		if err != nil {
 			return Quota{}, fmt.Errorf("locking quota: %w", err)
 		}
@@ -75,6 +88,10 @@ func (r *Registry) EnrollmentAllowedTx(tx *gorm.DB, id tailnet.ID) (Quota, error
 
 	if tn.Status != types.TailnetActive {
 		return q, fmt.Errorf("%w: %s", ErrTailnetNotActive, tn.Status)
+	}
+
+	if tn.MovingToClusterID != nil {
+		return q, fmt.Errorf("%w: tailnet %s", ErrTailnetMoving, tid)
 	}
 
 	c, err := loadCluster(tx, tn.OwnerClusterID)
@@ -126,18 +143,18 @@ func (r *Registry) EnrollmentAllowedTx(tx *gorm.DB, id tailnet.ID) (Quota, error
 // checked when a tailnet is placed. On PostgreSQL a transaction-scoped
 // advisory lock on the cluster, taken after the tailnet's, serialises the
 // enrollments of the cluster's tailnets until the caller commits, so the
-// limit is exact. Lock order is always tailnet, then cluster.
+// limit is exact. Lock order is always tailnet, then cluster. P12c C3: the
+// devices of tailnets moving into c count (their room is promised), and a
+// move into c takes the same lock (MoveOwner).
 func clusterBudget(tx *gorm.DB, c Cluster, warnPercent int64, q *Quota) error {
-	if isPostgres(tx) {
-		err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended('placement/cluster/' || ?, 0))`, c.ID).Error
-		if err != nil {
-			return fmt.Errorf("locking cluster budget: %w", err)
-		}
+	err := lockClusterBudget(tx, c.ID)
+	if err != nil {
+		return err
 	}
 
-	err := tx.Raw(`SELECT count(n.id) FROM nodes n JOIN tailnets t ON t.id = n.tailnet_id
-		WHERE t.owner_cluster_id = ? AND t.deleted_at IS NULL AND n.deleted_at IS NULL`, c.ID).
-		Scan(&q.ClusterDevices).Error
+	err = tx.Raw(`SELECT count(n.id) FROM nodes n JOIN tailnets t ON t.id = n.tailnet_id
+		WHERE (t.owner_cluster_id = ? OR t.moving_to_cluster_id = ?) AND t.deleted_at IS NULL AND n.deleted_at IS NULL`,
+		c.ID, c.ID).Scan(&q.ClusterDevices).Error
 	if err != nil {
 		return fmt.Errorf("counting cluster devices: %w", err)
 	}
@@ -154,3 +171,25 @@ func clusterBudget(tx *gorm.DB, c Cluster, warnPercent int64, q *Quota) error {
 
 	return nil
 }
+
+// lockClusterBudget takes cluster id's budget lock (PostgreSQL,
+// transaction-scoped advisory lock; SQLite serialises writers): the
+// enrollments into the cluster's tailnets and the moves into it serialise
+// on it. The caller holds its tailnet's ownership lock already.
+func lockClusterBudget(tx *gorm.DB, id string) error {
+	if !isPostgres(tx) {
+		return nil
+	}
+
+	err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended('placement/cluster/' || ?, 0))`, id).Error
+	if err != nil {
+		return fmt.Errorf("locking cluster budget: %w", err)
+	}
+
+	return nil
+}
+
+// ownershipLockPrefix is tenantscope's per-tailnet ownership lock namespace
+// (tenantscope.ownershipLockPrefix, not exported):
+// TestEnrollmentTakesOwnershipLockFirst checks that they name one lock.
+const ownershipLockPrefix = "tenantscope/ownership/"
