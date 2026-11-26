@@ -47,12 +47,13 @@ func poolerUser(t *testing.T) string {
 func adminOn(t *testing.T, hostport string) *gorm.DB {
 	t.Helper()
 
+	// pgx reads "+" in the query literally: the space is %20.
 	u := url.URL{
 		Scheme:   "postgres",
 		User:     url.User(poolerUser(t)),
 		Host:     hostport,
 		Path:     "/postgres",
-		RawQuery: url.Values{"sslmode": {"disable"}, "options": {"-c default_transaction_read_only=off"}}.Encode(),
+		RawQuery: "sslmode=disable&options=" + url.PathEscape("-c default_transaction_read_only=off"),
 	}
 
 	conn, err := gorm.Open(postgres.Open(u.String()), &gorm.Config{Logger: logger.Discard})
