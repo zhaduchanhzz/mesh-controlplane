@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -438,11 +439,38 @@ func registerDevices(api huma.API, b Backend) {
 			return nil, err
 		}
 
-		_, nodeChange, err := b.State.SetNodeKeyExpiryDisabled(node.ID(), in.Body.KeyExpiryDisabled)
+		// Cluster mode (P12d review 6): a tenant's device key write spends
+		// the tailnet's config-write bucket, once the device is known to
+		// be the tailnet's own (another tailnet's device is a 404 that
+		// spends nothing), and is audited.
+		if b.Tailnet != "" {
+			err = spendConfigWrite(b)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// As on Tailscale, keyExpiryDisabled=true also brings back a device
+		// whose key has already expired: the stored expiry is kept but no
+		// longer counts, so the device is no longer expired. Turning it
+		// back off makes the stored expiry count again.
+		disabled := in.Body.KeyExpiryDisabled
+
+		_, nodeChange, err := b.State.SetNodeKeyExpiryDisabled(node.ID(), disabled)
 		b.Change(nodeChange)
 
 		if err != nil {
+			if b.Tailnet != "" {
+				return nil, mapTenantError("setting device key expiry", err)
+			}
+
 			return nil, mapError("setting device key expiry", err)
+		}
+
+		if b.Tailnet != "" {
+			auditTenantWrite(ctx, b, TenantWrite{
+				Op: "setDeviceKey", DeviceID: uint64(node.ID()), KeyExpiryDisabled: &disabled,
+			}, fmt.Appendf(nil, `{"keyExpiryDisabled":%t}`, disabled))
 		}
 
 		return &emptyOutput{}, nil
