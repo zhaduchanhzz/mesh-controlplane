@@ -138,11 +138,11 @@ type PolicyManager struct {
 	// emptyDenies is set by [WithEmptyPolicyDenies] and never changes after
 	// construction. denyAll is derived from it and pol by updateLocked.
 	emptyDenies bool
+	denyAll     bool
 
 	// peerBound and peerBoundNow are [WithPeerEntriesBound]'s, read by
 	// [ValidatePolicy] only.
 	peerBound, peerBoundNow int64
-	denyAll     bool
 }
 
 // Option configures a [PolicyManager] at construction.
