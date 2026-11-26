@@ -324,8 +324,44 @@ func (m *Manager) acquire(ctx context.Context) (Lease, error) {
 	}
 }
 
+// maxRenewInFlight bounds the renewals of one lease in flight at once: the
+// current attempt, plus one retry past an attempt that outlived its own
+// timeout (a driver that does not honour the context).
+const maxRenewInFlight = 2
+
+// attemptTimeout is how long one renewal may take before it is abandoned
+// and retried (P13, drill K3): half of what is left of the self-fence
+// window after a renewal at RenewInterval, so a renewal hung on a dead
+// connection (packets dropped without a reset: a PgBouncer or a PostgreSQL
+// VM gone) leaves time for a second one on a fresh connection, to the next
+// host of the list. Default: (10 s - 2 s - 3 s) / 2 = 2.5 s.
+func (c Config) attemptTimeout() time.Duration {
+	window := c.TTL - c.SafetyMargin
+
+	return max((window-c.RenewInterval)/2, window/8)
+}
+
+// retryDelay is the wait before the retry that follows the n-th failed
+// renewal in a row (n >= 1): RenewInterval/12 (250 ms by default), doubled
+// each time, at most RenewInterval.
+func (c Config) retryDelay(n int) time.Duration {
+	d := c.RenewInterval / 12
+	for i := 1; i < n && d < c.RenewInterval; i++ {
+		d *= 2
+	}
+
+	return min(d, c.RenewInterval)
+}
+
 // hold renews l until it is lost, the self-fence deadline passes, ctx
 // ends or StepDown asks, and says why.
+//
+// Each renewal is bounded by its own timeout ([Config.attemptTimeout]), and
+// the last one before the deadline by the deadline, never later. A renewal
+// that fails or times out is retried after a short backoff rather than at
+// the next tick. Retrying never lets the process serve longer without the
+// database: the deadline only ever moves to the start of a successful
+// renewal plus TTL - SafetyMargin, and never back.
 func (m *Manager) hold(ctx context.Context, l Lease) holdEnd {
 	m.mu.Lock()
 	deadline, down := m.deadline, m.down
@@ -342,8 +378,43 @@ func (m *Manager) hold(ctx context.Context, l Lease) holdEnd {
 		err   error
 	}
 
-	done := make(chan result, 1)
-	inFlight := false
+	// Buffered for every attempt that can be in flight, so that one
+	// finishing after the hold ended never blocks.
+	done := make(chan result, maxRenewInFlight)
+
+	var (
+		inFlight   int
+		attemptEnd time.Time // deadline of the newest attempt
+		failures   int       // failed renewals in a row
+		retry      <-chan time.Time
+	)
+
+	attempt := func() {
+		inFlight++
+		start := time.Now()
+
+		end := start.Add(m.cfg.attemptTimeout())
+		// The last attempt that fits gets all the time left, not a slice of
+		// it too short to connect.
+		if deadline.Sub(end) < m.cfg.attemptTimeout()/2 {
+			end = deadline
+		}
+
+		attemptEnd = end
+		rctx, cancel := context.WithDeadline(ctx, end)
+
+		go func() {
+			defer cancel()
+
+			done <- result{start: start, err: m.store.Renew(rctx, l, m.cfg.TTL)}
+		}()
+	}
+
+	// mayStart: nothing in flight, or the newest attempt outlived its own
+	// deadline (one more alongside it, never more than maxRenewInFlight).
+	mayStart := func() bool {
+		return inFlight == 0 || (inFlight < maxRenewInFlight && time.Now().After(attemptEnd))
+	}
 
 	for {
 		select {
@@ -356,27 +427,32 @@ func (m *Manager) hold(ctx context.Context, l Lease) holdEnd {
 		case why := <-down:
 			return holdEnd{reason: "stepped down: " + why, steppedDown: true}
 		case <-renew.C:
-			if inFlight {
-				continue // a renewal stuck on the database: the deadline decides
+			if retry == nil && mayStart() {
+				attempt()
 			}
+		case <-retry:
+			retry = nil
 
-			inFlight = true
-			start := time.Now()
-			rctx, cancel := context.WithDeadline(ctx, deadline)
-
-			go func() {
-				defer cancel()
-
-				done <- result{start: start, err: m.store.Renew(rctx, l, m.cfg.TTL)}
-			}()
+			if mayStart() {
+				attempt()
+			}
 		case r := <-done:
-			inFlight = false
+			inFlight--
 
 			renewDuration.WithLabelValues(m.cluster).Observe(time.Since(r.start).Seconds())
 
 			switch {
 			case r.err == nil:
-				deadline = m.deadlineFrom(r.start)
+				failures, retry = 0, nil
+
+				// A late answer of an older attempt never moves the
+				// deadline back, nor past its own start + TTL - margin.
+				next := m.deadlineFrom(r.start)
+				if !next.After(deadline) {
+					continue
+				}
+
+				deadline = next
 				m.extend(deadline)
 
 				if !fence.Stop() {
@@ -392,10 +468,19 @@ func (m *Manager) hold(ctx context.Context, l Lease) holdEnd {
 
 				return holdEnd{reason: "lease lost (expired or taken over)"}
 			default:
-				if ctx.Err() == nil {
-					countEvent(m.cluster, eventRenewError)
-					log.Error().Err(r.err).Str("cluster", m.cluster).Uint64("lease_epoch", l.Epoch).
-						Msg("cluster lease: renew failed; serving until the self-fence deadline")
+				if ctx.Err() != nil {
+					continue
+				}
+
+				failures++
+
+				countEvent(m.cluster, eventRenewError)
+				log.Error().Err(r.err).Str("cluster", m.cluster).Uint64("lease_epoch", l.Epoch).
+					Int("failures_in_a_row", failures).Dur("left", time.Until(deadline)).
+					Msg("cluster lease: renew failed; retrying, serving until the self-fence deadline")
+
+				if retry == nil {
+					retry = time.After(m.cfg.retryDelay(failures))
 				}
 			}
 		}

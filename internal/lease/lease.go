@@ -332,6 +332,8 @@ func (s *Store) Renew(ctx context.Context, l Lease, ttl time.Duration) error {
 WHERE cluster_id = ? AND holder = ? AND epoch = ? AND expires_at > `+s.now(),
 		l.Cluster, l.Holder, int64(l.Epoch)) //nolint:gosec // epochs are positive int64 in the database
 	if res.Error != nil {
+		s.dropIdle()
+
 		return fmt.Errorf("renewing cluster lease %s: %w", l.Cluster, res.Error)
 	}
 
@@ -340,6 +342,34 @@ WHERE cluster_id = ? AND holder = ? AND epoch = ? AND expires_at > `+s.now(),
 	}
 
 	return nil
+}
+
+// dropIdle closes the idle connections of the lease pool after a failed
+// renewal (PostgreSQL only; on SQLite the pool is the data pool): they may
+// lead to the same dead server as the one that failed (a PgBouncer gone
+// without a reset), so the retry opens a fresh connection, which skips a
+// dead host after the pool's connect_timeout and goes to the next one of
+// the list. The connection of the failed statement itself is already gone:
+// pgx closes a connection whose context ended mid-statement, and
+// database/sql discards it (driver.ErrBadConn). The idle cap is restored to
+// the pool's open cap (leaseDatabase sets both to the same value).
+func (s *Store) dropIdle() {
+	if !s.postgres {
+		return
+	}
+
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return
+	}
+
+	n := sqlDB.Stats().MaxOpenConnections
+	if n <= 0 {
+		n = 2 // database/sql's default idle cap
+	}
+
+	sqlDB.SetMaxIdleConns(0) // closes the idle ones
+	sqlDB.SetMaxIdleConns(n)
 }
 
 // Release ends l now, so a standby can take over without waiting for the

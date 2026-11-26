@@ -584,7 +584,9 @@ type PostgresConfig struct {
 	// behind data traffic: behind PgBouncer, an alias of the same
 	// database with its own small pool (ADR 0006 §3.6), one per cluster so
 	// one cluster's renewals never wait for another's (D9b). Empty uses
-	// `database.postgres.name`, still on a pool of its own.
+	// `database.postgres.name`, still on a pool of its own. That pool
+	// connects with `database.postgres.connect_timeout_secs`, at most
+	// 1 second, so a renewal can skip a dead host within one attempt.
 	LeaseName string `example:"\"mesh_c1_lease\"" koanf:"lease_name"`
 
 	// LeaseMaxOpenConnections caps the open connections of the lease
