@@ -304,3 +304,27 @@ WHEN NEW.tailnet_id IS NOT OLD.tailnet_id
 BEGIN
   SELECT RAISE(ABORT, 'tailnet_id of a tenant row is immutable');
 END;
+
+-- Schema compatibility (P13d, ADR 0013): min_reader_id of each migration
+-- from 202611271000-schema-compat on; see hscontrol/db/schema_compat.go.
+CREATE TABLE schema_compat(
+  migration_id text PRIMARY KEY,
+  min_reader_id text NOT NULL
+);
+
+-- Epoch fence (P13c, ADR 0012): the record of every fence; lease rows are
+-- never deleted. See hscontrol/db/epoch_fence.go.
+CREATE TABLE platform_epoch_fences(
+  id integer PRIMARY KEY AUTOINCREMENT,
+  epoch_floor integer NOT NULL CHECK(epoch_floor >= 1),
+  fenced_at datetime NOT NULL,
+  reason text NOT NULL,
+  operator text NOT NULL,
+  leases integer NOT NULL,
+  tailnets integer NOT NULL,
+  moves_cancelled integer NOT NULL
+);
+CREATE TRIGGER trg_cluster_leases_no_delete BEFORE DELETE ON cluster_leases
+BEGIN
+  SELECT RAISE(ABORT, 'cluster_leases rows are never deleted: the epoch would restart at 1 (ADR 0012)');
+END;

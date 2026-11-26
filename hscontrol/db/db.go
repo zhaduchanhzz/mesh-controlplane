@@ -61,12 +61,14 @@ type HSDatabase struct {
 // Tailnet returns the tailnet this handle is bound to.
 func (hsdb *HSDatabase) Tailnet() types.Tailnet { return hsdb.tailnet }
 
-// NewHeadscaleDatabase is the single-tenant path: it opens the platform
-// (schema, version checks, validation; see [OpenPlatform]) and binds the
+// NewHeadscaleDatabase is the single-tenant path (`headscale serve`,
+// development and tests): it migrates and opens the platform (schema,
+// version checks, validation; see [MigrateAndOpenPlatform]) and binds the
 // handle to the runtime's tailnet (tenantscope). A fresh database gets one
-// default tailnet. The returned handle owns the connection pool.
+// default tailnet. The returned handle owns the connection pool. Cluster
+// mode never uses it (ADR 0013: cluster processes do not migrate).
 func NewHeadscaleDatabase(cfg *types.Config) (*HSDatabase, error) {
-	p, err := OpenPlatform(cfg)
+	p, err := MigrateAndOpenPlatform(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +343,7 @@ func Write[T any](db *gorm.DB, fn func(tx *gorm.DB) (T, error)) (T, error) {
 }
 
 // validateSQLiteSchema checks the database against schema.sql with squibble.
-func validateSQLiteSchema(dbConn *gorm.DB) error {
+func validateSQLiteSchema(dbConn *gorm.DB, schema string) error {
 	sqlConn, err := dbConn.DB()
 	if err != nil {
 		return fmt.Errorf("getting DB from gorm: %w", err)
@@ -369,7 +371,7 @@ func validateSQLiteSchema(dbConn *gorm.DB) error {
 		},
 	}
 
-	if err := squibble.Validate(ctx, conn, dbSchema, &opts); err != nil { //nolint:noinlineerr
+	if err := squibble.Validate(ctx, conn, schema, &opts); err != nil { //nolint:noinlineerr
 		return fmt.Errorf("validating schema: %w", err)
 	}
 

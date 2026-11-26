@@ -108,7 +108,7 @@ func TestMigrationFromV01Init(t *testing.T) {
 			require.NoError(t, addNode(t, tenantDB(t, p, id2), mk, nk))
 			require.NoError(t, p.Close())
 
-			_, err := OpenPlatform(cfg)
+			_, err := MigrateAndOpenPlatform(cfg)
 			require.ErrorIs(t, err, errDuplicateNodeKeys)
 
 			// Nothing changed: no record, no index, the duplicates remain.
@@ -151,7 +151,7 @@ func TestCheckV01DatabaseSurfacesConnectionErrors(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, sqlDB.Close())
 
-			err = checkV01Database(conn)
+			_, err = checkV01Database(conn)
 			require.Error(t, err, "a closed connection is not a fresh database")
 			require.NotErrorIs(t, err, ErrNotV01Database)
 			assert.Contains(t, err.Error(), "closed")

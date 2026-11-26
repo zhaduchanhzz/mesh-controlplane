@@ -78,7 +78,12 @@ func init() {
 	clusterRegisterCmd.Flags().StringVar(&clusterRegEndpoint, "endpoint", "", "endpoint URL (default: server_url)")
 
 	tailnetCmd.AddCommand(tailnetCreateCmd, tailnetStatusCmd, tailnetPolicyCmd, tailnetDNSCmd, tailnetAuthKeyCmd, tailnetAuthKeyRevokeCmd, tailnetNodesCmd, tailnetReassignCmd)
-	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, tailnetCmd)
+	clusterMigrateCmd.Flags().DurationVar(&clusterMigrateTimeout, "timeout", 10*time.Minute,
+		"how long to wait for another migrate run and to migrate")
+	clusterEpochFenceCmd.Flags().StringVar(&clusterFenceReason, "reason", "", "why the fence runs (recorded), e.g. the restore target")
+	clusterEpochFenceCmd.Flags().StringVar(&clusterFenceOperator, "operator", "", "who runs it (recorded)")
+	clusterEpochFenceCmd.Flags().Uint64Var(&clusterFenceHWM, "external-hwm", 0, "highest epoch recorded outside the database, if any")
+	clusterCmd.AddCommand(clusterServeCmd, clusterRegisterCmd, clusterMigrateCmd, clusterEpochFenceCmd, tailnetCmd)
 	rootCmd.AddCommand(clusterCmd)
 }
 
@@ -123,6 +128,73 @@ var clusterServeCmd = &cobra.Command{
 		}
 
 		return nil
+	},
+}
+
+// clusterMigrateTimeout is `cluster migrate --timeout`.
+var clusterMigrateTimeout time.Duration
+
+// clusterMigrateCmd is the operator step of ADR 0013: it creates the schema
+// of a fresh shared database or runs the pending migrations, under a lock
+// (two runs at once: one waits, then has nothing to do). `cluster serve`,
+// mesh-placement and the admin commands never migrate. Run it on a direct
+// connection to the primary where possible (ADR 0006 §4); it also works
+// through PgBouncer in transaction mode (one transaction). --cluster-id is
+// not needed.
+var clusterMigrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Create or migrate the shared database schema (operator step; cluster processes never migrate)",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		ctx, cancel := context.WithTimeout(cmd.Context(), clusterMigrateTimeout)
+		defer cancel()
+
+		res, err := db.Migrate(ctx, serverConfig())
+		if err != nil {
+			return fmt.Errorf("migrating the database: %w", err)
+		}
+
+		return printJSON(res)
+	},
+}
+
+// `cluster epoch-fence` flags.
+var (
+	clusterFenceReason   string
+	clusterFenceOperator string
+	clusterFenceHWM      uint64
+
+	errFenceFlags = errors.New("--reason and --operator are required")
+)
+
+// clusterEpochFenceCmd is the restore fence of ADR 0012 §1 (as
+// `mesh-placement epoch-fence`): run it after a restore or a promote that
+// may have lost commits, before the cluster processes reach the database
+// again. --cluster-id is not needed: it fences every cluster.
+var clusterEpochFenceCmd = &cobra.Command{
+	Use:   "epoch-fence",
+	Short: "Raise every lease epoch and owner_epoch above the time-based floor (after a restore; ADR 0012)",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		if clusterFenceReason == "" || clusterFenceOperator == "" {
+			return errFenceFlags
+		}
+
+		p, err := db.OpenPlatform(serverConfig())
+		if err != nil {
+			return err
+		}
+		defer p.Close()
+
+		ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
+		defer cancel()
+
+		res, err := p.EpochFence(ctx, db.EpochFenceRequest{
+			Reason: clusterFenceReason, Operator: clusterFenceOperator, OperatorNow: time.Now(), ExternalHWM: clusterFenceHWM,
+		})
+		if err != nil {
+			return err
+		}
+
+		return printJSON(res)
 	},
 }
 

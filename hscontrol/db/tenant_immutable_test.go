@@ -81,7 +81,7 @@ func TestTenantIDImmutableDDLInSchemaFiles(t *testing.T) {
 	norm := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 	assert.Contains(t, norm(dbSchema), TenantIDImmutableSQLiteDDL)
 	assert.Contains(t, norm(dbSchemaPostgres), TenantIDImmutablePostgresDDL)
-	assert.Equal(t, TenantIDImmutableMigrationID, LatestMigrationID(), "appended at the end of the chain")
+	assert.Equal(t, TenantIDImmutableMigrationID, v01Migrations()[8].ID, "ninth migration of the chain (P12c)")
 
 	for _, table := range tenantscope.TenantTables() {
 		trigger := "trg_" + table + "_tailnet_id_immutable"

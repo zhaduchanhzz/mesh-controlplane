@@ -112,7 +112,7 @@ func (e *env) live(t *testing.T, id string) {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 
-	p, err := db.OpenPlatform(&types.Config{
+	p, err := db.MigrateAndOpenPlatform(&types.Config{
 		Database: types.DatabaseConfig{
 			Type:   types.DatabaseSqlite,
 			Sqlite: types.SqliteConfig{Path: filepath.Join(t.TempDir(), "api.db")},

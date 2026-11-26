@@ -204,6 +204,10 @@ setup() {
     sudo sh -c '! ls /var/lib/headscale/cluster-e2e/db.sqlite* 2>/dev/null'
     rm -f /tmp/$(basename "$bin") /tmp/config.yaml /tmp/headscale-cluster.service" || return 1
 
+  # P13d (ADR 0013): cluster processes, mesh-placement and the admin CLI never
+  # migrate; the operator step creates the schema of the fresh database.
+  log "schema: migrate step"
+  cp_ "$HSC migrate" >"$ART_DIR/logs/migrate.json" || { log "migrate step failed"; return 1; }
   # P12 (owner decision 2026-11-25): tailnets are created only on a
   # registered ACTIVE cluster whose process holds its lease, so the cluster
   # is registered and started first and the tailnets are created live (it

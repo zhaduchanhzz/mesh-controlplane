@@ -59,7 +59,7 @@ func p12Platform(t *testing.T, backend, cluster string) *db.Platform {
 		}
 	}
 
-	p, err := db.OpenPlatform(cfg)
+	p, err := db.MigrateAndOpenPlatform(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = p.Close() })
 

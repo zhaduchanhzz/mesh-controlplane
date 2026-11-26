@@ -112,52 +112,37 @@ func tableExists(db *gorm.DB, table string) (bool, error) {
 }
 
 // checkV01Database refuses any non-fresh database that is not a v0.1
-// database: one without the tailnets table, or with migration IDs this
-// binary does not know (Headscale's chain or a newer release). A failed
-// query is a database error, never a verdict on the database.
-func checkV01Database(db *gorm.DB) error {
+// database: one without the tailnets table, or one with Headscale's tables
+// and no migration record. fresh reports a database with neither. Which
+// migrations a v0.1 database may have is the compatibility rule's
+// (checkSchemaCompat, ADR 0013): a newer migration is not a foreign
+// database. A failed query is a database error, never a verdict on the
+// database.
+func checkV01Database(db *gorm.DB) (bool, error) {
 	has := map[string]bool{}
 
 	for _, table := range []string{"migrations", "users", "nodes", "tailnets"} {
 		present, err := tableExists(db, table)
 		if err != nil {
-			return err
+			return false, err
 		}
 
 		has[table] = present
 	}
 
 	if !has["migrations"] {
-		if has["users"] || has["nodes"] {
-			return fmt.Errorf("%w: tables exist but no migration record", ErrNotV01Database)
+		if has["users"] || has["nodes"] || has["tailnets"] {
+			return false, fmt.Errorf("%w: tables exist but no migration record", ErrNotV01Database)
 		}
 
-		return nil // fresh database
+		return true, nil // fresh database
 	}
 
 	if !has["tailnets"] {
-		return fmt.Errorf("%w: no tailnets table", ErrNotV01Database)
+		return false, fmt.Errorf("%w: no tailnets table", ErrNotV01Database)
 	}
 
-	var ids []string
-
-	err := db.Table("migrations").Pluck("id", &ids).Error
-	if err != nil {
-		return fmt.Errorf("%w: reading migrations: %w", ErrDatabaseUnavailable, err)
-	}
-
-	known := map[string]bool{schemaInitMigration: true}
-	for _, m := range v01Migrations() {
-		known[m.ID] = true
-	}
-
-	for _, id := range ids {
-		if !known[id] {
-			return fmt.Errorf("%w: unknown migration %q", ErrNotV01Database, id)
-		}
-	}
-
-	return nil
+	return false, nil
 }
 
 // clusterIDOf returns the cluster this process serves for; empty means

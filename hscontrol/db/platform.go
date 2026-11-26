@@ -59,6 +59,10 @@ func v01Migrations() []*gormigrate.Migration {
 		clusterLeasesMigration(),
 		tailnetMovesMigration(),
 		tenantIDImmutableMigration(),
+		// P13 (ADR 0013): every migration from here on declares its
+		// min_reader_id in migrationCompat.
+		schemaCompatMigration(),
+		epochFenceMigration(),
 	}
 }
 
@@ -120,11 +124,22 @@ func (p *Platform) currentLease() (string, uint64, error) {
 // LeaseStore is the cluster_leases table on this pool.
 func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.db) }
 
-// OpenPlatform opens the database, creates the v0.1 schema on a fresh one,
-// refuses databases from Headscale or unknown versions, runs the v0.1
-// migrations, validates the schema (SQLite) and registers tenantscope on the
-// pool. It never creates a tailnet.
-func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
+// OpenPlatform opens the database for a cluster process, mesh-placement or
+// an operator command, refuses databases from Headscale or of an unknown
+// layout, applies the version check, refuses a schema this binary cannot
+// run with (ADR 0013 §4: behind it, ErrSchemaNeedsMigration; past a newer
+// contract migration, ErrSchemaTooNew), validates the schema (SQLite, when
+// it is exactly this binary's) and registers tenantscope on the pool. It
+// never creates or migrates the schema (that is [Migrate], an operator
+// step) and never creates a tailnet.
+func OpenPlatform(cfg *types.Config) (*Platform, error) {
+	return openPlatformChain(cfg, currentChain(), false)
+}
+
+// openPlatformChain is OpenPlatform for the binary of chain ch; migrate runs
+// [Migrate] on the same pool first: the explicit development and
+// single-tenant option ([MigrateAndOpenPlatform]).
+func openPlatformChain(cfg *types.Config, ch chain, migrate bool) (_ *Platform, retErr error) {
 	dbConn, err := openDB(cfg.Database, cfg.SQLitePath())
 	if err != nil {
 		return nil, err
@@ -141,44 +156,45 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 		}
 	}()
 
-	err = checkV01Database(dbConn)
-	if err != nil {
-		return nil, fmt.Errorf("version check: %w", err)
-	}
-
-	err = checkVersionUpgradePath(dbConn)
-	if err != nil {
-		return nil, fmt.Errorf("version check: %w", err)
-	}
-
-	migrations := gormigrate.New(dbConn, gormigrate.DefaultOptions, v01Migrations())
-
-	migrations.InitSchema(func(tx *gorm.DB) error {
-		return tx.Transaction(createSchema)
-	})
-
-	err = runMigrations(cfg.Database, dbConn, migrations)
-	if err != nil {
-		return nil, fmt.Errorf("migration failed: %w", err)
-	}
-
-	// Store the current version in the database after migrations succeed.
-	// Dev builds skip this to preserve the stored version for the next
-	// real versioned binary.
-	currentVersion := types.GetVersionInfo().Version
-	if !isDev(currentVersion) {
-		err = setDatabaseVersion(dbConn, currentVersion)
+	if migrate {
+		_, err = migrateConn(context.Background(), dbConn, cfg, ch)
 		if err != nil {
-			return nil, fmt.Errorf("storing database version: %w", err)
+			return nil, err
 		}
 	}
 
-	// Validate that the schema ends up in the expected state (SQLite only;
-	// squibble does not support PostgreSQL). Done in a helper so its
-	// dedicated connection is released before the pool is used: SQLite
-	// allows a single open connection.
-	if cfg.Database.IsSQLite() {
-		err = validateSQLiteSchema(dbConn)
+	// versioncheck first (ADR 0013 §6), without creating its table: a
+	// database without one has no stored version, as on a first start.
+	_, err = checkV01Database(dbConn)
+	if err != nil {
+		return nil, fmt.Errorf("version check: %w", err)
+	}
+
+	hasVersions, err := tableExists(dbConn, "database_versions")
+	if err != nil {
+		return nil, err
+	}
+
+	if hasVersions {
+		err = compareStoredVersion(dbConn)
+		if err != nil {
+			return nil, fmt.Errorf("version check: %w", err)
+		}
+	}
+
+	exact, err := verifySchema(dbConn, ch)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate that the schema is in the expected state (SQLite only;
+	// squibble does not support PostgreSQL), when the database has exactly
+	// this binary's migrations: a newer expand migration changes the schema
+	// files this binary does not have. Done in a helper so its dedicated
+	// connection is released before the pool is used: SQLite allows a
+	// single open connection.
+	if exact && cfg.Database.IsSQLite() {
+		err = validateSQLiteSchema(dbConn, ch.sqliteSchema)
 		if err != nil {
 			return nil, err
 		}

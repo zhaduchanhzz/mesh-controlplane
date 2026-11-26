@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -59,7 +60,7 @@ func (c Config) Validate() error {
 
 // store is what the manager needs from [Store]; tests replace it.
 type store interface {
-	Acquire(ctx context.Context, cluster, holder string, ttl time.Duration) (Lease, error)
+	AcquireAbove(ctx context.Context, cluster, holder string, ttl time.Duration, floor uint64) (Lease, error)
 	Renew(ctx context.Context, l Lease, ttl time.Duration) error
 	Release(ctx context.Context, l Lease) error
 }
@@ -76,6 +77,14 @@ type Manager struct {
 	cur      Lease
 	active   bool
 	deadline time.Time // monotonic: time.Now() values only
+	// hwm is the highest epoch of this cluster's lease the process has seen
+	// (held, or live under another holder); never lowered (ADR 0012 §3). It
+	// is the floor of every acquire: an epoch at or below it is never
+	// accepted (the database went back: restore, lossy promote).
+	hwm uint64
+
+	// regressions counts acquire attempts refused with ErrEpochRegression.
+	regressions atomic.Int64
 }
 
 // NewManager builds the manager of holder for cluster.
@@ -98,6 +107,25 @@ func newManager(s store, cluster, holder string, cfg Config) (*Manager, error) {
 
 // Holder is this process's holder name.
 func (m *Manager) Holder() string { return m.holder }
+
+// HighWaterMark is the highest lease epoch this process has seen for its
+// cluster (in memory: it does not survive a restart).
+func (m *Manager) HighWaterMark() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.hwm
+}
+
+// Regressions counts the acquire attempts refused because the database
+// would have granted an epoch at or below [Manager.HighWaterMark].
+func (m *Manager) Regressions() int64 { return m.regressions.Load() }
+
+func (m *Manager) observe(epoch uint64) {
+	m.mu.Lock()
+	m.hwm = max(m.hwm, epoch)
+	m.mu.Unlock()
+}
 
 // Current returns the lease this process may serve under: false when
 // standby, and false as soon as the self-fence deadline has passed, even if
@@ -201,12 +229,16 @@ func (m *Manager) acquire(ctx context.Context) (Lease, error) {
 		start := time.Now()
 
 		actx, cancel := context.WithTimeout(ctx, m.cfg.TTL-m.cfg.SafetyMargin)
-		l, err := m.store.Acquire(actx, m.cluster, m.holder, m.cfg.TTL)
+		l, err := m.store.AcquireAbove(actx, m.cluster, m.holder, m.cfg.TTL, m.HighWaterMark())
 
 		cancel()
 
+		var held *HeldError
+
 		switch {
 		case err == nil:
+			m.observe(l.Epoch)
+
 			deadline := m.deadlineFrom(start)
 			if time.Now().Before(deadline) {
 				m.set(l, deadline)
@@ -218,7 +250,18 @@ func (m *Manager) acquire(ctx context.Context) (Lease, error) {
 			// The acquire itself took too long to be safe: let it expire.
 			log.Warn().Str("cluster", m.cluster).Uint64("lease_epoch", l.Epoch).
 				Msg("cluster lease acquired too late to serve; letting it expire")
+		case errors.As(err, &held):
+			m.observe(held.Epoch)
 		case errors.Is(err, ErrHeld):
+		case errors.Is(err, ErrEpochRegression):
+			// Fail closed: standby until the epoch fence raised the
+			// database above what this process saw. Logged on the first
+			// refusal and then every 30.
+			if n := m.regressions.Add(1); n%30 == 1 {
+				log.Error().Err(err).Str("cluster", m.cluster).Uint64("epoch_high_water_mark", m.HighWaterMark()).
+					Int64("refusals", n).Msg("CRITICAL epoch regression: the database is behind what this process saw " +
+					"(restore or lossy promote?); not taking the cluster lease until the epoch fence runs")
+			}
 		default:
 			if ctx.Err() == nil {
 				log.Error().Err(err).Str("cluster", m.cluster).Msg("cluster lease: acquire failed")

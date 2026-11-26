@@ -38,7 +38,7 @@ func TestAPIKeyLifecycle(t *testing.T) {
 		t.Run(b.name, func(t *testing.T) {
 			ctx := context.Background()
 
-			p, err := db.OpenPlatform(b.cfg(t))
+			p, err := db.MigrateAndOpenPlatform(b.cfg(t))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = p.Close() })
 
