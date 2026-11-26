@@ -644,7 +644,6 @@ func p14fJSON(v any) string {
 	return string(b)
 }
 
-
 // TestClusterP14fSelfTagProfile is the smallest case M07 found (finding
 // F2-1, evidence/P14f-f12.md): a node tagged while connected, left with no
 // peer by the policy, must still end up holding the profile of the user

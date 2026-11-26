@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 

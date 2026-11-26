@@ -55,7 +55,7 @@ var mapStreamSkipReasons = map[string]string{
 }
 
 const (
-	restartEndpointsKept      = "RESTART_ENDPOINTS_KEPT: headscale keeps a restarted node's last endpoints at its peers until it reports new ones; SaaS sends peers the node without endpoints until then"
+	restartEndpointsKept = "RESTART_ENDPOINTS_KEPT: headscale keeps a restarted node's last endpoints at its peers until it reports new ones; SaaS sends peers the node without endpoints until then"
 )
 
 // mapStreamNotCompared lists, by key prefix, checks left out: SaaS's answer
