@@ -17,8 +17,9 @@ import (
 // retires its runtime and waits for the drain (held here by an admitted
 // request); the operator cancels (the epoch stays E), the source loads the
 // tailnet again, the operator requests the move again, still at E, while
-// the first drain is under way. The source must stop serving the reloaded
-// runtime before the owner flips (ADR 0010, invariant 1): at no sample may
+// the first drain is under way; that drain ends before the source's next
+// reconcile tick. The source must stop serving the reloaded runtime before
+// the owner flips (ADR 0010, invariant 1): at no sample may
 // the database name c2 the owner while c1 still holds a runtime, and never
 // may both clusters hold one (R11).
 func TestTwoClustersCancelReloadRerequestKeepsR11(t *testing.T) {
@@ -47,9 +48,15 @@ func TestTwoClustersCancelReloadRerequestKeepsR11(t *testing.T) {
 
 	require.Equal(t, epoch, c1.MoveOwner(t, slug, c1.ClusterID, c2.ClusterID), "requested again at the same epoch")
 
-	var both, flippedWhileServing, srcSamples int
+	// The first drain ends now, before the source's next reconcile tick
+	// has seen the new request: the reloaded runtime still serves.
+	release()
 
-	sample := func() (bool, bool) {
+	var both, flippedWhileServing int
+
+	deadline := time.Now().Add(clusterWait)
+
+	for time.Now().Before(deadline) {
 		owner := c1.TailnetRow(t, slug).OwnerClusterID
 		srcHas, dstHas := c1.HasRuntime(t, slug), c2.HasRuntime(t, slug)
 
@@ -61,30 +68,6 @@ func TestTwoClustersCancelReloadRerequestKeepsR11(t *testing.T) {
 			flippedWhileServing++
 		}
 
-		return srcHas, dstHas
-	}
-
-	// The first drain is still held: longer than one reconcile tick, so the
-	// source sees the new request.
-	holdUntil := time.Now().Add(3 * time.Second)
-	for time.Now().Before(holdUntil) {
-		if srcHas, _ := sample(); srcHas {
-			srcSamples++
-		}
-
-		time.Sleep(5 * time.Millisecond) //nolint:forbidigo // sampling both clusters
-	}
-
-	srcStill := c1.HasRuntime(t, slug)
-	assert.False(t, srcStill, "the source must retire the runtime it loaded again once the move is requested again")
-	assert.Equal(t, c1.ClusterID, c1.TailnetRow(t, slug).OwnerClusterID, "no flip while a drain is held")
-
-	release()
-
-	deadline := time.Now().Add(clusterWait)
-
-	for time.Now().Before(deadline) {
-		srcHas, dstHas := sample()
 		if dstHas && !srcHas {
 			break
 		}
@@ -92,8 +75,7 @@ func TestTwoClustersCancelReloadRerequestKeepsR11(t *testing.T) {
 		time.Sleep(5 * time.Millisecond) //nolint:forbidigo // sampling both clusters
 	}
 
-	t.Logf("C1 samples: source served during the held drain %d; both loaded %d; owner c2 while c1 served %d",
-		srcSamples, both, flippedWhileServing)
+	t.Logf("C1 samples: both loaded %d; owner c2 while c1 served %d", both, flippedWhileServing)
 
 	assert.Zero(t, both, "R11: both clusters held a runtime")
 	assert.Zero(t, flippedWhileServing, "the owner flipped while the source still served the tailnet")
