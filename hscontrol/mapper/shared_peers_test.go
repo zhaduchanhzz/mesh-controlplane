@@ -183,7 +183,8 @@ func TestSharedPeersPerViewerParts(t *testing.T) {
 			_, _, err := td.State.SetNodeExpiry(td.Nodes[3].n.ID, &soon)
 			require.NoError(t, err)
 			requireSharedEqualsFresh(t, td, "before expiry")
-			time.Sleep(200 * time.Millisecond)
+			require.Eventually(t, func() bool { return time.Now().After(soon.Add(10 * time.Millisecond)) },
+				2*time.Second, 20*time.Millisecond)
 			requireSharedEqualsFresh(t, td, "after expiry")
 
 			// Rename, disconnect.

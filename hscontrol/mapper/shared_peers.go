@@ -50,7 +50,6 @@ type sharedPeerEntry struct {
 // sharedPeers is the per-mapper cache of shared peer entries, by node ID.
 type sharedPeers struct {
 	entries sync.Map // types.NodeID -> *sharedPeerEntry
-	count   atomic.Int64
 	puts    atomic.Int64
 }
 
@@ -113,8 +112,6 @@ func (c *sharedPeers) put(peer types.NodeView, ipv4Off bool, baseDomain string, 
 		if oe, _ := old.(*sharedPeerEntry); oe != nil && oe.node != node {
 			forgetPeerHash(oe.node)
 		}
-	} else {
-		c.count.Add(1)
 	}
 
 	if c.puts.Add(1) > int64(live)+64 {
@@ -129,8 +126,6 @@ func (c *sharedPeers) sweep(exists func(types.NodeID) bool) {
 		id, _ := k.(types.NodeID)
 		if !exists(id) {
 			if c.entries.CompareAndDelete(k, v) {
-				c.count.Add(-1)
-
 				if e, _ := v.(*sharedPeerEntry); e != nil {
 					forgetPeerHash(e.node)
 				}
