@@ -24,8 +24,8 @@ type tb interface {
 	Helper()
 }
 
-// peerMap builds the peer part of a full map for id, as the full-map path
-// does (buildFromChange with SendAllPeers).
+// peerMap builds the self, packet filter and peer parts of a full map for
+// id, as the full-map path does (buildFromChange with SendAllPeers).
 func peerMap(t tb, m *mapper, id types.NodeID) *tailcfg.MapResponse {
 	t.Helper()
 
@@ -34,6 +34,7 @@ func peerMap(t tb, m *mapper, id types.NodeID) *tailcfg.MapResponse {
 	resp, err := m.NewMapResponseBuilder(id).
 		WithCapabilityVersion(tailcfg.CapabilityVersion(100)).
 		WithSelfNode().
+		WithPacketFilters().
 		WithUserProfiles(peers).
 		WithPeers(peers).
 		Build()
@@ -174,6 +175,50 @@ func TestSharedPeerEntryRenderedOnce(t *testing.T) {
 
 	requireMemoMatches("after disconnect")
 	requireSharedEqualsFresh(t, td, "after disconnect")
+}
+
+// TestSharedPeersFilterStaysPerRecipient: entries are shared, packet
+// filters never are. Under a policy where everyone reaches testuser-1 but
+// each user also reaches only its own devices, a testuser-0 node and a
+// testuser-2 node list the same testuser-1 peer through one shared entry,
+// while each carries its own filter, equal to the per-viewer one.
+func TestSharedPeersFilterStaysPerRecipient(t *testing.T) {
+	td := setupSharedTailnet(t, 3, 4, sharedSamplePolicies(t)["shared"])
+	connectAllShared(t, td)
+
+	m := td.Batcher.mapper
+	fresh := freshMapper(td)
+
+	a, b := td.Nodes[0].n.ID, td.Nodes[8].n.ID // testuser-0, testuser-2
+	target := tailcfg.NodeID(td.Nodes[4].n.ID) //nolint:gosec // testuser-1; test node IDs are small
+
+	ra, rb := peerMap(t, m, a), peerMap(t, m, b)
+
+	entry := func(r *tailcfg.MapResponse) *tailcfg.Node {
+		for _, p := range r.Peers {
+			if p.ID == target {
+				return p
+			}
+		}
+
+		return nil
+	}
+
+	require.NotNil(t, entry(ra))
+	require.Same(t, entry(ra), entry(rb), "the testuser-1 peer is one shared entry")
+
+	fa, err := json.Marshal(ra.PacketFilters)
+	require.NoError(t, err)
+	fb, err := json.Marshal(rb.PacketFilters)
+	require.NoError(t, err)
+	require.NotEqual(t, string(fa), string(fb), "the two recipients' filters differ")
+
+	wantA, err := json.Marshal(peerMap(t, fresh, a).PacketFilters)
+	require.NoError(t, err)
+	wantB, err := json.Marshal(peerMap(t, fresh, b).PacketFilters)
+	require.NoError(t, err)
+	require.JSONEq(t, string(wantA), string(fa))
+	require.JSONEq(t, string(wantB), string(fb))
 }
 
 // TestSharedPeersOffWhenSwitchOff: the kill switch also turns the shared
