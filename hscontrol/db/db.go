@@ -87,8 +87,10 @@ func NewHeadscaleDatabase(cfg *types.Config) (*HSDatabase, error) {
 }
 
 // openDB opens the database cfg names; sqlitePath is database.sqlite.path
-// resolved.
-func openDB(cfg types.DatabaseConfig, sqlitePath string) (*gorm.DB, error) {
+// resolved. readOnly (SQLite) opens a handle that cannot write on any of its
+// connections: query_only is in the DSN, which the driver applies to every
+// new connection (P13f L3), and no pragma that writes the file is set.
+func openDB(cfg types.DatabaseConfig, sqlitePath string, readOnly bool) (*gorm.DB, error) {
 	// TODO(kradalby): Integrate this with zerolog
 	var dbLogger logger.Interface
 	if cfg.Debug {
@@ -113,9 +115,13 @@ func openDB(cfg types.DatabaseConfig, sqlitePath string) (*gorm.DB, error) {
 
 		// Build SQLite configuration with pragmas set at connection time
 		sqliteConfig := sqliteconfig.Default(sqlitePath)
-		if cfg.Sqlite.WriteAheadLog {
+
+		switch {
+		case readOnly:
+			sqliteConfig = sqliteconfig.QueryOnly(sqlitePath)
+		case cfg.Sqlite.WriteAheadLog:
 			sqliteConfig.WALAutocheckpoint = cfg.Sqlite.WALAutoCheckPoint
-		} else {
+		default:
 			// The journal mode persists in the file, so leaving it unset keeps
 			// a database an earlier run put in WAL mode there. FULL is SQLite's
 			// default for a rollback journal; NORMAL can corrupt it on power loss.

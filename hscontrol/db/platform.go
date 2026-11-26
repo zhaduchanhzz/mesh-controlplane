@@ -125,7 +125,7 @@ func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.db) }
 // migrations, validates the schema (SQLite) and registers tenantscope on the
 // pool. It never creates a tailnet.
 func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
-	dbConn, err := openDB(cfg.Database, cfg.SQLitePath())
+	dbConn, err := openDB(cfg.Database, cfg.SQLitePath(), false)
 	if err != nil {
 		return nil, err
 	}

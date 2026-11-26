@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -51,20 +52,34 @@ type HandlerConfig struct {
 	// tenant's budget with a wrong proof.
 	TenantRate  float64
 	TenantBurst int
-	// IPRate/IPBurst bound requests per client address; 0 disables it (a
-	// TCP forwarder in front hides client addresses).
+	// IPRate/IPBurst bound requests per client address (an IPv6 client per
+	// /64); 0 disables it. The address is the TCP peer, or the source the
+	// trusted front door sends with PROXY v2 (P13f B7, internal/proxyproto).
+	// Behind a plain TCP forwarder every client has the forwarder's address:
+	// disable it there (mesh-bootstrap does when PROXY v2 is off).
 	IPRate  float64
 	IPBurst int
 }
 
-// DefaultHandlerConfig returns conservative limits for hostname.
+// DefaultHandlerConfig returns conservative limits for hostname. The
+// per-address limit (P13f B7) is checked before the global one, so one
+// address flooding the endpoint is stopped at its own bucket and does not
+// drain the budget of every tenant.
 func DefaultHandlerConfig(hostname string) HandlerConfig {
 	return HandlerConfig{
 		Hostname:   hostname,
 		GlobalRate: 200, GlobalBurst: 400,
 		TenantRate: 20, TenantBurst: 100,
+		IPRate: DefaultIPRate, IPBurst: DefaultIPBurst,
 	}
 }
+
+// Default per-address limit (P13f B7): a client bootstraps once per login,
+// so 10 requests per second with a burst of 20 is far above honest use.
+const (
+	DefaultIPRate  = 10
+	DefaultIPBurst = 20
+)
 
 // Handler is the public HTTP handler of the bootstrap service.
 type Handler struct {
@@ -127,7 +142,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
 	now := h.now()
 
-	if h.ips != nil && !h.ips.allow(clientIP(r), now) {
+	if h.ips != nil && !h.ips.allow(clientKey(r), now) {
 		h.log("limited_ip", "")
 		write(w, http.StatusTooManyRequests, bodyLimited, 1)
 
@@ -199,6 +214,8 @@ func (h *Handler) bootstrap(w http.ResponseWriter, r *http.Request) {
 // log records the outcome with a short hash of the key identifier, never
 // the identifier itself, the proof or the tenant.
 func (h *Handler) log(outcome, keyID string) {
+	requests.WithLabelValues(outcome).Inc()
+
 	ev := log.Info().Str("outcome", outcome)
 	if keyID != "" {
 		ev = ev.Str("key", keyTag(keyID))
@@ -228,13 +245,25 @@ func write(w http.ResponseWriter, status int, body []byte, retryAfter int) {
 	_, _ = w.Write(body)
 }
 
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientKey is the per-address bucket of r: its IPv4 address, or the /64 of
+// its IPv6 address (one subscriber usually holds a whole /64, P13f B7).
+func clientKey(r *http.Request) string {
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+		if splitErr != nil {
+			return r.RemoteAddr
+		}
+
+		return host
 	}
 
-	return host
+	ip := ap.Addr().Unmap()
+	if ip.Is4() {
+		return ip.String()
+	}
+
+	return netip.PrefixFrom(ip.WithZone(""), 64).Masked().String()
 }
 
 // bucket is a token bucket.

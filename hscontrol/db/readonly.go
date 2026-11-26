@@ -26,8 +26,9 @@ func LatestMigrationID() string {
 // never creates the schema, never runs migrations and does not register
 // tenantscope: the caller reads with reviewed raw SQL only. It refuses a
 // missing SQLite file and a database whose migrations do not include
-// [LatestMigrationID]. On SQLite the connection is put in query_only mode;
-// on PostgreSQL callers read in READ ONLY transactions.
+// [LatestMigrationID]. On SQLite every connection of the handle is in
+// query_only mode (set in the DSN, P13f L3); on PostgreSQL callers read in
+// READ ONLY transactions.
 func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 	if cfg.Database.IsSQLite() {
 		_, err := os.Stat(cfg.SQLitePath())
@@ -36,7 +37,7 @@ func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 		}
 	}
 
-	conn, err := openDB(cfg.Database, cfg.SQLitePath())
+	conn, err := openDB(cfg.Database, cfg.SQLitePath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -55,15 +56,6 @@ func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 		closeConn()
 
 		return nil, fmt.Errorf("%w: want migration %s (err=%w)", ErrSchemaNotCurrent, LatestMigrationID(), err)
-	}
-
-	if cfg.Database.IsSQLite() {
-		err = conn.Exec(`PRAGMA query_only = ON`).Error
-		if err != nil {
-			closeConn()
-
-			return nil, fmt.Errorf("setting query_only: %w", err)
-		}
 	}
 
 	return conn, nil

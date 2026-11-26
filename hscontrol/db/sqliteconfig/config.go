@@ -278,6 +278,7 @@ type Config struct {
 	ForeignKeys       bool        // enable foreign key constraints (data integrity)
 	TxLock            TxLock      // transaction lock mode (affects write concurrency)
 	ReadOnly          bool        // open with mode=ro and query_only, for untrusted readers
+	QueryOnly         bool        // query_only on every connection, file opened read-write (WAL readers)
 }
 
 // Default returns the production configuration optimized for Headscale's usage patterns.
@@ -312,6 +313,21 @@ func ReadOnly(path string) *Config {
 		BusyTimeout:       DefaultBusyTimeout,
 		WALAutocheckpoint: -1,
 		ReadOnly:          true,
+	}
+}
+
+// QueryOnly returns a configuration for a connection pool that must never
+// write the database but reads a file another process writes (the bootstrap
+// service, P13f L3): query_only is set on every connection through the DSN,
+// the file is opened read-write so WAL readers can use the shared memory
+// index, and no pragma that would write the file (journal_mode,
+// auto_vacuum) is set.
+func QueryOnly(path string) *Config {
+	return &Config{
+		Path:              path,
+		BusyTimeout:       DefaultBusyTimeout,
+		WALAutocheckpoint: -1,
+		QueryOnly:         true,
 	}
 }
 
@@ -410,6 +426,8 @@ func (c *Config) ToURL() (string, error) {
 
 	if c.ReadOnly {
 		queryParts = append(queryParts, "_pragma=query_only=1", "mode=ro")
+	} else if c.QueryOnly {
+		queryParts = append(queryParts, "_pragma=query_only=1")
 	}
 
 	if len(queryParts) > 0 {

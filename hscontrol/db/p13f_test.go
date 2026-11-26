@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
 )
 
 // P13f L3 (review P11): the read-only handle of the bootstrap service put
@@ -47,29 +48,43 @@ func TestOpenReadOnlySQLiteEveryConnectionQueryOnly(t *testing.T) {
 	assert.Zero(t, n, "the read-only handle wrote a row")
 }
 
-// P13f L10 (review P03b, AGENTS rule 8): the default tailnet of a fresh
-// single-tenant database was inserted ACTIVE with no policy, outside a
-// transaction. Like every tailnet it is created PENDING with the deny-all
-// policy {"grants":[]} in one transaction, then made ACTIVE.
-func TestDefaultTailnetCreatedWithDenyAllPolicy(t *testing.T) {
+// P13f L10 (review P03b, AGENTS rule 8): the platform opener of a cluster
+// process (and of mesh-placement) never creates a tailnet: on a fresh
+// database it finds none, and a handle for an unknown tailnet fails. Only
+// the single-tenant opener creates the default tailnet, ACTIVE with no
+// policy row (upstream "unset"; see createDefaultTailnet).
+func TestDefaultTailnetOnlyFromSingleTenantOpener(t *testing.T) {
 	for _, b := range backends(t) {
 		t.Run(b.name, func(t *testing.T) {
-			hsdb := open(t, b.cfg(t, "", ""))
-			tn := hsdb.Tailnet()
-			assert.Equal(t, types.TailnetActive, tn.Status)
+			cfg := b.cfg(t, "", "c-p13f")
 
-			pol, err := hsdb.GetPolicy()
-			require.NoError(t, err, "the default tailnet has a policy row")
-			assert.JSONEq(t, `{"grants":[]}`, pol.Data)
+			p, err := OpenPlatform(cfg)
+			require.NoError(t, err)
 
-			var rows []struct {
-				TailnetID string
-				Data      string
+			count := func() int64 {
+				var n int64
+
+				require.NoError(t, p.RegistryDB().Raw(`SELECT count(*) FROM tailnets`).Scan(&n).Error)
+
+				return n
 			}
 
-			require.NoError(t, hsdb.raw.Raw(`SELECT tailnet_id, data FROM policies`).Scan(&rows).Error)
-			require.Len(t, rows, 1)
-			assert.Equal(t, tn.ID, rows[0].TailnetID)
+			require.Zero(t, count(), "OpenPlatform created a tailnet")
+
+			owned, err := p.OwnedTailnets("c-p13f")
+			require.NoError(t, err)
+			assert.Empty(t, owned)
+
+			_, err = p.TenantDB(tailnet.MustParseID("33333333-3333-4333-8333-333333333333"))
+			require.Error(t, err)
+			assert.Zero(t, count(), "TenantDB of an unknown tailnet created one")
+			require.NoError(t, p.Close())
+
+			hsdb := open(t, b.cfg(t, "", ""))
+			assert.Equal(t, types.TailnetActive, hsdb.Tailnet().Status)
+
+			_, err = hsdb.GetPolicy()
+			require.ErrorIs(t, err, types.ErrPolicyNotFound, "single-tenant mode keeps the upstream unset policy")
 		})
 	}
 }

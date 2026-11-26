@@ -44,7 +44,7 @@
 | L4 | `tenantlabel` | `Acquire`/`Release` đếm tham chiếu; `Label` chỉ tra (không cấp); `Release` về 0 xóa series của tailnet trong các vec đã đăng ký. Cấp trong `NewStateWithDB` (chỉ khi runtime được dựng: tailnet sở hữu, ACTIVE, dưới lease), trả trong `State.Close` |
 | L3 | `openDB(..., readOnly)`, `sqliteconfig.Config.QueryOnly` | DSN `_pragma=busy_timeout`, `_pragma=query_only=1` cho mọi kết nối; không pragma ghi (journal_mode, auto_vacuum) ở handle chỉ đọc |
 | L10 | `tenantscope.Register` | stamp/scope `After("gorm:begin_transaction")`, fence `After(name+":create")` → begin < scope < fence < gorm op, bằng ràng buộc bắc cầu |
-| L10 | `createDefaultTailnet` | một transaction: PENDING + `{"grants":[]}` rồi ACTIVE |
+| L10 | `createDefaultTailnet` | dự kiến: một transaction PENDING + `{"grants":[]}` rồi ACTIVE. **Kết quả (sau test):** không đổi — ở single-tenant `{"grants":[]}` là deny-all và làm hỏng test tương thích upstream (policy "unset"); thay bằng test chứng minh cluster mode không gọi tới (theo kế hoạch L10 trong review), xem `evidence/P13f-monitoring-limits.md` §8 |
 | L5 | `placementapi/revocation.go` (mới) | file thu hồi (`serial:<hex>`, `sha256:<hex>`), nạp lại theo mtime; lỗi đọc/parse → **fail closed** (503 cho mọi request) tới khi file hợp lệ |
 | B7 | `internal/proxyproto` (mới), `cmd/mesh-bootstrap` | listener PROXY v2: nguồn tin cậy **phải** gửi header v2 (thiếu/sai → đóng); nguồn không tin cậy gửi header → đóng; `DefaultHandlerConfig` IPRate 10/s burst 20; IPv6 gom theo /64 |
 | Listener metric | `internal/opsmetrics` (mới) | `GET /metrics`, `GET /health` (chỉ placement có DB ping; bootstrap cũng ping DB chỉ đọc), chỉ loopback hoặc CIDR operator; dải Tailscale bị từ chối cả khi cấu hình (giống `config/validate.go:808`) |

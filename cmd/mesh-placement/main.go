@@ -7,11 +7,17 @@
 //
 //	mesh-placement -config /etc/mesh/config.yaml \
 //	  -tls-cert server.crt -tls-key server.key -client-ca operator-ca.crt \
-//	  -operators spiffe://mesh/operator/alice[,...] [-listen 127.0.0.1:9443]
+//	  -operators spiffe://mesh/operator/alice[,...] [-listen 127.0.0.1:9443] \
+//	  [-revoked-certs /etc/mesh/revoked-operators] \
+//	  [-metrics-listen 192.168.1.241:9098 -metrics-operator-cidrs 192.168.1.243/32]
 //	mesh-placement -openapi        # print the OpenAPI 3.1 document and exit
 //
 // Keys and the database password stay in files outside the repository; the
 // command never logs them.
+//
+// P13f: -revoked-certs refuses revoked operator certificates (L5; fail
+// closed on an unreadable file); -metrics-listen serves /metrics and /health
+// to loopback and -metrics-operator-cidrs only (AGENTS rule 9).
 package main
 
 import (
@@ -25,12 +31,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/dbstats"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/opsmetrics"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement/placementapi"
 )
@@ -58,6 +69,10 @@ func run() error {
 		sharedLimit = flag.Int64("shared-tenant-limit", placement.DefaultSharedTenantLimit, "device limit of a tailnet on a shared cluster")
 		openapi     = flag.Bool("openapi", false, "print the OpenAPI 3.1 document and exit")
 		schedEvery  = flag.Duration("schedule-interval", 5*time.Second, "how often due tailnet moves are requested and their hand-over recorded (P12b); 0 disables the scheduler")
+		metricsAddr = flag.String("metrics-listen", "", "operator metrics listener (/metrics, /health); empty: off. Never a public address")
+		metricsNets = flag.String("metrics-operator-cidrs", "", "comma-separated CIDRs allowed on -metrics-listen besides loopback (never the Tailscale range)")
+		revokedPath = flag.String("revoked-certs", "", "operator certificate revocation file (serial:<hex> or sha256:<hex> per line); unreadable or invalid: every request refused")
+		revokedTick = flag.Duration("revoked-certs-reload", 10*time.Second, "how often -revoked-certs is read again")
 	)
 
 	flag.Parse()
@@ -80,6 +95,22 @@ func run() error {
 	auth, err := placementapi.NewAuthorizer(strings.Split(*operators, ","))
 	if err != nil {
 		return err
+	}
+
+	operatorNets, err := opsmetrics.ParseOperatorCIDRs(*metricsNets)
+	if err != nil {
+		return fmt.Errorf("-metrics-operator-cidrs: %w", err)
+	}
+
+	var revoked *placementapi.Revocations
+
+	if *revokedPath != "" {
+		revoked, err = placementapi.LoadRevocations(*revokedPath)
+		if err != nil {
+			return err
+		}
+
+		auth.WithRevocations(revoked)
 	}
 
 	cert, err := tls.LoadX509KeyPair(*certFile, *keyFile)
@@ -120,7 +151,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           placementapi.Handler(reg, auth),
+		Handler:           countRequests(placementapi.Handler(reg, auth)),
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -135,7 +166,30 @@ func run() error {
 		go placement.RunScheduler(ctx, reg, *schedEvery, log.Printf)
 	}
 
-	errc := make(chan error, 1)
+	if revoked != nil {
+		go revoked.Run(ctx, *revokedTick, log.Printf)
+	}
+
+	if sqlDB, err := p.RegistryDB().DB(); err == nil { //nolint:noinlineerr
+		defer dbstats.Register("placement", sqlDB)()
+	}
+
+	errc := make(chan error, 2)
+
+	if *metricsAddr != "" {
+		maddr, merrc, err := opsmetrics.Serve(ctx, *metricsAddr, opsmetrics.Handler(operatorNets, p.Ping))
+		if err != nil {
+			return err
+		}
+
+		go func() {
+			if err := <-merrc; err != nil { //nolint:noinlineerr
+				errc <- fmt.Errorf("metrics listener: %w", err)
+			}
+		}()
+
+		log.Printf("mesh-placement: operator metrics on %s", maddr)
+	}
 
 	go func() {
 		log.Printf("mesh-placement: serving the operator API on %s (mTLS)", *listen)
@@ -153,4 +207,54 @@ func run() error {
 	defer cancel()
 
 	return srv.Shutdown(shutdownCtx)
+}
+
+// apiRequests counts operator API requests by method and status (P13f), on
+// the operator metrics listener.
+var apiRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: "mesh_placement",
+	Name:      "http_requests_total",
+	Help:      "Operator API requests by method and HTTP status code.",
+}, []string{"method", "code"})
+
+type statusRecorder struct {
+	http.ResponseWriter
+
+	code int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.code == 0 {
+		s.code = code
+	}
+
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.code == 0 {
+		s.code = http.StatusOK
+	}
+
+	return s.ResponseWriter.Write(b)
+}
+
+func countRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+
+		if rec.code == 0 {
+			rec.code = http.StatusOK
+		}
+
+		method := r.Method
+		switch method {
+		case http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete, http.MethodHead:
+		default:
+			method = "other"
+		}
+
+		apiRequests.WithLabelValues(method, strconv.Itoa(rec.code)).Inc()
+	})
 }
