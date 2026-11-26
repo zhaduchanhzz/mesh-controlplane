@@ -44,12 +44,16 @@ Xem inventory §1–§2. Symbol mới: `internal/lease/metrics.go` (`managerColl
 | `CGO_ENABLED=1 go test -race -count=1 -p 4 -timeout 30m ./hscontrol/db/` | 0 | ok 166.7 s (SQLite + PostgreSQL) |
 | `go test -tags p05cluster -count=1 -p 4 -v -run TestP13f ./hscontrol/servertest/` | 0 | `TestP13fClusterMetrics` 3.35 s, `TestP13fTailnetLabelsOnlyForServedTailnets` 2.17 s, `TestP13fPolicyReloadFailureRetried` 8.68 s |
 | `go test -tags p05cluster -count=1 -p 4 -run 'TestP08b\|TestClusterEmptyPolicyReloadDenies\|TestP06\|TestP11b\|TestP12c\|TestClusterTwoTailnetsPeersIsolated' ./hscontrol/servertest/` | 0 | ok 213.5 s (tập con liên quan; **không** chạy cả bộ p05cluster theo chỉ dẫn) |
-| `CGO_ENABLED=1 go test -race -count=1 -p 4 -timeout 45m ./hscontrol/state/ ./hscontrol/ ./cmd/... ./internal/... ./hscontrol/db/...` | xem §3.1 | |
+| `CGO_ENABLED=1 go test -race -count=1 -p 4 -timeout 45m ./hscontrol/state/ ./hscontrol/ ./cmd/... ./internal/... ./hscontrol/db/...` (tại cây của `bfd2f5b`) | 0 | 22 gói ok (state 600 s, hscontrol 514 s, db 370 s, placement 181 s, …) |
+| Sau sửa lint (`09371ff`): race lại 8 gói đã đổi, `-tags p05cluster -run TestP13f`, `go test -run "TestP12c|TestP08|TestEndpointInventory|TestClusterNever" ./hscontrol/` | 0 | ok |
+| `nix shell --inputs-from . nixpkgs#golangci-lint -c golangci-lint run --timeout 20m --max-issues-per-linter 0 --max-same-issues 0 ./internal/... ./cmd/mesh-bootstrap/... ./cmd/mesh-placement/... ./hscontrol/ ./hscontrol/db/... ./hscontrol/state/...` | xem §3.1 | lần 1: 35 issue (wsl, zerologlint, …) → sửa ở `09371ff`; lần 2: 1 (wsl) → sửa ở commit cuối |
 | `infra/lab/monitoring/check.sh` | 0 | `promtool check config` SUCCESS; `check rules` 34 rules; `promtool test rules` SUCCESS (22 ca bắn + ca không bắn); `amtool check-config` SUCCESS; compose: plugin không có trên mc-ci → chỉ kiểm YAML; dashboard JSON hợp lệ |
 
-### 3.1 Race toàn gói (điền sau khi chạy)
+### 3.1 Lint
 
-(xem phần cuối file)
+Kết quả lần chạy cuối ghi ở đây (commit cuối của nhánh): LINT_RESULT
+
+Thử nghiệm L10 (bỏ): đổi `createDefaultTailnet` sang PENDING + `{"grants":[]}` → `go test -race ./hscontrol/state/ ./hscontrol/` exit 1: `TestReloadPolicyEmpty`, `TestReloadPolicyRebuildsPeerMapOnChangeOnly`, `TestAPIV1PolicyGet`, `TestAPIv2ACLDefaultWhenUnset`, `TestAPIv2ACLContentNegotiation`, `TestAPIv2ACLSetBodyLimited`, `TestAPIv2ACLIfMatchTsDefault` (và `TestP08bNodeStoreGaugeIsNotLastWriter` do API nhãn, đã sửa: `NodeStore.SetMetricsTailnet` nhận nhãn đã cấp).
 
 ## 4. Negative tenant isolation tests
 

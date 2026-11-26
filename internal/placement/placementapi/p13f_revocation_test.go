@@ -53,6 +53,7 @@ func TestOperatorCertificateRevocation(t *testing.T) {
 	// bot by fingerprint.
 	sum := sha256.Sum256(bot.Certificate[0])
 	serial := fmt.Sprintf("%040x", leafOf(t, al1).SerialNumber)
+
 	pairs := make([]string, 0, len(serial)/2)
 	for i := 0; i < len(serial); i += 2 {
 		pairs = append(pairs, serial[i:i+2])
