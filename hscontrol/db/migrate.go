@@ -84,7 +84,7 @@ func MigrateAndOpenPlatform(cfg *types.Config) (*Platform, error) {
 }
 
 func migrateChain(ctx context.Context, cfg *types.Config, ch chain) (MigrateResult, error) {
-	conn, err := openDB(cfg.Database, cfg.SQLitePath())
+	conn, err := openDB(cfg.Database, cfg.SQLitePath(), false)
 	if err != nil {
 		return MigrateResult{}, err
 	}

@@ -246,7 +246,7 @@ func migrationRows(t *testing.T, conn *gorm.DB) map[string]int {
 func rawConn(t *testing.T, cfg *types.Config) *gorm.DB {
 	t.Helper()
 
-	conn, err := openDB(cfg.Database, cfg.SQLitePath())
+	conn, err := openDB(cfg.Database, cfg.SQLitePath(), false)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		sqlDB, err := conn.DB()
