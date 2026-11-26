@@ -136,10 +136,16 @@ func (m *Manager) deadlineFrom(start time.Time) time.Time {
 }
 
 // Run alternates standby and active until ctx ends. When the lease is taken
-// it calls onAcquire (load and start serving); if that fails the lease is
-// released and the process stays standby. When the lease ends (lost,
-// self-fence deadline, shutdown) it calls onLose after [Manager.Current]
-// already reports false. On shutdown the lease is released.
+// it starts renewing it at once and, meanwhile, calls onAcquire (load and
+// start serving) with a context that ends with the lease; if onAcquire fails
+// the lease is released and the process stays standby. When the lease ends
+// (lost, self-fence deadline, shutdown) [Manager.Current] reports false at
+// once, and onLose is called after onAcquire returned. On shutdown the
+// lease is released.
+//
+// Renewing during onAcquire (P12c B3): the self-fence deadline runs from the
+// acquire, so a load longer than TTL - SafetyMargin used to self-fence the
+// lease it had just taken, every time.
 func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease) error, onLose func(Lease, string)) {
 	for {
 		l, err := m.acquire(ctx)
@@ -147,11 +153,22 @@ func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease
 			return // ctx done
 		}
 
-		err = onAcquire(ctx, l)
+		hctx, stopHold := context.WithCancel(ctx)
+		ended := make(chan string, 1)
+
+		go func() {
+			reason := m.hold(hctx, l)
+			m.clear()
+			ended <- reason
+		}()
+
+		err = onAcquire(hctx, l)
 		if err != nil {
+			stopHold()
+			<-ended
+
 			log.Error().Err(err).Str("cluster", m.cluster).Uint64("lease_epoch", l.Epoch).
 				Msg("cluster lease taken but serving failed to start; releasing")
-			m.clear()
 			onLose(l, "start failed")
 			m.release(l) //nolint:contextcheck // the lease is given back after ctx ended; release bounds itself by the safety margin
 
@@ -162,8 +179,9 @@ func (m *Manager) Run(ctx context.Context, onAcquire func(context.Context, Lease
 			continue
 		}
 
-		reason := m.hold(ctx, l)
-		m.clear()
+		reason := <-ended
+
+		stopHold()
 		log.Warn().Str("cluster", m.cluster).Str("holder", m.holder).Uint64("lease_epoch", l.Epoch).
 			Str("reason", reason).Msg("cluster lease ended: standby")
 		onLose(l, reason)

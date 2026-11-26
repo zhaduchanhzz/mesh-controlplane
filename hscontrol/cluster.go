@@ -1000,12 +1000,16 @@ func (c *Cluster) Ready() bool { return c.ready.Load() && c.leaseHeld() }
 
 // onLeaseAcquired loads and starts every ACTIVE tailnet the cluster owns,
 // under the new lease. A tailnet that fails to load is logged and left out,
-// as in reconcile; failing to list the tailnets gives the lease back.
-func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
+// as in reconcile; failing to list the tailnets gives the lease back. The
+// lease is renewed meanwhile (P12c B3), however long this takes; ctx ends
+// with the lease, and loading stops there.
+func (c *Cluster) onLeaseAcquired(ctx context.Context, l lease.Lease) error {
 	c.leaseMu.Lock()
 	defer c.leaseMu.Unlock()
 
 	// Runtimes of an earlier lease of this process must be gone first.
+	// onLeaseLost already waited (bounded) before the lease was taken
+	// again; this only matters when that wait timed out.
 	c.waitStopping("taking the cluster lease")
 
 	c.platform.SetLease(l.Holder, l.Epoch)
@@ -1028,6 +1032,13 @@ func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
 	}
 
 	for _, tn := range owned {
+		if ctx.Err() != nil {
+			log.Warn().Str("cluster", l.Cluster).Uint64("lease_epoch", l.Epoch).
+				Msg("cluster lease ended while loading tailnets; stopping")
+
+			return nil // onLeaseLost follows and retires what was loaded
+		}
+
 		err := c.load(tn) //nolint:contextcheck // Platform bounds its own lookups (lookupContext); runtimes live on the cluster's serve context, not this callback's
 		if err != nil {
 			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: loading tailnet")
