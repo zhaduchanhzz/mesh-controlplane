@@ -39,7 +39,9 @@ auth() { printf 'Authorization: Bearer %s' "$KEY"; }
 ### 1.2 Errors
 
 Every error has Tailscale's body: `{"message": "...", "status": <code>}`, with
-`"data": [...]` for details (validation errors, failing policy tests).
+`"data": [...]` for details of a refused value (validation errors, failing
+policy tests). A `5xx` answer has a fixed message and never any detail (no
+database, cluster or lease internals); the control plane logs the cause.
 
 | Status | When |
 |---|---|
@@ -48,22 +50,28 @@ Every error has Tailscale's body: `{"message": "...", "status": <code>}`, with
 | 403 | An operation the operator keeps: `PATCH .../settings`, `POST /device/{id}/authorized`, `POST /device/{id}/update-client`, OAuth clients |
 | 404 | Another tailnet's ID or device; a tailnet this cluster does not serve |
 | 412 | `If-Match` does not match the stored policy |
-| 413 | The policy is larger than `tuning.tenant_api.max_policy_bytes` (default 262144 bytes) |
+| 413 | The body is larger than allowed: a policy over `tuning.tenant_api.max_policy_bytes` (default 262144 bytes), a DNS write over 64 KiB. A declared `Content-Length` over the limit is answered before the body is sent or read, and the connection is closed |
 | 422 | The JSON body has the wrong shape for a typed endpoint (e.g. `{"dns":"9.9.9.9"}`) |
 | 429 | A rate limit; the response has `Retry-After: 1` |
+| 500 | An internal error; nothing to fix in the request. Exception: a policy write answered `500` with an `ETag` header and the message "the policy was stored but is not in force yet ..." **was stored** (section 1.4) |
 | 501 | DNS writes on a single-tailnet server (`headscale serve`), where DNS comes from the config file |
-| 503 | The process answering is a standby, or lost the tailnet while writing; nothing was stored. Retry |
+| 503 | `{"message":"temporarily unavailable, retry"}`: the process answering is a standby, or lost the tailnet (moved, or the cluster lease ended) while writing; nothing was stored. Retry |
 
 ### 1.3 Rate limits
 
 - Every request: per key, per tailnet and per process
   (`tuning.tenant_api.key_*`, `tailnet_*`, `global_*`).
-- Policy and DNS writes in addition share one bucket per tailnet:
-  `tuning.tenant_api.config_write_rate` writes per minute (default 30), burst
-  `config_write_burst` (default 10). It counts `POST .../acl`,
-  `POST .../acl/validate` and every DNS write (`POST`/`PATCH`/`PUT` under
-  `.../dns/`), whatever the key, refused or not; a request naming another
-  tailnet is a 404 and spends nothing. Reads do not count.
+- Policy, DNS and device key writes in addition share one bucket per
+  tailnet: `tuning.tenant_api.config_write_rate` writes per minute (default
+  30), burst `config_write_burst` (default 10). It counts `POST .../acl`,
+  `POST .../acl/validate`, every DNS write (`POST`/`PATCH`/`PUT` under
+  `.../dns/`) and `POST /device/{id}/key`, whatever the key, refused or not.
+  For the policy and DNS writes the order is: `{tailnet}` (another tailnet's
+  ID is a 404 and spends nothing), the declared body size (413, spends
+  nothing), then the bucket, all before the body is read. A device key
+  write spends a token once the device is found to be the tailnet's own
+  (another tailnet's device is a 404 and spends nothing). Reads do not
+  count.
 
 ### 1.4 Policy file
 
@@ -76,13 +84,26 @@ Every error has Tailscale's body: `{"message": "...", "status": <code>}`, with
 - **ETag / If-Match**: `If-Match` takes the `ETag` of a `GET` (quoted), `*`
   (any), or `"ts-default"` (only while no policy is stored). A mismatch is
   `412` and nothing changes. Without `If-Match` the write is unconditional.
-  The check is made under the same lock as the write, so two writers holding
-  the same ETag cannot both succeed.
+  The check is made in the write's own database transaction, after the
+  tailnet's ownership lock, so two writers holding the same ETag cannot both
+  succeed, and a policy the operator stored in between is never overwritten
+  (the write is `412`).
 - **Validation before storing**: the policy is parsed with the tenant
   semantics and its `tests` are run against the tailnet's users and devices.
   Any failure is `400` (failing tests: `"message":"test(s) failed"` and one
   `data` entry per failing test) and the stored **and enforced** policy stay
-  as they were.
+  as they were. Validating, storing and putting in force are one step: the
+  policy put in force is the one validated (its tests are not run again).
+- **Refused means not stored**: an answer `4xx` or `503` stores nothing, and
+  nothing refused is ever put in force later.
+- **Stored but not in force yet** (rare: an internal failure after the
+  policy was stored): the answer is `500` with the stored policy's `ETag`
+  and the message "the policy was stored but is not in force yet: the
+  previous policy stays enforced until the stored one is installed; GET
+  returns the stored policy". The write is stored and audited; the previous
+  policy stays enforced until the control plane installs the stored one (it
+  retries within seconds). Do not resend with the old `ETag` (it is a `412`):
+  `GET` the policy.
 - **Empty means deny**: `{}` and `{"grants": []}` are valid and deny all
   traffic in the tailnet, at once (connected devices lose their peers). An
   empty body is `400`. A policy is **never** replaced by allow-all, whatever
@@ -111,12 +132,27 @@ Tailscale's DNS endpoints and JSON shapes (the Go SDK's `DNSResource`):
 Rules (ADR 0008), checked before anything is stored (`400` otherwise, nothing
 changes):
 
-- A nameserver is an IP address or an `https://` DNS-over-HTTPS URL.
+- A nameserver is an IP address or an `https://` DNS-over-HTTPS URL. The
+  address (or the IP address host of a DoH URL) must be one a device can
+  ask: **not** loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`,
+  `fe80::/10`), unspecified (`0.0.0.0`, `::`) or with a zone (`%eth0`).
+  Private addresses (`10.0.0.0/8`, `192.168.0.0/16`, `fd00::/8`, ...) are
+  fine, e.g. a DNS server behind a subnet router. Host names in DoH URLs are
+  not resolved by the control plane.
 - A split DNS domain or search path is a DNS name. A split DNS domain must be
   **outside the cluster's MagicDNS domain** (no `*.<cluster base domain>`,
-  including your own `<slug>.<cluster base domain>`).
+  including your own `<slug>.<cluster base domain>`) and must not contain it
+  (no parent of `<cluster base domain>`, such as its last labels).
+- A search path is outside the cluster's MagicDNS domain, or at or below your
+  own `<slug>.<cluster base domain>` (never the cluster's domain itself or
+  another tailnet's).
 - Limits (operator settings `tuning.tenant_dns.*`, defaults): 64 nameservers
-  (global and split together), 64 search domains, 1000 extra records, 256 KiB.
+  (global and split together), 64 search domains, 64 split DNS domains
+  (`max_split_domains`; a domain mapped to `[]` counts), 1000 extra records,
+  256 KiB.
+- Settings stored before a rule or a lower limit applied keep working; the
+  next write must follow the current rules and limits (for the whole
+  settings, not only the part written).
 - The base domain (`<slug>.<cluster base domain>`), certificates and extra
   records are not settable through these endpoints.
 - Domains are stored lower case without a trailing dot. Defaults (nothing
@@ -137,11 +173,19 @@ A stored change is sent to the tailnet's connected devices at once.
 | `POST /device/{id}/tags` | `{"tags": ["tag:router"]}` (tags the policy defines) | `200 {}` |
 | `POST /tailnet/{tailnet}/keys` | `{"capabilities": {"devices": {"create": {"reusable": true, "ephemeral": false, "preauthorized": true, "tags": ["tag:router"]}}}, "expirySeconds": 86400}` | `{"id": "...", "key": "hskey-auth-...", ...}` (the key is shown once) |
 
+`keyExpiryDisabled: true` also brings back a device whose key **has already
+expired**, as on Tailscale: its stored expiry is kept but no longer counts.
+Setting it back to `false` makes the stored expiry count again (an expired
+device is then expired at once). It is a configuration write (section 1.3)
+and is audited.
+
 ### 1.7 Audit
 
-Every stored policy or DNS write is logged by the control plane with the
-tailnet ID, the operation, the API key's ID, the new revision and the SHA-256
-of what was stored; never the content.
+Every stored policy, DNS or device key write is logged by the control plane
+with the tailnet ID, the operation, the API key's ID, the new revision (policy
+and DNS) and the SHA-256 of what was stored; never the content. A device key
+write also names the device and the value set; a policy stored but not in
+force yet (section 1.4) is marked `not_in_force`.
 
 ## 2. The Tailscale guide, step by step
 
@@ -280,8 +324,8 @@ above).
 | Credentials | API keys, OAuth clients | Platform-issued API keys bound to one tailnet; no OAuth clients or tokens; a tenant cannot create API keys |
 | `{tailnet}` | Tailnet name or `-` | `-` or the key's tailnet ID; anything else `404` |
 | Empty policy | Allow-all default | **Deny all**: `{}`, `{"grants":[]}` and "no policy stored" all deny; never allow-all |
-| Policy limits | Tailscale's | `max_policy_bytes` (default 256 KiB, `413`) and the per-tailnet write bucket (default 30/min, burst 10, `429`) |
-| DNS | Console page; API `dns/*`, `dns/configuration` | The `dns/*` endpoints of section 1.5 (`dns/configuration` is not provided); `preferences` also carries `overrideLocalDNS`; split DNS domains cannot be inside the cluster's MagicDNS domain; extra records and the base domain are operator settings |
+| Policy limits | Tailscale's | `max_policy_bytes` (default 256 KiB, `413`) and the per-tailnet write bucket shared with DNS and device key writes (default 30/min, burst 10, `429`) |
+| DNS | Console page; API `dns/*`, `dns/configuration` | The `dns/*` endpoints of section 1.5 (`dns/configuration` is not provided); `preferences` also carries `overrideLocalDNS`; split DNS domains and search paths cannot be in the cluster's MagicDNS domain (search paths: except your own); nameservers cannot be loopback, link-local or unspecified addresses; extra records and the base domain are operator settings |
 | Tailnet settings | `PATCH /tailnet/-/settings` | Operator only (`403`) |
 | Device approval, client updates | API | Operator only (`403`) |
 | Malformed JSON body | `400` | `422` for a body of the wrong shape on a typed endpoint (Huma's schema check); `400` for refused values |
