@@ -24,7 +24,11 @@ func TestFenceRefusalsCountedByReason(t *testing.T) {
 
 	t.Run("owner", func(t *testing.T) {
 		db := openDB(t)
-		setOwner(t, db, idA, testCluster, testEpoch+1)
+
+		err := db.Model(&tailnetRow{}).Where("id = ?", idA).Update("owner_epoch", int64(testEpoch+1)).Error
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		before := refusals("owner")
 
@@ -134,7 +138,7 @@ func TestFenceCallbacksDeclareTheirOrder(t *testing.T) {
 				return -1
 			}
 
-			if !(pos("gorm:begin_transaction") < pos(op.scope) && pos(op.scope) < pos(fence) && pos(fence) < pos(op.gorm)) {
+			if pos("gorm:begin_transaction") >= pos(op.scope) || pos(op.scope) >= pos(fence) || pos(fence) >= pos(op.gorm) {
 				t.Errorf("%s chain %v: want begin_transaction < %s < %s < %s", op.proc, order, op.scope, fence, op.gorm)
 			}
 		})

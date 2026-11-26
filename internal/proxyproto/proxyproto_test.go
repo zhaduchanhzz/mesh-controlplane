@@ -38,7 +38,7 @@ func header(cmd, famProto byte, src netip.AddrPort, tlv []byte) []byte {
 
 	h := append([]byte{}, sigV2...)
 	h = append(h, 0x20|cmd, famProto)
-	h = binary.BigEndian.AppendUint16(h, uint16(len(block)))
+	h = binary.BigEndian.AppendUint16(h, uint16(len(block))) //nolint:gosec // test blocks are a few dozen bytes
 
 	return append(h, block...)
 }
@@ -66,8 +66,9 @@ func serve(t *testing.T, trusted []netip.Prefix, timeout time.Duration, send fun
 
 	l, err := NewListener(inner, Config{Trusted: trusted, HeaderTimeout: timeout, Refused: func(r string) {
 		mu.Lock()
+		defer mu.Unlock()
+
 		refused = append(refused, r)
-		mu.Unlock()
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -86,9 +87,12 @@ func serve(t *testing.T, trusted []netip.Prefix, timeout time.Duration, send fun
 		}
 		defer c.Close()
 
-		remote := c.RemoteAddr().String()
+		r := result{remote: c.RemoteAddr().String()}
+
 		b, err := io.ReadAll(io.LimitReader(c, 64))
-		out <- result{remote: remote, payload: string(b), err: err}
+		r.payload, r.err = string(b), err
+
+		out <- r
 	}()
 
 	conn, err := new(net.Dialer).DialContext(t.Context(), "tcp", inner.Addr().String())
@@ -159,7 +163,8 @@ func TestTrustedLocalAndUnspecKeepPeer(t *testing.T) {
 				_, _ = c.Write([]byte("ok"))
 			})
 
-			if ap, err := netip.ParseAddrPort(r.remote); err != nil || !ap.Addr().IsLoopback() || r.payload != "ok" || len(refused) != 0 {
+			ap, err := netip.ParseAddrPort(r.remote)
+			if err != nil || !ap.Addr().IsLoopback() || r.payload != "ok" || len(refused) != 0 {
 				t.Fatalf("remote %q payload %q refused %v", r.remote, r.payload, refused)
 			}
 		})
@@ -215,7 +220,7 @@ func TestTrustedPeerSilentTimesOut(t *testing.T) {
 	start := time.Now()
 
 	r, refused := serve(t, loopback, 200*time.Millisecond, func(c net.Conn) {
-		time.Sleep(600 * time.Millisecond)
+		<-time.After(600 * time.Millisecond)
 	})
 
 	if r.err == nil || len(refused) != 1 || refused[0] != ReasonTimeout {
@@ -246,7 +251,8 @@ func TestUntrustedPeerCannotSendHeader(t *testing.T) {
 					r.remote, r.payload, r.err, refused, ReasonUntrustedHeader)
 			}
 
-			if ap, err := netip.ParseAddrPort(r.remote); err != nil || !ap.Addr().IsLoopback() {
+			ap, err := netip.ParseAddrPort(r.remote)
+			if err != nil || !ap.Addr().IsLoopback() {
 				t.Fatalf("remote %q: the spoofed address leaked", r.remote)
 			}
 		})
@@ -271,7 +277,8 @@ func TestUntrustedPeerCannotSendHeader(t *testing.T) {
 				t.Fatalf("payload %q err %v refused %v", r.payload, r.err, refused)
 			}
 
-			if ap, err := netip.ParseAddrPort(r.remote); err != nil || !ap.Addr().IsLoopback() {
+			ap, err := netip.ParseAddrPort(r.remote)
+			if err != nil || !ap.Addr().IsLoopback() {
 				t.Fatalf("remote %q, want the TCP peer", r.remote)
 			}
 		})
@@ -291,7 +298,8 @@ func TestNewListenerValidation(t *testing.T) {
 		"v4 /0": {netip.MustParsePrefix("0.0.0.0/0")},
 		"v6 /0": {netip.MustParsePrefix("::/0")},
 	} {
-		if _, err := NewListener(inner, Config{Trusted: tr}); err == nil {
+		_, err := NewListener(inner, Config{Trusted: tr})
+		if err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}

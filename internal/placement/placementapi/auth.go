@@ -133,7 +133,8 @@ func (a *Authorizer) Wrap(next http.Handler) http.Handler {
 			// Every chain the handshake verified: a revoked intermediate in
 			// any of them refuses the request.
 			for _, chain := range r.TLS.VerifiedChains {
-				if err = a.revoked.Check(chain); err != nil {
+				err = a.revoked.Check(chain)
+				if err != nil {
 					break
 				}
 			}

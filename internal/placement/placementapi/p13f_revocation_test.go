@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,15 +53,12 @@ func TestOperatorCertificateRevocation(t *testing.T) {
 	// bot by fingerprint.
 	sum := sha256.Sum256(bot.Certificate[0])
 	serial := fmt.Sprintf("%040x", leafOf(t, al1).SerialNumber)
-	withColons := ""
-
+	pairs := make([]string, 0, len(serial)/2)
 	for i := 0; i < len(serial); i += 2 {
-		if i > 0 {
-			withColons += ":"
-		}
-
-		withColons += serial[i : i+2]
+		pairs = append(pairs, serial[i:i+2])
 	}
+
+	withColons := strings.Join(pairs, ":")
 
 	require.NoError(t, os.WriteFile(path, []byte(
 		"serial:"+withColons+"   # alice's lost laptop\n"+
@@ -114,7 +112,7 @@ func TestLoadRevocationsRefusesBadFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 
 		_, err := LoadRevocations(path)
-		assert.ErrorIs(t, err, ErrRevocationUnavailable, name)
+		require.ErrorIs(t, err, ErrRevocationUnavailable, name)
 	}
 
 	_, err := LoadRevocations(filepath.Join(dir, "missing"))

@@ -186,7 +186,7 @@ func (c *Conn) init() {
 		}
 
 		c.err = fmt.Errorf("%w: %s", errRefusedConn, reason)
-		_ = c.Conn.Close()
+		_ = c.Close()
 
 		if c.cfg.Refused != nil {
 			c.cfg.Refused(reason)

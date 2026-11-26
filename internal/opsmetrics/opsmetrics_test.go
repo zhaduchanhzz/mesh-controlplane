@@ -85,7 +85,8 @@ func TestOperatorsOnly(t *testing.T) {
 
 func TestParseOperatorCIDRsRefusesTailscaleAndZero(t *testing.T) {
 	for _, bad := range []string{"0.0.0.0/0", "::/0", "100.64.0.0/10", "100.100.0.0/16", "100.0.0.0/8", "fd7a:115c:a1e0::/64", "fd00::/8", "not-a-cidr"} {
-		if _, err := ParseOperatorCIDRs(bad); err == nil {
+		_, err := ParseOperatorCIDRs(bad)
+		if err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}

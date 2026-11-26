@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
@@ -553,13 +554,14 @@ func (c *Cluster) reloadFailed(rt *tenantRuntime, kind string, rev uint64, faile
 	tailnetReloadFailures.WithLabelValues(tenantlabel.Label(rt.id.String()), kind).Inc()
 	pending.Store(true)
 
-	ev := log.Debug()
+	level := zerolog.DebugLevel
+
 	if *failedRev != rev {
 		*failedRev = rev
-		ev = log.Error()
+		level = zerolog.ErrorLevel
 	}
 
-	ev.Err(err).Str("tailnet", rt.id.String()).Str("kind", kind).Uint64("revision", rev).
+	log.WithLevel(level).Err(err).Str("tailnet", rt.id.String()).Str("kind", kind).Uint64("revision", rev).
 		Msg("reconcile: new tailnet settings rejected, keeping the previous ones; retrying every reconcile")
 }
 

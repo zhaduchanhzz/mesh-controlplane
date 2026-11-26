@@ -68,6 +68,7 @@ func TestLeaseMetrics(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
+
 	for {
 		n, _ := metricstest.Value(t, "headscale_cluster_lease_renew_duration_seconds", c)
 		if n >= 1 {
@@ -78,7 +79,7 @@ func TestLeaseMetrics(t *testing.T) {
 			t.Fatal("no renewal recorded in headscale_cluster_lease_renew_duration_seconds")
 		}
 
-		time.Sleep(50 * time.Millisecond)
+		<-time.After(50 * time.Millisecond)
 	}
 
 	// Another holder takes the row over: the next renewal finds the lease

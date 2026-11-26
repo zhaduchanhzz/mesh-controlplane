@@ -33,7 +33,7 @@ func init() {
 
 // Register exports db's statistics under pool=name until unregister is
 // called (before or after db is closed).
-func Register(name string, db *sql.DB) (unregister func()) {
+func Register(name string, db *sql.DB) func() {
 	p := &pool{name: name, db: db}
 
 	pools.mu.Lock()
@@ -98,14 +98,22 @@ func (collector) Collect(ch chan<- prometheus.Metric) {
 	pools.mu.Unlock()
 
 	for name, s := range sum {
-		ch <- prometheus.MustNewConstMetric(maxOpenDesc, prometheus.GaugeValue, float64(s.MaxOpenConnections), name)
-		ch <- prometheus.MustNewConstMetric(openDesc, prometheus.GaugeValue, float64(s.OpenConnections), name)
-		ch <- prometheus.MustNewConstMetric(inUseDesc, prometheus.GaugeValue, float64(s.InUse), name)
-		ch <- prometheus.MustNewConstMetric(idleDesc, prometheus.GaugeValue, float64(s.Idle), name)
-		ch <- prometheus.MustNewConstMetric(waitCount, prometheus.CounterValue, float64(s.WaitCount), name)
-		ch <- prometheus.MustNewConstMetric(waitDuration, prometheus.CounterValue, s.WaitDuration.Seconds(), name)
-		ch <- prometheus.MustNewConstMetric(idleClosed, prometheus.CounterValue, float64(s.MaxIdleClosed), name)
-		ch <- prometheus.MustNewConstMetric(idleTimeout, prometheus.CounterValue, float64(s.MaxIdleTimeClosed), name)
-		ch <- prometheus.MustNewConstMetric(lifetime, prometheus.CounterValue, float64(s.MaxLifetimeClosed), name)
+		for _, m := range []struct {
+			d *prometheus.Desc
+			t prometheus.ValueType
+			v float64
+		}{
+			{maxOpenDesc, prometheus.GaugeValue, float64(s.MaxOpenConnections)},
+			{openDesc, prometheus.GaugeValue, float64(s.OpenConnections)},
+			{inUseDesc, prometheus.GaugeValue, float64(s.InUse)},
+			{idleDesc, prometheus.GaugeValue, float64(s.Idle)},
+			{waitCount, prometheus.CounterValue, float64(s.WaitCount)},
+			{waitDuration, prometheus.CounterValue, s.WaitDuration.Seconds()},
+			{idleClosed, prometheus.CounterValue, float64(s.MaxIdleClosed)},
+			{idleTimeout, prometheus.CounterValue, float64(s.MaxIdleTimeClosed)},
+			{lifetime, prometheus.CounterValue, float64(s.MaxLifetimeClosed)},
+		} {
+			ch <- prometheus.MustNewConstMetric(m.d, m.t, m.v, name)
+		}
 	}
 }

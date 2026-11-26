@@ -88,8 +88,10 @@ func TestReleaseRefCountedAndDeletesSeries(t *testing.T) {
 		mu.Unlock()
 	})
 
-	if Acquire("a") != "a" || Acquire("a") != "a" {
-		t.Fatal("two runtimes of a do not share its label")
+	for range 2 {
+		if Acquire("a") != "a" {
+			t.Fatal("two runtimes of a do not share its label")
+		}
 	}
 
 	vec.WithLabelValues("a", "x").Inc()
