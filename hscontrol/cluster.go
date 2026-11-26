@@ -997,13 +997,15 @@ func (c *Cluster) HealthHandler(w http.ResponseWriter, req *http.Request) {
 // ReadyHandler (P11b) answers 200 only on the process that holds the cluster
 // lease and has loaded its tailnets; standby answers 503. The front door (L4
 // forwarder health check) sends clients to the ready process; the standby
-// refuses /ts2021 anyway.
+// refuses /ts2021 anyway. The body names no lease epoch (P12c L2): the
+// listener is public, and the epoch tells how often and when the cluster
+// failed over; operators read it from cluster_leases or the logs.
 func (c *Cluster) ReadyHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/health+json")
 	w.Header().Set("Cache-Control", "no-store")
 
-	if l, ok := c.lease.Current(); ok && c.ready.Load() {
-		_, _ = fmt.Fprintf(w, `{"status":"ready","lease_epoch":%d}`, l.Epoch)
+	if c.Ready() {
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
 
 		return
 	}
