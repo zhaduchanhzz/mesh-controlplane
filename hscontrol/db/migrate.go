@@ -84,7 +84,10 @@ func MigrateAndOpenPlatform(cfg *types.Config) (*Platform, error) {
 }
 
 func migrateChain(ctx context.Context, cfg *types.Config, ch chain) (MigrateResult, error) {
-	conn, err := openDB(cfg.Database, cfg.SQLitePath(), false)
+	// The migrate step writes: with a host list (P13b, ADR 0011 §D) it must
+	// land on the primary, as OpenPlatform does, not on a replica that
+	// happens to be listed first.
+	conn, err := openDB(writableDatabase(cfg.Database), cfg.SQLitePath(), false)
 	if err != nil {
 		return MigrateResult{}, err
 	}
