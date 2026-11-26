@@ -1204,7 +1204,7 @@ in
         type = lib.types.int;
         default = 200;
         description = ''
-          Requests per second for the whole process, counted before the API key is looked up.
+          Requests per second for the whole process, counted after the key's and the tailnet's buckets admitted the request.
         '';
         example = 500;
       };
@@ -1247,6 +1247,22 @@ in
           The bucket size of `tuning.tenant_api.key_rate`.
         '';
         example = 50;
+      };
+      preauth_rate = lib.mkOption {
+        type = lib.types.int;
+        default = 50;
+        description = ''
+          Requests per second for the whole process whose API key has to be looked up in the database: keys this process has not authenticated in the last minute, garbage included.
+        '';
+        example = 100;
+      };
+      preauth_burst = lib.mkOption {
+        type = lib.types.int;
+        default = 100;
+        description = ''
+          The bucket size of `tuning.tenant_api.preauth_rate`.
+        '';
+        example = 200;
       };
     };
     tailnet_metric_label_limit = lib.mkOption {

@@ -104,6 +104,7 @@ func Default() types.Config {
 				GlobalRate: 200, GlobalBurst: 400,
 				TailnetRate: 20, TailnetBurst: 40,
 				KeyRate: 10, KeyBurst: 20,
+				PreauthRate: 50, PreauthBurst: 100,
 			},
 			TailnetMetricLabelLimit: 2000,
 		},

@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/frontdoor"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
@@ -133,6 +134,26 @@ type Cluster struct {
 
 	// api is the public /api/v2 (P08b): rate limits by key and tailnet.
 	api *clusterAPI
+
+	// healthPing replaces the database ping of /health in tests.
+	healthPing func(context.Context) error
+	// health is the last database ping of /health (P12c L1).
+	health healthCache
+
+	// loadHook, when set (tests, SetLoadHook), runs between building a
+	// tailnet's runtime and starting it. Under mu.
+	loadHook func(tailnet.ID)
+}
+
+// runLoadHook runs the test hook of the load-to-start window (P12c B5).
+func (c *Cluster) runLoadHook(id tailnet.ID) {
+	c.mu.RLock()
+	hook := c.loadHook
+	c.mu.RUnlock()
+
+	if hook != nil {
+		hook(id)
+	}
 }
 
 // tenantRuntime is one loaded tailnet: its runtime, the ownership epoch it
@@ -212,6 +233,10 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 		return nil, fmt.Errorf("cluster lease: %w", err)
 	}
 
+	// P12c B2: a fenced transaction left open (process paused or cut off
+	// before COMMIT) ends within half the self-fence deadline.
+	tenantscope.SetTransactionBound(lc.TTL - lc.SafetyMargin)
+
 	// ADR 0009: the secret of this cluster's external DERP servers (/verify).
 	var verifySecret []byte
 	if cfg.DERP.VerifySecretPath != "" {
@@ -272,18 +297,52 @@ func validateClusterConfig(cfg *types.Config) error {
 	return nil
 }
 
-// load builds the runtime of tn (not started) and registers it.
-func (c *Cluster) load(tn types.Tailnet) error {
+// serveTailnet loads tn's runtime, starts it, and only then makes it
+// routable (P12c B5): a request routed to a runtime that is built but not
+// started (no map batcher yet) panicked, and a long poll left its node
+// online. Until it is routable, its requests are refused like those of a
+// tailnet this process does not serve. A runtime that fails to start is
+// stopped, never routed. Callers hold leaseMu.
+func (c *Cluster) serveTailnet(tn types.Tailnet, why string) {
+	rt, err := c.load(tn)
+	if err != nil {
+		log.Error().Err(err).Str("tailnet", tn.ID).Msg(why + ": loading tailnet")
+
+		return
+	}
+
+	c.runLoadHook(rt.id)
+
+	err = c.start(rt)
+	if err != nil {
+		log.Error().Err(err).Str("tailnet", tn.ID).Msg(why + ": starting tailnet")
+
+		rt.h.retired.Store(true)
+		c.stopping.Go(func() { c.stopRuntime(rt) })
+
+		return
+	}
+
+	c.mu.Lock()
+	c.runtimes[rt.id] = rt
+	c.order = append(c.order, rt.id)
+	c.mu.Unlock()
+
+	log.Info().Str("tailnet", rt.id.String()).Str("slug", rt.slug).Uint64("epoch", rt.epoch).Msg("serving tailnet runtime")
+}
+
+// load builds the runtime of tn: not started, not routable.
+func (c *Cluster) load(tn types.Tailnet) (*tenantRuntime, error) {
 	id, err := tailnet.ParseID(tn.ID)
 	if err != nil {
-		return fmt.Errorf("tailnet %q: %w", tn.ID, err)
+		return nil, fmt.Errorf("tailnet %q: %w", tn.ID, err)
 	}
 
 	// TenantDB re-reads the row: owner, ACTIVE and the epoch the handle is
 	// fenced on come from the same read.
 	tdb, err := c.platform.TenantDB(id)
 	if err != nil {
-		return fmt.Errorf("tailnet %s: %w", id, err)
+		return nil, fmt.Errorf("tailnet %s: %w", id, err)
 	}
 
 	// The runtime's own config: the tailnet's DNS under <slug>.<base>, a
@@ -293,7 +352,7 @@ func (c *Cluster) load(tn types.Tailnet) error {
 	if err != nil {
 		_ = tdb.Close()
 
-		return fmt.Errorf("tailnet %s: %w", id, err)
+		return nil, fmt.Errorf("tailnet %s: %w", id, err)
 	}
 
 	rcfg := c.cfg.ForTailnet(tdb.Tailnet().Slug, dns)
@@ -304,7 +363,7 @@ func (c *Cluster) load(tn types.Tailnet) error {
 	if err != nil {
 		_ = tdb.Close()
 
-		return fmt.Errorf("tailnet %s runtime: %w", id, err)
+		return nil, fmt.Errorf("tailnet %s runtime: %w", id, err)
 	}
 
 	// The device quota is enforced in the node insert transaction (P10
@@ -333,14 +392,9 @@ func (c *Cluster) load(tn types.Tailnet) error {
 		configRev: tdb.Tailnet().ConfigRevision,
 	}
 
-	c.mu.Lock()
-	c.runtimes[id] = rt
-	c.order = append(c.order, id)
-	c.mu.Unlock()
-
 	log.Info().Str("tailnet", id.String()).Str("slug", tn.Slug).Uint64("epoch", rt.epoch).Msg("loaded tailnet runtime")
 
-	return nil
+	return rt, nil
 }
 
 // start runs rt's background work under the serve context.
@@ -470,23 +524,7 @@ func (c *Cluster) reconcile() {
 			continue
 		}
 
-		err := c.load(tn)
-		if err != nil {
-			log.Error().Err(err).Str("tailnet", tn.ID).Msg("reconcile: loading tailnet")
-
-			continue
-		}
-
-		id, _ := tailnet.ParseID(tn.ID)
-
-		c.mu.RLock()
-		rt := c.runtimes[id]
-		c.mu.RUnlock()
-
-		if err := c.start(rt); err != nil { //nolint:noinlineerr
-			log.Error().Err(err).Str("tailnet", tn.ID).Msg("reconcile: starting tailnet")
-			c.retire(rt, "failed to start")
-		}
+		c.serveTailnet(tn, "reconcile")
 	}
 
 	c.applyMoveNotices()
@@ -945,11 +983,52 @@ func (c *Cluster) PingResponseHandler(w http.ResponseWriter, req *http.Request) 
 	http.Error(w, "unknown or expired ping", http.StatusNotFound)
 }
 
-// HealthHandler reports whether the shared database answers.
+// healthCacheTTL is how long /health reuses a database ping (P12c L1).
+const healthCacheTTL = time.Second
+
+// healthPingTimeout bounds one database ping of /health.
+const healthPingTimeout = 3 * time.Second
+
+// healthCache is the last database ping of /health. Requests within
+// healthCacheTTL of it reuse its result; a request that finds it stale
+// pings, and concurrent ones wait for that ping instead of sending theirs.
+type healthCache struct {
+	mu  sync.Mutex
+	at  time.Time
+	err error
+}
+
+func (hc *healthCache) check(ctx context.Context, ping func(context.Context) error) error {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+
+	if !hc.at.IsZero() && time.Since(hc.at) < healthCacheTTL {
+		return hc.err
+	}
+
+	// The ping outlives a client that hangs up: its result serves the next
+	// requests.
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), healthPingTimeout)
+	defer cancel()
+
+	hc.err = ping(pctx)
+	hc.at = time.Now()
+
+	return hc.err
+}
+
+// HealthHandler reports whether the shared database answers. The listener
+// is public and unauthenticated, so the database is pinged at most once per
+// healthCacheTTL however many requests arrive (P12c L1).
 func (c *Cluster) HealthHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/health+json")
 
-	err := c.platform.Ping(req.Context())
+	ping := c.healthPing
+	if ping == nil {
+		ping = c.platform.Ping
+	}
+
+	err := c.health.check(req.Context(), ping)
 	if err != nil {
 		log.Error().Err(err).Msg("health check failed")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -964,13 +1043,15 @@ func (c *Cluster) HealthHandler(w http.ResponseWriter, req *http.Request) {
 // ReadyHandler (P11b) answers 200 only on the process that holds the cluster
 // lease and has loaded its tailnets; standby answers 503. The front door (L4
 // forwarder health check) sends clients to the ready process; the standby
-// refuses /ts2021 anyway.
+// refuses /ts2021 anyway. The body names no lease epoch (P12c L2): the
+// listener is public, and the epoch tells how often and when the cluster
+// failed over; operators read it from cluster_leases or the logs.
 func (c *Cluster) ReadyHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/health+json")
 	w.Header().Set("Cache-Control", "no-store")
 
-	if l, ok := c.lease.Current(); ok && c.ready.Load() {
-		_, _ = fmt.Fprintf(w, `{"status":"ready","lease_epoch":%d}`, l.Epoch)
+	if c.Ready() {
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
 
 		return
 	}
@@ -995,12 +1076,16 @@ func (c *Cluster) Ready() bool { return c.ready.Load() && c.leaseHeld() }
 
 // onLeaseAcquired loads and starts every ACTIVE tailnet the cluster owns,
 // under the new lease. A tailnet that fails to load is logged and left out,
-// as in reconcile; failing to list the tailnets gives the lease back.
-func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
+// as in reconcile; failing to list the tailnets gives the lease back. The
+// lease is renewed meanwhile (P12c B3), however long this takes; ctx ends
+// with the lease, and loading stops there.
+func (c *Cluster) onLeaseAcquired(ctx context.Context, l lease.Lease) error {
 	c.leaseMu.Lock()
 	defer c.leaseMu.Unlock()
 
 	// Runtimes of an earlier lease of this process must be gone first.
+	// onLeaseLost already waited (bounded) before the lease was taken
+	// again; this only matters when that wait timed out.
 	c.waitStopping("taking the cluster lease")
 
 	c.platform.SetLease(l.Holder, l.Epoch)
@@ -1023,23 +1108,14 @@ func (c *Cluster) onLeaseAcquired(_ context.Context, l lease.Lease) error {
 	}
 
 	for _, tn := range owned {
-		err := c.load(tn) //nolint:contextcheck // Platform bounds its own lookups (lookupContext); runtimes live on the cluster's serve context, not this callback's
-		if err != nil {
-			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: loading tailnet")
+		if ctx.Err() != nil {
+			log.Warn().Str("cluster", l.Cluster).Uint64("lease_epoch", l.Epoch).
+				Msg("cluster lease ended while loading tailnets; stopping")
 
-			continue
+			return nil // onLeaseLost follows and retires what was loaded
 		}
 
-		id, _ := tailnet.ParseID(tn.ID)
-
-		c.mu.RLock()
-		rt := c.runtimes[id]
-		c.mu.RUnlock()
-
-		if err := c.start(rt); err != nil { //nolint:noinlineerr,contextcheck // runtimes live on the cluster's serve context, not this callback's
-			log.Error().Err(err).Str("tailnet", tn.ID).Msg("cluster lease: starting tailnet")
-			c.retire(rt, "failed to start") //nolint:contextcheck // runtimes live on the cluster's serve context, not this callback's
-		}
+		c.serveTailnet(tn, "cluster lease") //nolint:contextcheck // Platform bounds its own lookups (lookupContext); runtimes live on the cluster's serve context, not this callback's
 	}
 
 	c.ready.Store(true)

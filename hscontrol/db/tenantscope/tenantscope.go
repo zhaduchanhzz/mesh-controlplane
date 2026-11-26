@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
@@ -515,20 +516,42 @@ func checkFence(db *gorm.DB) {
 }
 
 // checkLease (P11b): a cluster process writes only while the cluster lease it
-// claims is still its own and live by the database clock. The row is read
-// FOR SHARE on PostgreSQL, so a standby's takeover (an UPDATE of that row)
-// waits for this transaction, and every write after the takeover sees the
-// new holder. Lock order: tailnet advisory lock, tailnets row, cluster_leases
-// row.
+// claims is still its own and live by the database clock.
+//
+// On PostgreSQL (P12c B1) the transaction first takes the cluster's shared
+// advisory lock (lease.PostgresSharedLock) and keeps it until it ends; the
+// row is then read without a row lock, by a later statement, whose snapshot
+// and clock come after the lock is held. A
+// takeover (lease.Store.Acquire) holds that lock exclusive from before its
+// check until it commits, so it waits for this transaction, and a write that
+// reaches this point after the takeover reads the new holder. The row is no
+// longer read FOR SHARE: share lockers do not queue, so a write load starved
+// the active process's renewal (an UPDATE of that row) past its self-fence
+// deadline. Renewals change neither holder nor epoch and need no lock. Lock
+// order: tailnet advisory lock, tailnets row, cluster advisory lock.
+//
+// On PostgreSQL it also bounds the rest of the transaction (P12c B2, see
+// SetTransactionBound), lease or not.
 func checkLease(db *gorm.DB, f tailnet.Fence) {
 	holder, epoch, ok := f.Lease()
+
+	pg := db.Name() == "postgres"
 	if !ok {
+		if pg {
+			boundTransaction(db, "")
+		}
+
 		return // operator write (CLI): no lease to claim
 	}
 
 	q := `SELECT holder, epoch, expires_at > ` + lease.SQLiteNow + ` FROM cluster_leases WHERE cluster_id = ?`
-	if db.Name() == "postgres" {
-		q = `SELECT holder, epoch, expires_at > ` + lease.PostgresNow + ` FROM cluster_leases WHERE cluster_id = $1 FOR SHARE`
+
+	if pg {
+		if !boundTransaction(db, f.Cluster()) {
+			return
+		}
+
+		q = `SELECT holder, epoch, expires_at > ` + lease.PostgresNow + ` FROM cluster_leases WHERE cluster_id = $1`
 	}
 
 	var (
@@ -548,4 +571,61 @@ func checkLease(db *gorm.DB, f tailnet.Fence) {
 		_ = db.AddError(fmt.Errorf("%w: cluster %s lease is held by %q at epoch %d (live=%t), writer holds %q at epoch %d",
 			ErrFenced, f.Cluster(), gotHolder, gotEpoch, live, holder, epoch))
 	}
+}
+
+// transactionBound is SetTransactionBound's d in nanoseconds; 0 means the
+// self-fence deadline of lease.DefaultConfig.
+var transactionBound atomic.Int64
+
+// SetTransactionBound sets the self-fence deadline d of the cluster lease
+// (TTL minus safety margin) this process runs under (P12c B2). Every fenced
+// transaction on PostgreSQL then gets, from its first lease check on and
+// transaction-local only (set_config(..., true), as SET LOCAL; ADR 0006):
+// idle_in_transaction_session_timeout, statement_timeout and lock_timeout of
+// d/2. A process paused or cut off between a fenced write and its COMMIT
+// thus loses its transaction, and with it the locks a takeover waits for,
+// d/2 after it went idle: before its lease can expire when d/2 <= TTL -
+// renew interval (defaults: 4 s <= 7 s), so the takeover is not delayed.
+func SetTransactionBound(d time.Duration) {
+	transactionBound.Store(int64(d))
+}
+
+func boundTimeout() string {
+	d := time.Duration(transactionBound.Load())
+	if d <= 0 {
+		d = lease.DefaultConfig.TTL - lease.DefaultConfig.SafetyMargin
+	}
+
+	return fmt.Sprintf("%dms", max((d/2).Milliseconds(), 1))
+}
+
+// The transaction bound, as one statement; boundAndLockLease also takes the
+// cluster's shared lease lock ($1) in the same round trip. The settings run
+// in a sub-select, which is not pulled up (volatile functions), so the new
+// lock_timeout already bounds that lock wait.
+const (
+	boundOnly = `SELECT set_config('idle_in_transaction_session_timeout', $1, true), ` +
+		`set_config('statement_timeout', $1, true), set_config('lock_timeout', $1, true)`
+	boundAndLockLease = lease.PostgresSharedLock + ` FROM (SELECT ` +
+		`set_config('idle_in_transaction_session_timeout', $2, true), ` +
+		`set_config('statement_timeout', $2, true), set_config('lock_timeout', $2, true)) AS bound`
+)
+
+// boundTransaction applies the transaction bound and, with a cluster, takes
+// that cluster's shared lease lock. It reports whether the write may go on.
+func boundTransaction(db *gorm.DB, cluster string) bool {
+	var err error
+	if cluster == "" {
+		_, err = db.Statement.ConnPool.ExecContext(db.Statement.Context, boundOnly, boundTimeout())
+	} else {
+		_, err = db.Statement.ConnPool.ExecContext(db.Statement.Context, boundAndLockLease, cluster, boundTimeout())
+	}
+
+	if err != nil {
+		_ = db.AddError(fmt.Errorf("%w: bounding the transaction (cluster lease %q): %w", ErrFenced, cluster, err))
+
+		return false
+	}
+
+	return true
 }

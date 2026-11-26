@@ -234,6 +234,11 @@ func NewRawNoiseSession(tb testing.TB, serverURL string, serverKey key.MachinePu
 	return s
 }
 
+// Close closes the session's connection, as a client going away does.
+func (s *RawNoiseSession) Close() error {
+	return s.client.Close()
+}
+
 // Dials is how many TCP connections (Noise sessions) the session has opened.
 func (s *RawNoiseSession) Dials() int {
 	s.mu.Lock()

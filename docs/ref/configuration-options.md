@@ -3424,6 +3424,8 @@ Holds performance settings that rarely need changing.
         tailnet_burst: 40
         key_rate: 10
         key_burst: 20
+        preauth_rate: 50
+        preauth_burst: 100
       tailnet_metric_label_limit: 2000
     ```
 
@@ -4010,6 +4012,8 @@ Limits the request rate of the public /api/v2 of a cluster, where each request i
         tailnet_burst: 40
         key_rate: 10
         key_burst: 20
+        preauth_rate: 50
+        preauth_burst: 100
     ```
 
 #### `tuning.tenant_api.global_rate` { #tuning.tenant_api.global_rate data-toc-label="global_rate" }
@@ -4018,7 +4022,7 @@ Limits the request rate of the public /api/v2 of a cluster, where each request i
 - **Default:** `200`
 - **Env:** `HEADSCALE_TUNING_TENANT_API_GLOBAL_RATE`
 
-Requests per second for the whole process, counted before the API key is looked up.
+Requests per second for the whole process, counted after the key's and the tailnet's buckets admitted the request.
 
 === "YAML"
 
@@ -4178,6 +4182,62 @@ The bucket size of [`tuning.tenant_api.key_rate`](#tuning.tenant_api.key_rate).
 
     ```nix
     services.headscale.settings.tuning.tenant_api.key_burst = 50;
+    ```
+
+#### `tuning.tenant_api.preauth_rate` { #tuning.tenant_api.preauth_rate data-toc-label="preauth_rate" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `50`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_PREAUTH_RATE`
+
+Requests per second for the whole process whose API key has to be looked up in the database: keys this process has not authenticated in the last minute, garbage included.
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        preauth_rate: 100
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_PREAUTH_RATE=100
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.preauth_rate = 100;
+    ```
+
+#### `tuning.tenant_api.preauth_burst` { #tuning.tenant_api.preauth_burst data-toc-label="preauth_burst" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `100`
+- **Env:** `HEADSCALE_TUNING_TENANT_API_PREAUTH_BURST`
+
+The bucket size of [`tuning.tenant_api.preauth_rate`](#tuning.tenant_api.preauth_rate).
+
+=== "YAML"
+
+    ```yaml
+    tuning:
+      tenant_api:
+        preauth_burst: 200
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_TUNING_TENANT_API_PREAUTH_BURST=200
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.tuning.tenant_api.preauth_burst = 200;
     ```
 
 ### `tuning.tailnet_metric_label_limit` { #tuning.tailnet_metric_label_limit data-toc-label="tailnet_metric_label_limit" }

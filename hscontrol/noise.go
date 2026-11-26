@@ -90,6 +90,9 @@ type noiseServer struct {
 	// single-tailnet process.
 	router sessionRouter
 	bindMu sync.Mutex
+	// closed is set when the session's connection ended (unbind); a
+	// session is never bound after that. Under bindMu.
+	closed bool
 
 	conn       *controlbase.Conn
 	machineKey key.MachinePublic
@@ -227,11 +230,12 @@ func serveNoiseSession(
 		r.Post("/c2n-response", ns.C2NResponseHandler)
 	})
 
-	// Serve returns once the listener is drained; the connection outlives it.
+	// Serve returns as soon as its one-connection listener is drained (the
+	// second Accept is io.EOF), long before the connection ends: the
+	// session is forgotten when the server closes the connection instead
+	// (P12c B6).
 	_ = newNoiseHTTPServer(r, types.HTTPTimeout).
-		Serve(netutil.NewOneConnListener(noiseConn, nil))
-
-	ns.unbind()
+		Serve(netutil.NewOneConnListener(&closeHookConn{Conn: noiseConn, onClose: ns.unbind}, nil))
 }
 
 // newNoiseHTTPServer builds the server for one Noise tunnel. The hijack drops
