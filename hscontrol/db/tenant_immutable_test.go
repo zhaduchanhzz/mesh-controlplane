@@ -2,13 +2,16 @@ package db
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db/tenantscope"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
+	"gorm.io/gorm"
 	"tailscale.com/types/key"
 )
 
@@ -69,4 +72,82 @@ func TestTailnetIDImmutableInDatabase(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTenantIDImmutableDDLInSchemaFiles: a fresh database gets the triggers
+// from the schema files (InitSchema records every migration), so they must
+// carry the migration's DDL verbatim; it is the last migration of v0.1.
+func TestTenantIDImmutableDDLInSchemaFiles(t *testing.T) {
+	norm := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
+	assert.Contains(t, norm(dbSchema), TenantIDImmutableSQLiteDDL)
+	assert.Contains(t, norm(dbSchemaPostgres), TenantIDImmutablePostgresDDL)
+	assert.Equal(t, TenantIDImmutableMigrationID, LatestMigrationID(), "appended at the end of the chain")
+
+	for _, table := range tenantscope.TenantTables() {
+		trigger := "trg_" + table + "_tailnet_id_immutable"
+		assert.Contains(t, TenantIDImmutableSQLiteDDL, trigger+" BEFORE UPDATE OF tailnet_id ON "+table+"\n")
+		assert.Contains(t, TenantIDImmutablePostgresDDL, trigger+" BEFORE UPDATE OF tailnet_id ON "+table+"\n")
+	}
+}
+
+// TestTenantIDImmutableMigrationUpgrades: a database from before the
+// migration (rewound with its own Rollback) keeps its data when the
+// migration runs, ends up with the triggers active, and (SQLite) matches
+// schema.sql (OpenPlatform validates it with squibble).
+func TestTenantIDImmutableMigrationUpgrades(t *testing.T) {
+	for _, bk := range backends(t) {
+		t.Run(bk.name, func(t *testing.T) {
+			cfg := bk.cfg(t, "", "")
+			tt := seedTwoTenants(t, cfg)
+			rows := tenantRows(t, tt)
+
+			counts := func(conn *gorm.DB) map[string]int64 {
+				out := map[string]int64{}
+
+				for table := range rows {
+					var n int64
+					require.NoError(t, conn.Raw(`SELECT count(*) FROM `+table).Scan(&n).Error)
+					out[table] = n
+				}
+
+				return out
+			}
+
+			before := counts(tt.p.db)
+
+			// Rewind to the previous migration: no trigger, no record.
+			require.NoError(t, tenantIDImmutableMigration().Rollback(tt.p.db))
+			require.NoError(t, tt.p.db.Exec(`DELETE FROM migrations WHERE id = ?`, TenantIDImmutableMigrationID).Error)
+			assert.Zero(t, immutableTriggers(t, tt.p.db), "rolled back: no trigger left")
+			require.NoError(t, tt.p.Close())
+
+			p := openPlatform(t, cfg)
+
+			var ids []string
+			require.NoError(t, p.db.Table("migrations").Pluck("id", &ids).Error)
+			assert.Contains(t, ids, TenantIDImmutableMigrationID)
+			assert.Equal(t, len(rows), immutableTriggers(t, p.db), "one trigger per tenant table")
+			assert.Equal(t, before, counts(p.db), "data kept")
+
+			for table, where := range rows {
+				err := p.db.Exec(`UPDATE `+table+` SET tailnet_id = ? WHERE `+where, tt.idB.String()).Error
+				require.Error(t, err, "migrated trigger on %s is active", table)
+			}
+		})
+	}
+}
+
+// immutableTriggers counts the A8 triggers present in the database.
+func immutableTriggers(t *testing.T, conn *gorm.DB) int {
+	t.Helper()
+
+	q := `SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg\_%\_tailnet\_id\_immutable' ESCAPE '\'`
+	if conn.Name() == dialectPostgres {
+		q = `SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname LIKE 'trg\_%\_tailnet\_id\_immutable' ESCAPE '\'`
+	}
+
+	var n int
+	require.NoError(t, conn.Raw(q).Scan(&n).Error)
+
+	return n
 }
