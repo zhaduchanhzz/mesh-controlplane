@@ -1,0 +1,138 @@
+# Patroni config for the lab PostgreSQL HA cluster (P13a, ADR 0011).
+# Rendered by setup-pg.sh (@NAME@, @IP@); no secrets here: every password
+# comes from /etc/mc-pg/patroni.env (PATRONI_SUPERUSER_PASSWORD,
+# PATRONI_REPLICATION_PASSWORD, PATRONI_REWIND_PASSWORD,
+# PATRONI_RESTAPI_PASSWORD and the matching *_USERNAME), root 0600, loaded by
+# systemd (EnvironmentFile) and by /usr/local/sbin/mc-patronictl.
+#
+# bootstrap.dcs is applied only when the cluster is first initialised; later
+# changes go through `mc-patronictl edit-config` (stored in etcd).
+scope: mc-pg
+namespace: /service/
+name: @NAME@
+
+log:
+  level: INFO
+
+restapi:
+  # 8008 is reachable from localhost, the other PG node and mc-db only
+  # (nftables, setup-pg.sh). Unsafe endpoints (switchover, restart, config)
+  # need the REST API user/password.
+  listen: 0.0.0.0:8008
+  connect_address: @IP@:8008
+
+ctl:
+  insecure: false
+
+etcd3:
+  hosts:
+    - 192.168.1.247:2379
+    - 192.168.1.248:2379
+    - 192.168.1.243:2379
+  protocol: http
+
+bootstrap:
+  dcs:
+    # ADR 0011 §A: lab timings so F05 can be measured (Patroni defaults 30/10/10).
+    ttl: 20
+    loop_wait: 5
+    retry_timeout: 5
+    # ADR 0011 §B (D2): synchronous, not strict. Only the member in /sync is
+    # promoted automatically; with the replica gone the primary keeps writing
+    # alone, and a forced promote afterwards needs the ADR 0012 fence.
+    synchronous_mode: true
+    synchronous_mode_strict: false
+    synchronous_node_count: 1
+    maximum_lag_on_failover: 1048576
+    failsafe_mode: false
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        # Cluster-wide parameters (stored in the DCS).
+        max_connections: 200
+        superuser_reserved_connections: 5
+        wal_level: replica
+        hot_standby: "on"
+        wal_log_hints: "on"
+        synchronous_commit: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_keep_size: 1GB
+        max_wal_size: 2GB
+        min_wal_size: 256MB
+        checkpoint_completion_target: 0.9
+        # Prepared for pgBackRest (P13c): archive_mode needs a restart, so it
+        # is on from the start; archive_command is a reload-only change.
+        # Until P13c sets `pgbackrest --stanza=mc-pg archive-push %p`, WAL
+        # segments are acknowledged and discarded (NO archive, NO PITR yet).
+        archive_mode: "on"
+        archive_command: /bin/true
+        archive_timeout: 300
+        password_encryption: scram-sha-256
+        shared_buffers: 1GB
+        effective_cache_size: 2560MB
+        work_mem: 8MB
+        maintenance_work_mem: 256MB
+        track_io_timing: "on"
+        log_min_duration_statement: 1000
+        log_checkpoints: "on"
+        log_lock_waits: "on"
+        log_line_prefix: "%m [%p] %q%u@%d "
+
+  # initdb options of the first node only (replicas are cloned).
+  initdb:
+    - encoding: UTF8
+    - locale: C.UTF-8
+    - data-checksums
+    - auth-local: peer
+    - auth-host: scram-sha-256
+
+postgresql:
+  listen: "@IP@,127.0.0.1:5432"
+  connect_address: "@IP@:5432"
+  data_dir: /var/lib/postgresql/16/mc-pg
+  bin_dir: /usr/lib/postgresql/16/bin
+  pgpass: /var/lib/postgresql/.pgpass_patroni
+  authentication:
+    # usernames and passwords: environment (patroni.env)
+    superuser: {}
+    replication: {}
+    rewind: {}
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+  # Same on both nodes; nftables on the VM narrows tcp/5432 further.
+  pg_hba:
+    - local   all          all                            peer
+    - host    all          postgres     127.0.0.1/32      scram-sha-256
+    - host    all          postgres     192.168.1.247/32  scram-sha-256
+    - host    all          postgres     192.168.1.248/32  scram-sha-256
+    - host    replication  replicator   127.0.0.1/32      scram-sha-256
+    - host    replication  replicator   192.168.1.247/32  scram-sha-256
+    - host    replication  replicator   192.168.1.248/32  scram-sha-256
+    - host    all          rewinder     192.168.1.247/32  scram-sha-256
+    - host    all          rewinder     192.168.1.248/32  scram-sha-256
+    # Application role: localhost (HAProxy/PgBouncer of P13b), the two PG
+    # nodes (PgBouncer -> HAProxy -> primary), mc-ci (operator, tests) and
+    # the cluster VMs (.241 mc-cp, .242 mc-bench, .244 mc-c2, .245 mc-c1b,
+    # .246 mc-c2b; they reach 5432 only if nftables allows it).
+    - host    all          headscale    127.0.0.1/32      scram-sha-256
+    - host    all          headscale    192.168.1.240/31  scram-sha-256
+    - host    all          headscale    192.168.1.242/32  scram-sha-256
+    - host    all          headscale    192.168.1.244/31  scram-sha-256
+    - host    all          headscale    192.168.1.246/31  scram-sha-256
+    - host    all          headscale    192.168.1.248/32  scram-sha-256
+
+# ADR 0011 §A: a primary that loses its leader key is hard-stopped by the
+# kernel instead of accepting writes (softdog, setup-pg.sh). Watchdog timeout
+# = ttl - safety_margin = 15 s.
+watchdog:
+  mode: required
+  device: /dev/watchdog
+  safety_margin: 5
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false
