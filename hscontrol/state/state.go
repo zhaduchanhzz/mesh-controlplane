@@ -252,9 +252,14 @@ type State struct {
 	// step (P12d), so settings are installed in the order they are stored.
 	tenantDNSMu sync.Mutex
 
-	// revisions, when set, learns the tailnet revision a policy or DNS
-	// write stored and installed (see ObserveRevisions).
-	revisions atomic.Pointer[RevisionObservers]
+	// policyRev and configRev are the tailnets.policy_revision and
+	// config_revision of the policy and DNS settings this runtime installed
+	// (cluster mode): set at load, by a write through this State once it
+	// stored and installed, and by the reconcile loop's reloads. Written
+	// under policyMu and tenantDNSMu respectively, so a reload compares and
+	// installs in the same step as a write.
+	policyRev atomic.Uint64
+	configRev atomic.Uint64
 
 	// policyInstallHook, when set, runs after a policy write was stored
 	// and before it is installed; an error is an install failure (tests).
@@ -2118,8 +2123,8 @@ func (s *State) UpdateTenantPolicyIf(pol []byte, match func(stored string) bool)
 		return stored, rev, nil, err
 	}
 
-	if o := s.revisions.Load(); o != nil && o.Policy != nil && rev > 0 {
-		o.Policy(rev)
+	if rev > 0 {
+		s.policyRev.Store(rev)
 	}
 
 	var changes []change.Change
@@ -2160,21 +2165,113 @@ func (s *State) UpdateTenantDNS(
 	}
 
 	s.cfg.ReplaceTenantDNS("", d)
-
-	if o := s.revisions.Load(); o != nil && o.Config != nil {
-		o.Config(rev)
-	}
+	s.configRev.Store(rev)
 
 	return d, rev, change.DNSConfig(), nil
 }
 
-// RevisionObservers learn the tailnets.policy_revision and config_revision
-// a write through this State stored and already installed, so whoever
-// reloads on a revision change (the cluster reconcile loop) does not
-// install it a second time.
-type RevisionObservers struct {
-	Policy func(rev uint64)
-	Config func(rev uint64)
+// SetInstalledRevisions records the tailnets.policy_revision and
+// config_revision of what this runtime loaded (cluster mode). The policy
+// and DNS settings must have been read after the revisions, so they are at
+// least that new.
+func (s *State) SetInstalledRevisions(policy, config uint64) {
+	s.policyMu.Lock()
+	s.policyRev.Store(policy)
+	s.policyMu.Unlock()
+
+	s.tenantDNSMu.Lock()
+	s.configRev.Store(config)
+	s.tenantDNSMu.Unlock()
+}
+
+// InstalledRevisions returns the tailnets.policy_revision and
+// config_revision of the policy and DNS settings this runtime has
+// installed, or last tried to (cluster mode).
+func (s *State) InstalledRevisions() (policy, config uint64) {
+	return s.policyRev.Load(), s.configRev.Load()
+}
+
+// ReloadTenantPolicy installs the stored policy of this runtime's tailnet
+// when its policy_revision is not the one installed (cluster mode, the
+// reconcile loop). The revision is read first and under policyMu, the lock
+// every policy write through this State holds from store to install: a
+// revision a write stored and installed is never installed again, and
+// what is read is at least that revision. The revision is recorded even
+// when the policy does not load: the previous one stays enforced (never
+// allow-all) and the error is reported once. changes is empty when the
+// stored policy is the one in force. reloaded reports whether a new
+// revision was found.
+func (s *State) ReloadTenantPolicy() (changes []change.Change, rev uint64, reloaded bool, err error) {
+	s.policyMu.Lock()
+	defer s.policyMu.Unlock()
+
+	rev, _, err = s.db.TailnetRevisions()
+	if err != nil {
+		return nil, 0, false, err
+	}
+
+	if rev == s.policyRev.Load() {
+		return nil, rev, false, nil
+	}
+
+	s.policyRev.Store(rev)
+
+	changed, derpChanged, err := s.reloadPolicyLocked()
+	if err != nil {
+		return nil, rev, true, err
+	}
+
+	if changed {
+		changes = append(changes, change.PolicyChange())
+	}
+
+	if derpChanged {
+		changes = append(changes, change.DERPMap())
+	}
+
+	return changes, rev, true, nil
+}
+
+// ReloadTenantDNS installs the stored DNS settings of this runtime's
+// tailnet, read through its own scoped handle, when its config_revision is
+// not the one installed (cluster mode, the reconcile loop). As
+// [State.ReloadTenantPolicy], under tenantDNSMu: the lock tenant DNS writes
+// hold from store to install, so settings read here are never older than
+// settings a write installed, and a revision a write installed is not
+// installed again. check validates the settings read (nil: the defaults);
+// an error keeps the previous settings, and the revision is recorded so
+// it is reported once. installed reports whether the settings were
+// replaced; the caller then sends [change.DNSConfig].
+func (s *State) ReloadTenantDNS(check func(*types.TenantDNS) error) (rev uint64, installed bool, err error) {
+	s.tenantDNSMu.Lock()
+	defer s.tenantDNSMu.Unlock()
+
+	_, rev, err = s.db.TailnetRevisions()
+	if err != nil {
+		return 0, false, err
+	}
+
+	if rev == s.configRev.Load() {
+		return rev, false, nil
+	}
+
+	s.configRev.Store(rev)
+
+	d, err := s.db.TenantDNS()
+	if err != nil {
+		return rev, false, err
+	}
+
+	if check != nil {
+		err = check(d)
+		if err != nil {
+			return rev, false, err
+		}
+	}
+
+	s.cfg.ReplaceTenantDNS("", d)
+
+	return rev, true, nil
 }
 
 // SetPolicyInstallHookForTest makes fn run after a policy write was stored
@@ -2188,11 +2285,6 @@ func (s *State) SetPolicyInstallHookForTest(fn func() error) {
 	}
 
 	s.policyInstallHook.Store(&fn)
-}
-
-// ObserveRevisions installs o (nil removes it).
-func (s *State) ObserveRevisions(o *RevisionObservers) {
-	s.revisions.Store(o)
 }
 
 // GetNodePrimaryRoutes returns the primary routes for a node.

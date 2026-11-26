@@ -91,6 +91,24 @@ func (hsdb *HSDatabase) Fenced() bool {
 	return ok
 }
 
+// TailnetRevisions returns the policy_revision and config_revision of the
+// tailnet the handle is scoped to (its own tailnets row).
+func (hsdb *HSDatabase) TailnetRevisions() (policy, config uint64, err error) {
+	s, err := tailnet.FromContext(hsdb.DB.Statement.Context)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var tn types.Tailnet
+
+	err = hsdb.DB.Where("id = ?", s.ID().String()).Take(&tn).Error
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading the revisions of tailnet %s: %w", s.ID(), err)
+	}
+
+	return tn.PolicyRevision, tn.ConfigRevision, nil
+}
+
 // ErrPolicyPrecondition is returned by a conditional policy write when the
 // stored policy fails the caller's check (If-Match).
 var ErrPolicyPrecondition = errors.New("policy precondition failed")

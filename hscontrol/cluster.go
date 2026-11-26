@@ -164,14 +164,11 @@ type tenantRuntime struct {
 	epoch uint64
 	h     *Headscale
 
-	// policyRev is the tailnets.policy_revision the runtime's policy matches:
-	// set at load, by the reconcile loop, and by a policy write through the
-	// runtime's own state (P12d, the tenant API), which stores and installs
-	// in one step.
-	policyRev atomic.Uint64
-	// configRev is the tailnets.config_revision the runtime's DNS matches
-	// (ADR 0008); same rules as policyRev.
-	configRev atomic.Uint64
+	// The tailnets.policy_revision and config_revision the runtime's policy
+	// and DNS settings match are kept by its state (InstalledRevisions):
+	// set at load, by a write through the runtime (P12d, the tenant API),
+	// and by the reconcile loop, each under the lock that makes storing (or
+	// reading) and installing one step.
 
 	cancel context.CancelFunc // stops its scheduled tasks
 	stop   func()             // from startRuntime
@@ -389,16 +386,11 @@ func (c *Cluster) load(tn types.Tailnet) (*tenantRuntime, error) {
 	h.leaseGate = c.leaseHeld
 
 	rt := &tenantRuntime{id: id, slug: tn.Slug, epoch: tdb.Tailnet().OwnerEpoch, h: h}
-	rt.policyRev.Store(tdb.Tailnet().PolicyRevision)
-	rt.configRev.Store(tdb.Tailnet().ConfigRevision)
 
-	// A write through the runtime's state (P12d) installed what it stored:
-	// the reconcile loop need not install it again. A revision recorded
-	// out of order only costs one more reload.
-	h.state.ObserveRevisions(&state.RevisionObservers{
-		Policy: rt.policyRev.Store,
-		Config: rt.configRev.Store,
-	})
+	// The revisions TenantDB read; the policy and DNS settings were read
+	// after them, so they are at least that new (a newer one only costs
+	// one more reload).
+	h.state.SetInstalledRevisions(tdb.Tailnet().PolicyRevision, tdb.Tailnet().ConfigRevision)
 
 	log.Info().Str("tailnet", id.String()).Str("slug", tn.Slug).Uint64("epoch", rt.epoch).Msg("loaded tailnet runtime")
 
@@ -472,11 +464,16 @@ func (c *Cluster) reconcile() {
 		case !ok || tn.OwnerEpoch != rt.epoch:
 			stale = append(stale, rt)
 		default:
-			if tn.PolicyRevision != rt.policyRev.Load() {
+			// A hint only: the runtime's state compares again, and reads
+			// and installs, under the lock its writes hold (P12d review 1,
+			// 8), so a revision a tenant write installed meanwhile is not
+			// installed again, and older settings never replace newer ones.
+			policyRev, configRev := rt.h.state.InstalledRevisions()
+			if tn.PolicyRevision != policyRev {
 				policyChanged = append(policyChanged, rt)
 			}
 
-			if tn.ConfigRevision != rt.configRev.Load() {
+			if tn.ConfigRevision != configRev {
 				configChanged = append(configChanged, rt)
 			}
 		}
@@ -485,13 +482,18 @@ func (c *Cluster) reconcile() {
 	c.mu.RUnlock()
 
 	for _, rt := range configChanged {
-		rev := want[rt.id.String()].ConfigRevision
-		// As for policy: recorded even when the new settings do not load,
-		// so the runtime keeps serving its previous DNS and the error is
-		// logged once.
-		rt.configRev.Store(rev)
+		// The settings are read through the runtime's own scoped handle.
+		// As for policy: the revision is recorded even when the new
+		// settings do not load, so the runtime keeps serving its previous
+		// DNS and the error is logged once.
+		rev, installed, err := rt.h.state.ReloadTenantDNS(func(d *types.TenantDNS) error {
+			err := c.checkTailnetDNS(rt.id, rt.slug, d)
+			if err == nil {
+				runReconcileDNSHook(rt.id)
+			}
 
-		dns, err := c.tailnetDNS(rt.id, rt.slug)
+			return err
+		})
 		if err != nil {
 			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("config_revision", rev).
 				Msg("reconcile: new DNS settings rejected, keeping the previous ones")
@@ -499,21 +501,19 @@ func (c *Cluster) reconcile() {
 			continue
 		}
 
-		runReconcileDNSHook(rt.id)
+		if !installed {
+			continue
+		}
 
-		rt.h.cfg.ReplaceTenantDNS(rt.slug, dns)
 		rt.h.Change(change.DNSConfig())
 		log.Info().Str("tailnet", rt.id.String()).Uint64("config_revision", rev).Msg("reconcile: DNS settings reloaded")
 	}
 
 	for _, rt := range policyChanged {
-		rev := want[rt.id.String()].PolicyRevision
 		// The revision is recorded even when the new policy does not load:
 		// the runtime keeps enforcing the previous one (never allow-all) and
 		// the error is logged once, not on every tick.
-		rt.policyRev.Store(rev)
-
-		changes, err := rt.h.state.ReloadPolicy()
+		changes, rev, reloaded, err := rt.h.state.ReloadTenantPolicy()
 		if err != nil {
 			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).
 				Msg("reconcile: new policy rejected, keeping the previous one")
@@ -521,6 +521,11 @@ func (c *Cluster) reconcile() {
 			continue
 		}
 
+		if !reloaded {
+			continue
+		}
+
+		// Nothing is sent when the stored policy is the one in force.
 		rt.h.Change(changes...)
 		log.Info().Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).Msg("reconcile: policy reloaded")
 	}
@@ -591,13 +596,24 @@ func (c *Cluster) tailnetDNS(id tailnet.ID, slug string) (*types.TenantDNS, erro
 		return nil, err
 	}
 
-	if dns == nil {
-		return nil, nil //nolint:nilnil // the defaults
+	err = c.checkTailnetDNS(id, slug, dns)
+	if err != nil {
+		return nil, err
 	}
 
-	err = dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, unlimitedTenantDNS)
+	return dns, nil
+}
+
+// checkTailnetDNS checks stored DNS settings dns of tailnet id (nil: the
+// defaults) as [Cluster.tailnetDNS] does.
+func (c *Cluster) checkTailnetDNS(id tailnet.ID, slug string, dns *types.TenantDNS) error {
+	if dns == nil {
+		return nil
+	}
+
+	err := dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, unlimitedTenantDNS)
 	if err != nil {
-		return nil, fmt.Errorf("stored DNS settings: %w", err)
+		return fmt.Errorf("stored DNS settings: %w", err)
 	}
 
 	err = dns.Validate(slug, c.cfg.DNSConfig.BaseDomain, c.cfg.Tuning.TenantDNS)
@@ -606,7 +622,7 @@ func (c *Cluster) tailnetDNS(id tailnet.ID, slug string) (*types.TenantDNS, erro
 			"they are served, the next write must fit")
 	}
 
-	return dns, nil
+	return nil
 }
 
 // unlimitedTenantDNS checks form only.
