@@ -200,9 +200,10 @@ health_text() { field "$1" "' | '.join(d.get('Health') or [])"; }
 # snap NAME...: the status of many clients in one ssh round trip (one per
 # client takes ~0.7 s from the laptop: 24 clients would outlast LEAD).
 # $TMPD/snap: "<name> <state> <ip> <notice True|False> <peers>", "- - -" for
-# a client that did not answer. sget NAME COLUMN (2 state, 3 ip, 4 notice, 5 peers).
+# a client that did not answer (status --json has no trailing newline, so each
+# marker starts on a fresh line). sget NAME COLUMN (2 state, 3 ip, 4 notice, 5 peers).
 snap() {
-  ci_ "for c in $*; do echo \"@@ \$c\"; timeout 10 docker exec \$c tailscale status --json 2>/dev/null; done" 2>/dev/null \
+  ci_ "for c in $*; do printf '\n@@ %s\n' \$c; timeout 10 docker exec \$c tailscale status --json 2>/dev/null; done" 2>/dev/null \
     | py 'import json,re
 parts = re.split(r"^@@ (\S+)\s*$", sys.stdin.read(), flags=re.M)
 for name, body in zip(parts[1::2], parts[2::2]):
@@ -211,8 +212,7 @@ for name, body in zip(parts[1::2], parts[2::2]):
         ips = (d.get("Self") or {}).get("TailscaleIPs") or ["-"]
         print(name, d.get("BackendState") or "-", ips[0], any(sys.argv[1] in h for h in (d.get("Health") or [])), len(d.get("Peer") or {}))
     except Exception as e:
-        sys.stderr.write("snap %s: %s (%d bytes)
-" % (name, type(e).__name__, len(body)))
+        print("snap %s: %s %s (%d bytes)" % (name, type(e).__name__, e, len(body)), file=sys.stderr)
         print(name, "-", "-", "-", "-")' "$NOTICE" 2>>"$ART_DIR/logs/snap.err" | strip_cr >"$TMPD/snap"
 }
 sget() { awk -v n="$1" -v c="$2" '$1 == n { print $c }' "$TMPD/snap"; }
