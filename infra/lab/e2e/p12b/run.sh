@@ -35,10 +35,13 @@
 #   M06 audit: one owner per tailnet, reconcile report empty, no move open
 #   M07 artifacts hold no secret
 #
-# Optional client VMs (VM_TARGETS="mesh@IP mesh@IP"; default none, needs the
-# owner's go-ahead): a second tailscaled per VM (own state, socket, tun, port;
-# the VM's own tailscaled is not touched), enrolled in m1 and re-bootstrapped
-# from this host with RB_LOCAL_BIN (a mesh-rebootstrap for this host).
+# Optional client VMs (VM_TARGETS="mesh@10.77.20.11 mesh@10.77.30.11"; Q7's
+# "+ 2 client VMs"; default none): a second tailscaled per VM from
+# /opt/tailscale/<round 1 version> as transient unit p12b-ts (own state,
+# socket, tun p12bts0, port 41642, netfilter off, DNS untouched), enrolled in
+# m1; re-bootstrapped by mesh-rebootstrap running on the VM itself (unit
+# p12b-rb). Reached through mc-ci (ProxyCommand). Never while another run
+# (N1) uses the client VMs.
 #
 # Usage: BIN=<headscale> PLBIN=<mesh-placement> BOOT_BIN=<mesh-bootstrap> RB_BIN=<mesh-rebootstrap> run.sh
 #        (linux/amd64). N=24 PAR=8 LEAD=60 IMAGES="tailscale/tailscale:v1.104.7 tailscale/tailscale:v1.84.3"
@@ -81,7 +84,6 @@ N=${N:-24}
 PAR=${PAR:-8}
 LEAD=${LEAD:-60}
 VM_TARGETS=${VM_TARGETS:-}
-RB_LOCAL_BIN=${RB_LOCAL_BIN:-}
 BIN=${BIN:?BIN= linux/amd64 cluster binary}
 PLBIN=${PLBIN:?PLBIN= linux/amd64 mesh-placement binary}
 BOOT_BIN=${BOOT_BIN:?BOOT_BIN= linux/amd64 mesh-bootstrap binary}
@@ -112,11 +114,14 @@ CIDIR=/dev/shm/p12b
 # Transient units on mc-ci (jobs.sh): p12b-ping-<slug>, p12b-rb-<slug>.
 CIRUN="sudo systemd-run --quiet --collect --uid=mesh --gid=mesh -p SupplementaryGroups=docker -p RuntimeMaxSec=1200"
 VMUNIT=p12b-ts
-VMSOCK=/run/p12b-ts/tailscaled.sock
+VMDIR=/run/p12b-ts
+VMSTATE=/var/lib/p12b-ts
+VMSOCK=$VMDIR/tailscaled.sock
+VMVER=${IMAGES%% *}; VMVER=${VMVER##*:v} # VMs join round 1: the first image's version
 CLI1="sudo -u headscale timeout 60 $HS -c $CFG cluster --cluster-id $C1_ID"
 CLI2="sudo -u headscale timeout 60 $HS -c $CFG cluster --cluster-id $C2_ID"
 
-[ -z "$VM_TARGETS" ] || [ -n "$RB_LOCAL_BIN" ] || { echo "VM_TARGETS needs RB_LOCAL_BIN" >&2; exit 2; }
+for t in $VM_TARGETS; do [[ $t =~ ^mesh@10\.77\.[0-9]+\.[0-9]+$ ]] || { echo "VM_TARGETS: mesh@10.77.x.y only ($t)" >&2; exit 2; }; done
 [[ $N =~ ^[0-9]+$ ]] && [ "$N" -ge 2 ] && [[ $PAR =~ ^[0-9]+$ ]] && [ "$PAR" -ge 1 ] || { echo "bad N/PAR" >&2; exit 2; }
 # M02 needs ~15 s for its API checks between the last notice poll and scheduled_at.
 [[ $LEAD =~ ^[0-9]+$ ]] && [ "$LEAD" -ge 45 ] || { echo "LEAD must be >= 45 s" >&2; exit 2; }
@@ -279,18 +284,46 @@ enroll() {
 }
 
 # -------------------------------------------------------------- VM clients ---
-vm_() { ssh_ "$1" "${@:2}"; }
-vm_start() { # TARGET SLUG URL
-  vm_ "$1" "set -e; sudo systemctl reset-failed $VMUNIT 2>/dev/null || true
-    sudo install -d -m 0700 /var/lib/p12b-ts /run/p12b-ts
-    sudo systemd-run --quiet --unit=$VMUNIT /usr/sbin/tailscaled --state=/var/lib/p12b-ts/tailscaled.state \
-      --socket=$VMSOCK --tun=p12bts0 --port=41642
-    for i in \$(seq 1 60); do sudo tailscale --socket=$VMSOCK status >/dev/null 2>&1; [ \$? -le 1 ] && break; sleep 0.5; done" || return 1
-  vm_ "$1" "sudo install -m 0600 /dev/stdin /run/p12b-ts/key" <"$TMPD/key-$2" || return 1
-  vm_ "$1" "sudo timeout 60 tailscale --socket=$VMSOCK up --login-server=$3 --auth-key=file:/run/p12b-ts/key --hostname=\$(hostname -s)-p12b" 2>&1 | redact >>"$ART_DIR/logs/vm-$1.cli.log"
+# Client VMs (10.77.x) are reached through mc-ci (route 10.77.0.0/16); -J
+# does not pass -i to the jump, hence ProxyCommand. Their tailscale builds
+# live in /opt/tailscale/<version> (no /usr/sbin/tailscaled on them).
+PX="ProxyCommand=ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 $CI_SSH nc -q0 %h %p"
+vm_() { local t=$1; shift; ssh "${SSHO[@]}" -o StrictHostKeyChecking=accept-new -o "$PX" "$t" "$@"; }
+VMTS="sudo timeout 30 /opt/tailscale/$VMVER/tailscale --socket=$VMSOCK"
+# vm_start TARGET SLUG URL: a second tailscaled (own state, socket, tun, port;
+# --netfilter-mode=off and --accept-dns=false leave the VM's firewall and DNS
+# alone), enrolled at URL; mesh-rebootstrap and jobs.sh copied for M04.
+vm_start() {
+  vm_ "$1" "test -x /opt/tailscale/$VMVER/tailscaled || exit 3
+    sudo systemctl stop p12b-rb $VMUNIT 2>/dev/null; sudo systemctl reset-failed p12b-rb $VMUNIT 2>/dev/null
+    sudo rm -rf $VMSTATE $VMDIR && sudo install -d -m 0700 $VMSTATE $VMDIR || exit 1
+    sudo systemd-run --quiet --unit=$VMUNIT /opt/tailscale/$VMVER/tailscaled --state=$VMSTATE/tailscaled.state \
+      --socket=$VMSOCK --tun=p12bts0 --port=41642 || exit 1
+    for i in \$(seq 1 60); do $VMTS status >/dev/null 2>&1; [ \$? -le 1 ] && exit 0; sleep 0.5; done; exit 1" || return 1
+  vm_ "$1" "sudo install -m 0600 /dev/stdin $VMDIR/key" <"$TMPD/key-$2" || return 1
+  vm_ "$1" "sudo install -m 0700 /dev/stdin $VMDIR/mesh-rebootstrap" <"$RB_BIN" || return 1
+  tr -d '\r' <"$HERE/jobs.sh" | vm_ "$1" "sudo install -m 0700 /dev/stdin $VMDIR/jobs.sh && bash -n $VMDIR/jobs.sh" || return 1
+  vm_ "$1" "sudo timeout 60 /opt/tailscale/$VMVER/tailscale --socket=$VMSOCK up --login-server=$3 --auth-key=file:$VMDIR/key \
+    --hostname=\$(hostname -s)-p12b --accept-dns=false --netfilter-mode=off" 2>&1 | redact >>"$ART_DIR/logs/vm-$1.cli.log"
+  return "${PIPESTATUS[0]}"
 }
-vm_state() { vm_ "$1" "sudo tailscale --socket=$VMSOCK status --json" 2>/dev/null | py 'import json; d=json.load(sys.stdin); print(d["BackendState"], d["Self"]["TailscaleIPs"][0], any("'"$NOTICE"'" in h for h in (d.get("Health") or [])))' | strip_cr; }
-vm_stop() { vm_ "$1" "sudo systemctl stop $VMUNIT 2>/dev/null; sudo systemctl reset-failed $VMUNIT 2>/dev/null; sudo rm -rf /var/lib/p12b-ts /run/p12b-ts; ! ip link show p12bts0 >/dev/null 2>&1"; }
+# vm_rb TARGET SLUG FROM_URL: mesh-rebootstrap on the VM itself (transient
+# unit p12b-rb, jobs.sh rb-vm), waiting for a URL other than FROM_URL.
+vm_rb() {
+  vm_ "$1" "sudo rm -f $VMDIR/rb.done; sudo systemctl reset-failed p12b-rb 2>/dev/null; \
+    sudo systemd-run --quiet --collect --unit=p12b-rb -p RuntimeMaxSec=900 bash $VMDIR/jobs.sh rb-vm $VMDIR $VMVER $BOOT_URL $3 $2"
+}
+# vm_state TARGET -> "<state> <ip> <notice True|False>"
+vm_state() { vm_ "$1" "$VMTS status --json" 2>/dev/null | py 'import json
+try:
+    d = json.load(sys.stdin); ips = (d.get("Self") or {}).get("TailscaleIPs") or ["-"]
+    print(d.get("BackendState") or "-", ips[0], any(sys.argv[1] in h for h in (d.get("Health") or [])))
+except Exception:
+    print("- - -")' "$NOTICE" | strip_cr; }
+vm_stop() {
+  vm_ "$1" "sudo systemctl stop p12b-rb $VMUNIT 2>/dev/null; sudo systemctl reset-failed p12b-rb $VMUNIT 2>/dev/null; \
+    sudo rm -rf $VMSTATE $VMDIR; ! ip link show p12bts0 >/dev/null 2>&1 && ! sudo test -e $VMDIR"
+}
 
 # ---------------------------------------------------------------- cleanup ---
 CLEAN_OK=1
@@ -507,13 +540,7 @@ t_round() {
   ci_ "umask 077; cat >$CIDIR/key-$s" <"$TMPD/key-$s"
   ci_ "rm -f $CIDIR/rb-$s.done; sudo systemctl reset-failed p12b-rb-$s 2>/dev/null; \
     $CIRUN --unit=p12b-rb-$s bash $CIDIR/jobs.sh rb-docker $CIDIR $s $BOOT_URL $(urlof "$from") $PAR" || p="$p; mesh-rebootstrap not started"
-  if [ "$r" = 1 ] && [ -n "$VM_TARGETS" ]; then
-    printf '%s\n' $VM_TARGETS >"$TMPD/vm-targets"
-    "$RB_LOCAL_BIN" -bootstrap "$BOOT_URL" -authkey-file "$TMPD/key-$s" -tenant "$s" -targets "$TMPD/vm-targets" -concurrency 2 -timeout 120s \
-      -max-wait 5m -poll 1s -from "$(urlof "$from")" -out "$ART_DIR/logs/rebootstrap-$s-vms.json" \
-      -cmd "ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes {target} 'sudo timeout 100 tailscale --socket=$VMSOCK up --login-server={login_server} --auth-key=file:/run/p12b-ts/key --hostname=\$(hostname -s)-p12b --force-reauth'" \
-      2>&1 | redact >"$ART_DIR/logs/rebootstrap-$s-vms.log" &
-  fi
+  for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_rb "$vmt" "$s" "$(urlof "$from")" || p="$p; VM $vmt mesh-rebootstrap not started"; done
   local seen=0 t_seen=""
   while [ "$(date +%s)" -lt $((at_s - 15)) ]; do
     snap "${names[@]}"; seen=$(scount 4 True)
@@ -540,11 +567,20 @@ t_round() {
   p=""
   local end=$(( at_s + 480 ))
   while [ "$(date +%s)" -lt "$end" ]; do ci_ "test -e $CIDIR/rb-$s.done" && break; sleep 2; done
-  wait
   local rbrc; rbrc=$(ci_ "cat $CIDIR/rb-$s.done 2>/dev/null" | strip_cr)
   [ -n "$rbrc" ] || ci_ "sudo systemctl stop p12b-rb-$s 2>/dev/null"
   ci_ "cat $CIDIR/rb-$s.json 2>/dev/null" | redact >"$ART_DIR/logs/rebootstrap-$s.json"
   ci_ "cat $CIDIR/rb-$s.log; rm -f $CIDIR/key-$s $CIDIR/rb-$s.* $CIDIR/targets-$s" | redact >"$ART_DIR/logs/rebootstrap-$s.log"
+  # VMs: their own mesh-rebootstrap (rc per VM in VMRB_<n>).
+  local vmrb="" vrc
+  for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do
+    while [ "$(date +%s)" -lt "$end" ]; do vm_ "$vmt" "sudo test -e $VMDIR/rb.done" 2>/dev/null && break; sleep 2; done
+    vrc=$(vm_ "$vmt" "sudo cat $VMDIR/rb.done 2>/dev/null" 2>/dev/null | strip_cr)
+    [ -n "$vrc" ] || vm_ "$vmt" "sudo systemctl stop p12b-rb 2>/dev/null" >/dev/null 2>&1
+    vm_ "$vmt" "sudo cat $VMDIR/rb.json 2>/dev/null" 2>/dev/null | redact >"$ART_DIR/logs/rebootstrap-$s-vm-${vmt#*@}.json"
+    vm_ "$vmt" "sudo cat $VMDIR/rb.log 2>/dev/null" 2>/dev/null | redact >"$ART_DIR/logs/rebootstrap-$s-vm-${vmt#*@}.log"
+    vmrb="$vmrb $vmt=${vrc:-none}"
+  done
   # (mesh-rebootstrap's exit code is judged in M04, with the clients.)
 
   # M03 the move itself
@@ -601,7 +637,21 @@ d=json.load(open(sys.argv[1], encoding="utf-8")); print(" ".join(x["target"] for
   cmp -s "$TMPD/nb" "$TMPD/na" || p="$p; node id/IP per hostname changed: $(diff "$TMPD/nb" "$TMPD/na" | grep '^>' | head -3 | tr '\n' ' ')"
   ping_ok "$a" "$b" || p="$p; $a cannot ping $b at $to"
   snap "$a"; [ "$(sget "$a" 4)" = False ] || p="$p; notice still shown at $to"
-  for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do vm_state "$vmt" | grep -q '^Running ' || p="$p; VM $vmt [$(vm_state "$vmt")]"; done
+  local vs
+  for vmt in $([ "$r" = 1 ] && echo "$VM_TARGETS"); do
+    vs=$(vm_state "$vmt")
+    if [ "${vs%% *}" != Running ]; then # owner decision (a), as for the containers above
+      printf 'M04 %s %s: VM %s not Running after mesh-rebootstrap [%s]; debug restun\n' "$s" "$VMVER" "$vmt" "$vs" >>"$ART_DIR/timings.txt"
+      vm_ "$vmt" "$VMTS debug restun" >/dev/null 2>&1
+      for i in $(seq 1 30); do vs=$(vm_state "$vmt"); [ "${vs%% *}" = Running ] && break; sleep 1; done
+      stuck="$stuck $vmt"; manual=$((manual + 1))
+      [ "${vs%% *}" = Running ] && restunned="$restunned $vmt"
+    fi
+    [ "${vs%% *}" = Running ] || p="$p; VM $vmt [$vs]"
+    [ "${vs##* }" = False ] || p="$p; VM $vmt notice still shown"
+    case " $vmrb " in *" $vmt=0 "*) ;; *) grep -qw -- "$vmt" <<<"$restunned" || p="$p; VM $vmt mesh-rebootstrap rc [$vmrb]";; esac
+  done
+  [ -z "$vmrb" ] || printf 'M04 %s VMs (%s) mesh-rebootstrap rc:%s\n' "$s" "$VMVER" "$vmrb" >>"$ART_DIR/timings.txt"
   stop_pinger "$a" >"$ART_DIR/logs/M04-$s-ping.txt"
   local gap; gap=$(ping_gap "$ART_DIR/logs/M04-$s-ping.txt")
   local tt; tt=$(py 'import json,sys,datetime,re
@@ -651,7 +701,7 @@ log "P12b E2E $RUN_ID at $SHA: c1 $URL1, c2 $URL2, images [$IMAGES], N=$N PAR=$P
 if ! setup 2> >(redact >>"$ART_DIR/logs/setup.log"); then
   log "setup failed (see logs/setup.log)"; cleanup; exit 2
 fi
-{ echo "images: $IMAGES"; echo "commit: $SHA"; echo "database: $PG_DB (mc-db via PgBouncer $PG_LISTEN)"; echo "N=$N PAR=$PAR LEAD=$LEAD"
+{ echo "images: $IMAGES"; echo "client VMs: ${VM_TARGETS:-none} (tailscale $VMVER, round 1)"; echo "commit: $SHA"; echo "database: $PG_DB (mc-db via PgBouncer $PG_LISTEN)"; echo "N=$N PAR=$PAR LEAD=$LEAD"
   echo "cluster binary: $(sha256sum "$BIN" | cut -c1-16)"; echo "mesh-placement: $(sha256sum "$PLBIN" | cut -c1-16)"
   echo "mesh-bootstrap: $(sha256sum "$BOOT_BIN" | cut -c1-16)"; echo "mesh-rebootstrap: $(sha256sum "$RB_BIN" | cut -c1-16)"; } >>"$ART_DIR/env.txt"
 if t_m00; then
