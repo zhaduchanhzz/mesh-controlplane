@@ -1,0 +1,335 @@
+# P13f: promtool unit tests of ../rules/mesh.rules.yml (../../check.sh).
+# Each alert the drills of P13a-e must fire has a firing case here, and the
+# healthy series next to it must not fire.
+rule_files:
+  - ../rules/mesh.rules.yml
+
+evaluation_interval: 15s
+
+tests:
+  # Lease: c1 loses its only holder at 1m; c2 keeps one (a standby at 0
+  # next to it does not matter).
+  - interval: 15s
+    input_series:
+      - series: 'headscale_cluster_lease_held{cluster="c1",holder="cp-a",job="mesh-cluster",instance="192.168.1.241:9095"}'
+        values: '1x4 0x8'
+      - series: 'headscale_cluster_lease_held{cluster="c2",holder="c2-a",job="mesh-cluster",instance="192.168.1.244:9095"}'
+        values: '1x12'
+      - series: 'headscale_cluster_lease_held{cluster="c2",holder="c2b-b",job="mesh-cluster",instance="192.168.1.246:9095"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 1m15s
+        alertname: MeshClusterNoLeaseHolder
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: MeshClusterNoLeaseHolder
+        exp_alerts:
+          - exp_labels: { severity: critical, cluster: c1 }
+            exp_annotations:
+              description: "No process of cluster c1 has held the cluster lease for more than 30 s: its tailnets are not served."
+              summary: "Cluster c1: no process holds the lease"
+
+  # Lease lost and flapping: c1 is taken over 5 times in 10 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'headscale_cluster_lease_events_total{cluster="c1",event="acquired",job="mesh-cluster",instance="a"}'
+        values: '1 2 3 4 5 6 6 6 6 6'
+      - series: 'headscale_cluster_lease_events_total{cluster="c1",event="lost",job="mesh-cluster",instance="a"}'
+        values: '0 1 2 3 4 5 5 5 5 5'
+      - series: 'headscale_cluster_lease_events_total{cluster="c2",event="acquired",job="mesh-cluster",instance="b"}'
+        values: '1x9'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: MeshClusterLeaseFlapping
+        exp_alerts:
+          - exp_labels: { severity: warning, cluster: c1 }
+            exp_annotations:
+              summary: "Cluster c1: lease changed hands 5.5 times in 15 min"
+      - eval_time: 5m
+        alertname: MeshClusterLeaseLost
+        exp_alerts:
+          - exp_labels: { severity: warning, cluster: c1 }
+            exp_annotations:
+              description: "The active process of c1 lost its lease (taken over or expired) or self-fenced in the last 5 minutes."
+              summary: "Cluster c1: lease lost or self-fenced"
+      - eval_time: 9m30s
+        alertname: MeshClusterLeaseLost
+        exp_alerts: []
+
+  # Renewals fail: the deadline runs down on the holder.
+  - interval: 15s
+    input_series:
+      - series: 'headscale_cluster_lease_held{cluster="c1",holder="cp-a"}'
+        values: '1x8'
+      - series: 'headscale_cluster_lease_deadline_seconds{cluster="c1",holder="cp-a"}'
+        values: '7 7 6 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: MeshClusterLeaseDeadlineLow
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: MeshClusterLeaseDeadlineLow
+        exp_alerts:
+          - exp_labels: { severity: warning, cluster: c1, holder: cp-a }
+            exp_annotations:
+              summary: "Cluster c1: 2 s left before the active process self-fences"
+
+  # Epoch regression (restore without fence): the epoch drops from 7 to 2.
+  - interval: 1m
+    input_series:
+      - series: 'headscale_cluster_lease_epoch{cluster="c1",holder="cp-a"}'
+        values: '7x5 _x10'
+      - series: 'headscale_cluster_lease_epoch{cluster="c1",holder="cp-new"}'
+        values: '_x5 2x10'
+      - series: 'headscale_cluster_lease_epoch{cluster="c2",holder="c2-a"}'
+        values: '3x5 4x10'
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: MeshClusterLeaseEpochRegression
+        exp_alerts:
+          - exp_labels: { severity: critical, cluster: c1 }
+            exp_annotations:
+              description: "Run the epoch fence (ADR 0012) before any process serves; check for a database restore."
+              summary: "Cluster c1: lease epoch went backwards (2)"
+
+  # Fence refusals spike (a stale owner keeps writing).
+  - interval: 1m
+    input_series:
+      - series: 'headscale_tenant_fence_refusals_total{reason="owner",job="mesh-cluster",instance="a"}'
+        values: '0+60x10'
+      - series: 'headscale_tenant_fence_refusals_total{reason="lease",job="mesh-cluster",instance="a"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: MeshFenceRefusalsSpike
+        exp_alerts:
+          - exp_labels: { severity: warning, reason: owner }
+            exp_annotations:
+              description: "Writes are being rolled back (stale owner, lost lease, database errors). reason=owner/lease right after a move or failover is expected for a few seconds."
+              summary: "Tenant writes refused by the ownership fence: 1/s (owner)"
+
+  # DB pool saturation and waits.
+  - interval: 1m
+    input_series:
+      - series: 'headscale_db_pool_in_use_connections{pool="platform",job="mesh-cluster",instance="a"}'
+        values: '20x10'
+      - series: 'headscale_db_pool_max_open_connections{pool="platform",job="mesh-cluster",instance="a"}'
+        values: '20x10'
+      - series: 'headscale_db_pool_in_use_connections{pool="platform",job="mesh-cluster",instance="b"}'
+        values: '3x10'
+      - series: 'headscale_db_pool_max_open_connections{pool="platform",job="mesh-cluster",instance="b"}'
+        values: '20x10'
+      - series: 'headscale_db_pool_wait_count_total{pool="platform",job="mesh-cluster",instance="a"}'
+        values: '0+300x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: MeshDBPoolSaturated
+        exp_alerts:
+          - exp_labels: { severity: warning, pool: platform, job: mesh-cluster, instance: a }
+            exp_annotations:
+              summary: "a pool platform at 100% of max_open_conns"
+      - eval_time: 5m
+        alertname: MeshDBPoolWaiting
+        exp_alerts:
+          - exp_labels: { severity: warning, pool: platform, job: mesh-cluster, instance: a }
+            exp_annotations:
+              summary: "a pool platform: callers wait for a connection (5/s)"
+
+  # L9: a tailnet keeps failing to reload.
+  - interval: 1m
+    input_series:
+      - series: 'headscale_cluster_tailnet_runtimes{cluster="c1",holder="cp-a",state="reload_pending"}'
+        values: '1x10'
+      - series: 'headscale_cluster_tailnet_runtimes{cluster="c1",holder="cp-a",state="stopping"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: MeshTailnetReloadPending
+        exp_alerts:
+          - exp_labels: { severity: warning, cluster: c1, holder: cp-a, state: reload_pending }
+            exp_annotations:
+              description: "The previous settings stay in force (never allow-all). See headscale_tailnet_reload_failures_total and the process log."
+              summary: "c1: 1 tailnet(s) keep failing to reload a new policy or DNS revision"
+      - eval_time: 6m
+        alertname: MeshRuntimeStuckStopping
+        exp_alerts: []
+
+  # B7: the global bucket was hit; the PROXY v2 check refused a spoofer.
+  - interval: 1m
+    input_series:
+      - series: 'mesh_bootstrap_requests_total{outcome="limited_global",job="mesh-bootstrap",instance="b"}'
+        values: '0 0 40 40'
+      - series: 'mesh_bootstrap_proxy_refused_total{reason="untrusted_header",job="mesh-bootstrap",instance="b"}'
+        values: '0 1 1 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: MeshBootstrapGlobalLimit
+        exp_alerts:
+          - exp_labels: { severity: warning, outcome: limited_global, job: mesh-bootstrap, instance: b }
+            exp_annotations:
+              summary: "Bootstrap global rate limit hit 40 times in 5 min: all tenants were refused"
+      - eval_time: 3m
+        alertname: MeshBootstrapProxyHeaderRefused
+        exp_alerts:
+          - exp_labels: { severity: warning, reason: untrusted_header, job: mesh-bootstrap, instance: b }
+            exp_annotations:
+              description: "missing_header/malformed/timeout: the front door is misconfigured. untrusted_header: a peer other than the front door sent a PROXY header (spoofing attempt or a path around the front door)."
+              summary: "Bootstrap closed 1 connections at the PROXY v2 check (untrusted_header)"
+
+  # L5: the revocation file became unreadable.
+  - interval: 1m
+    input_series:
+      - series: 'mesh_placement_revocation_list_ok{job="mesh-placement",instance="p"}'
+        values: '1 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: MeshPlacementRevocationListUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical, job: mesh-placement, instance: p }
+            exp_annotations:
+              summary: "mesh-placement refuses every operator request: the revocation file cannot be read or parsed"
+
+  # Quota: a tailnet at 85 % of its limit, another at 10 %.
+  - interval: 1m
+    input_series:
+      - series: 'mesh_tailnet_quota_devices{tailnet="t1",cluster="c1"}'
+        values: '4250x15'
+      - series: 'mesh_tailnet_quota_limit_devices{tailnet="t1",cluster="c1"}'
+        values: '5000x15'
+      - series: 'mesh_tailnet_quota_devices{tailnet="t2",cluster="c1"}'
+        values: '500x15'
+      - series: 'mesh_tailnet_quota_limit_devices{tailnet="t2",cluster="c1"}'
+        values: '5000x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: MeshTailnetQuota80
+        exp_alerts:
+          - exp_labels: { severity: warning, tailnet: t1, cluster: c1 }
+            exp_annotations:
+              summary: "Tailnet t1 on c1 at 85% of its device limit"
+
+  # PgBouncer: clients wait for a server connection on mesh_c2.
+  - interval: 15s
+    input_series:
+      - series: 'pgbouncer_pools_client_waiting_connections{database="mesh_c2",user="headscale",instance="pgbouncer-exporter-01:9127",job="pgbouncer"}'
+        values: '0 3 3 3 3 3'
+      - series: 'pgbouncer_pools_client_waiting_connections{database="mesh_c1",user="headscale",instance="pgbouncer-exporter-01:9127",job="pgbouncer"}'
+        values: '0x5'
+      - series: 'pgbouncer_pools_client_maxwait_seconds{database="mesh_c2",user="headscale",instance="pgbouncer-exporter-01:9127",job="pgbouncer"}'
+        values: '0 2 3 4 5 6 7'
+    alert_rule_test:
+      - eval_time: 1m15s
+        alertname: PgBouncerClientsWaiting
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "pgbouncer-exporter-01:9127", database: mesh_c2 }
+            exp_annotations:
+              summary: "PgBouncer pgbouncer-exporter-01:9127 db mesh_c2: 3 clients waiting for a server connection"
+      - eval_time: 1m30s
+        alertname: PgBouncerMaxWaitHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "pgbouncer-exporter-01:9127", database: mesh_c2 }
+            exp_annotations:
+              description: "query_wait_timeout (5 s) is below the lease self-fence deadline (8 s, ADR 0006 §3.4); waits close to it make renewals fail."
+              summary: "PgBouncer pgbouncer-exporter-01:9127 db mesh_c2: oldest waiting client 7s"
+
+  # Patroni: leader lost, no sync standby; a replica falls behind.
+  - interval: 15s
+    input_series:
+      - series: 'patroni_primary{scope="meshpg",instance="192.168.1.247:8008",host="mc-pg-01"}'
+        values: '1 1 0 0 0 0 0'
+      - series: 'patroni_primary{scope="meshpg",instance="192.168.1.248:8008",host="mc-pg-02"}'
+        values: '0x6'
+      - series: 'patroni_cluster_unlocked{scope="meshpg",instance="192.168.1.248:8008",host="mc-pg-02"}'
+        values: '0 0 1 1 1 1 1'
+      - series: 'patroni_sync_standby{scope="meshpg",instance="192.168.1.248:8008",host="mc-pg-02"}'
+        values: '1 1 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 1m30s
+        alertname: PatroniNoLeader
+        exp_alerts:
+          - exp_labels: { severity: critical, scope: meshpg }
+            exp_annotations:
+              summary: "Patroni meshpg: no primary (cluster unlocked)"
+      - eval_time: 2m
+        alertname: PatroniNoSyncStandby
+        exp_alerts:
+          - exp_labels: { severity: warning, scope: meshpg }
+            exp_annotations:
+              summary: "Patroni meshpg: no synchronous standby (a failover may lose commits; ADR 0011)"
+
+  - interval: 1m
+    input_series:
+      - series: 'patroni_xlog_location{scope="meshpg",instance="192.168.1.247:8008",host="mc-pg-01"}'
+        values: '100000000+50000000x6'
+      - series: 'patroni_xlog_location{scope="meshpg",instance="192.168.1.248:8008",host="mc-pg-02"}'
+        values: '0x6'
+      - series: 'patroni_xlog_replayed_location{scope="meshpg",instance="192.168.1.248:8008",host="mc-pg-02"}'
+        values: '100000000x6'
+      - series: 'patroni_replica{scope="meshpg",instance="192.168.1.248:8008",host="mc-pg-02"}'
+        values: '1x6'
+      - series: 'patroni_xlog_replayed_location{scope="meshpg",instance="192.168.1.247:8008",host="mc-pg-01"}'
+        values: '0x6'
+      - series: 'patroni_replica{scope="meshpg",instance="192.168.1.247:8008",host="mc-pg-01"}'
+        values: '0x6'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PostgresReplicationLagBytes
+        exp_alerts:
+          - exp_labels: { severity: warning, scope: meshpg, host: mc-pg-02 }
+            exp_annotations:
+              summary: "Replica mc-pg-02 is 238.4MiB behind the primary"
+
+  # Backups: the last one finished 27 h ago; WAL archive check fails.
+  - interval: 1m
+    input_series:
+      - series: 'pgbackrest_backup_last_completed_timestamp_seconds{stanza="meshpg",type="diff"}'
+        values: '-97200x5'
+      - series: 'pgbackrest_archive_check_ok{stanza="meshpg"}'
+        values: '0x10'
+      - series: 'pgbackrest_archive_last_wal_timestamp_seconds{stanza="meshpg"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PostgresBackupTooOld
+        exp_alerts:
+          - exp_labels: { severity: critical, stanza: meshpg }
+            exp_annotations:
+              summary: "Last pgBackRest backup of meshpg finished 1d 3h 2m 0s ago"
+      - eval_time: 6m
+        alertname: PostgresWALArchiveFailing
+        exp_alerts:
+          - exp_labels: { severity: critical, stanza: meshpg }
+            exp_annotations:
+              summary: "WAL archiving to pgBackRest is failing or stale on stanza meshpg"
+
+  # Clock skew on a PG node (200 ms), mc-db fine.
+  - interval: 1m
+    input_series:
+      - series: 'node_timex_offset_seconds{host="mc-pg-02",instance="192.168.1.248:9100",job="node"}'
+        values: '0.2x5'
+      - series: 'node_timex_offset_seconds{host="mc-db",instance="node-exporter:9100",job="node"}'
+        values: '0.001x5'
+      - series: 'node_timex_sync_status{host="mc-db",instance="node-exporter:9100",job="node"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HostClockSkew
+        exp_alerts:
+          - exp_labels: { severity: warning, host: mc-pg-02, instance: "192.168.1.248:9100", job: node }
+            exp_annotations:
+              summary: "mc-pg-02: clock offset 0.2 s or not synchronised"
+
+  # TLS certificate of c2 expires in 10 days.
+  - interval: 1m
+    input_series:
+      - series: 'probe_ssl_earliest_cert_expiry{instance="https://c2.cp.gta5web.online:8445/health",job="blackbox-https"}'
+        values: '864000x3'
+      - series: 'probe_ssl_earliest_cert_expiry{instance="https://c1.cp.gta5web.online:8443/health",job="blackbox-https"}'
+        values: '8640000x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: MeshTLSCertExpiresSoon
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "https://c2.cp.gta5web.online:8445/health", job: blackbox-https }
+            exp_annotations:
+              summary: "https://c2.cp.gta5web.online:8445/health: TLS certificate expires in 9d 23h 59m 0s"

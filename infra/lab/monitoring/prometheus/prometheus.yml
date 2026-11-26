@@ -1,0 +1,142 @@
+# P13f: Prometheus on mc-db (192.168.1.243). NOT APPLIED (README.md).
+#
+# Every target below is an operator-only listener on the lab LAN (vmbr0),
+# reachable from mc-db only (each listener's operator CIDR is
+# 192.168.1.243/32, and the VM's nftables allows the port from .243 only).
+# No target is on a public address (AGENTS rule 9).
+#
+# Target label "host" names the VM; the cluster processes already label
+# their series with "cluster" (and "holder", the process).
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    lab: meshlab
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Cluster processes (headscale cluster serve): metrics_listen_addr on the
+  # VM's LAN address, metrics_operator_cidrs: [192.168.1.243/32].
+  - job_name: mesh-cluster
+    static_configs:
+      - targets: ["192.168.1.241:9095"]
+        labels: { host: mc-cp }
+      - targets: ["192.168.1.245:9095"]
+        labels: { host: mc-c1b }
+      - targets: ["192.168.1.244:9095"]
+        labels: { host: mc-c2 }
+      - targets: ["192.168.1.246:9095"]
+        labels: { host: mc-c2b }
+
+  # mesh-bootstrap -metrics-listen 192.168.1.241:9097
+  #   -metrics-operator-cidrs 192.168.1.243/32
+  - job_name: mesh-bootstrap
+    static_configs:
+      - targets: ["192.168.1.241:9097"]
+        labels: { host: mc-cp }
+
+  # mesh-placement -metrics-listen 192.168.1.241:9098
+  #   -metrics-operator-cidrs 192.168.1.243/32
+  - job_name: mesh-placement
+    static_configs:
+      - targets: ["192.168.1.241:9098"]
+        labels: { host: mc-cp }
+
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels: { host: mc-db }
+      # node_exporter from apt on the PostgreSQL VMs (P13a).
+      - targets: ["192.168.1.247:9100"]
+        labels: { host: mc-pg-01 }
+      - targets: ["192.168.1.248:9100"]
+        labels: { host: mc-pg-02 }
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["pg-exporter-01:9187"]
+        labels: { host: mc-pg-01 }
+      - targets: ["pg-exporter-02:9187"]
+        labels: { host: mc-pg-02 }
+
+  - job_name: postgres-platform
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["pg-exporter-platform:9187"]
+        labels: { host: primary }
+
+  - job_name: pgbouncer
+    static_configs:
+      - targets: ["pgbouncer-exporter-01:9127"]
+        labels: { host: mc-pg-01 }
+      - targets: ["pgbouncer-exporter-02:9127"]
+        labels: { host: mc-pg-02 }
+
+  # Patroni REST API /metrics (8008, allowed from localhost and mc-db only).
+  - job_name: patroni
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["192.168.1.247:8008"]
+        labels: { host: mc-pg-01 }
+      - targets: ["192.168.1.248:8008"]
+        labels: { host: mc-pg-02 }
+
+  # etcd metrics on its plain-HTTP metrics URL (--listen-metrics-urls
+  # http://<lan-ip>:2381), never the client port.
+  - job_name: etcd
+    static_configs:
+      - targets: ["192.168.1.247:2381"]
+        labels: { host: mc-pg-01 }
+      - targets: ["192.168.1.248:2381"]
+        labels: { host: mc-pg-02 }
+      - targets: ["192.168.1.243:2381"]
+        labels: { host: mc-db }
+
+  # TLS certificate expiry and reachability of the public endpoints, as a
+  # client on the Internet sees them (mc-db reaches the VPS through SNAT).
+  - job_name: blackbox-https
+    metrics_path: /probe
+    params:
+      module: [https_health]
+    static_configs:
+      - targets:
+          - https://c1.cp.gta5web.online:8443/health
+          - https://c2.cp.gta5web.online:8445/health
+          - https://boot.cp.gta5web.online:8444/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  # DERP relay TLS (P13g): derper's /debug/varz stays on its localhost; only
+  # the certificate is probed from here. The relay hostname and port are set
+  # by P13g (D11); until then this job has no target.
+  - job_name: blackbox-relay-tls
+    metrics_path: /probe
+    params:
+      module: [tls_connect]
+    static_configs:
+      - targets: [] # P13g: ["<relay host>:<port>"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
