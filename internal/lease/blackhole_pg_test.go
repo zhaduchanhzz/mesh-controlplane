@@ -173,6 +173,7 @@ func TestRenewSkipsBlackholedPgBouncer(t *testing.T) {
 	}
 
 	sch := fmt.Sprintf("lease_bh_%d", time.Now().UnixNano())
+
 	err = admin.Exec("CREATE SCHEMA " + sch).Error
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +181,7 @@ func TestRenewSkipsBlackholedPgBouncer(t *testing.T) {
 
 	t.Cleanup(func() {
 		_ = admin.Exec("DROP SCHEMA " + sch + " CASCADE").Error
+
 		d, err := admin.DB()
 		if err == nil {
 			_ = d.Close()
