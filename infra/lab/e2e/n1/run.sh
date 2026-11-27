@@ -102,8 +102,10 @@ redact() {
     -e 's/((mkey|nodekey|discokey|nlpub|privkey):)([0-9a-f]{8})[0-9a-f]{56}/\1\3…/g'
 }
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$ART_DIR/run.log" >&2; }
-SSHO=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10)
-PX="ProxyCommand=ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes $CI_SSH nc -q0 %h %p"
+# Keepalive: a dropped path (operator laptop off the lab LAN) fails an ssh in
+# ~60 s instead of hanging it (2026-11-27: an sftp hung 70 min in setup).
+SSHO=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+PX="ProxyCommand=ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 $CI_SSH nc -q0 %h %p"
 ssh_() { local h=$1; shift; ssh "${SSHO[@]}" "$h" "$@"; }
 cp_() { ssh_ "$CP_SSH" "$@"; }
 pg_() { ssh_ "$PG_SSH" "$@"; }

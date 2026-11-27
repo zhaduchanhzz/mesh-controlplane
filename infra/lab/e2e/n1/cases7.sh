@@ -6,7 +6,12 @@
 # client through the delta path. Every change below is made through tenant
 # A's own API key; the time from the API call returning to the change being
 # visible in a1's `tailscale status --json` is measured, M06X_ROUNDS rounds
-# per direction, each round <= M06X_BOUND seconds:
+# per direction, each round <= M06X_BOUND seconds. The time is taken on a1
+# itself (m06x-watch.py: one ssh session polling the local status every
+# 0.1 s), plus the harness->a1 round trip of the MARK line as an upper bound
+# of its delivery, so an ssh stall between the harness host and the lab can
+# neither hide nor inflate a change. M06X_WATCH=0 keeps the harness-side poll;
+# there too a change seen only after the bound counts as missed.
 #   M06x.a  tag change that removes visibility (tag:m06x-on -> tag:m06x-off)
 #           and back (addition)
 #   M06x.b  route approval / unapproval (POST /device/{id}/routes): the prefix
@@ -60,9 +65,55 @@ m06x_wait() {
     sleep 0.2
   done
 }
-# m06x_stats MS...: "p50=… max=…" (-1 = not within the bound).
-m06x_stats() { py 'v = sorted(int(x) for x in sys.argv[1:]); print("p50=%d max=%d" % (v[(len(v) - 1) // 2], v[-1]) if v and min(v) >= 0 else "MISSED " + " ".join(sys.argv[1:]))' "$@" | strip_cr; }
-m06x_time() { printf 'M06x %s %s %s round %s: %s ms\n' "$MODE" "$V" "$1" "$2" "$3" >>"$ART_DIR/timings.txt"; }
+# m06x_stats MS...: "p50=… max=…", or MISSED with the offending values when
+# one is -1 or above the bound (a change seen only after M06X_BOUND is a miss,
+# however the wait ended; soak3 2026-11-27 had such values counted as met).
+m06x_stats() { py 'b = int(sys.argv[1]) * 1000; v = sorted(int(x) for x in sys.argv[2:]); print("p50=%d max=%d" % (v[(len(v) - 1) // 2], v[-1]) if v and min(v) >= 0 and max(v) <= b else "MISSED " + " ".join(x for x in sys.argv[2:] if int(x) < 0 or int(x) > b))' "$M06X_BOUND" "$@" | strip_cr; }
+m06x_time() { printf 'M06x %s %s %s round %s: %s ms%s\n' "$MODE" "$V" "$1" "$2" "$3" "${M06X_NOTE:+ ($M06X_NOTE)}" >>"$ART_DIR/timings.txt"; }
+
+# Client-side watcher on a1 (m06x-watch.py) as coproc M06XW.
+M06XW_PID=""
+m06x_watch_start() {
+  [ "${M06X_WATCH:-1}" = 1 ] || return 0
+  local l
+  vm "$A1" "cat >/tmp/m06x-watch.py" <"$(dirname "$0")/m06x-watch.py" || return 1
+  coproc M06XW { vm "$A1" "sudo python3 -u /tmp/m06x-watch.py /opt/tailscale/$V/tailscale $TSS $((M06X_BOUND * 6))" 2>/dev/null; }
+  read -r -t 60 l <&"${M06XW[0]:-}" && [ "${l%"$CR"}" = READY ] || { m06x_watch_stop; return 1; }
+}
+m06x_watch_stop() {
+  [ -n "${M06XW_PID:-}" ] || return 0
+  # Bash unsets M06XW and M06XW_PID once the coproc has exited (set -u).
+  [ -n "${M06XW[1]:-}" ] && printf 'QUIT\n' >&"${M06XW[1]}" 2>/dev/null
+  sleep 1; local pid=${M06XW_PID:-}; [ -n "$pid" ] && { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; }
+  M06XW_PID=""
+}
+# m06x_waitc ID KIND HOST [PREFIX] (KIND present|absent|route|noroute, at
+# a1): M06X_MS = ms from the API call returning until the state holds (-1:
+# not within the watcher's deadline, or the watcher is gone); M06X_NOTE = the
+# parts of the measurement. Without the watcher: the harness-side poll.
+m06x_waitc() {
+  local id=$1 kind=$2 t0 t1 l rtt="" c pm f
+  M06X_MS=-1 M06X_NOTE=""
+  if [ -z "${M06XW_PID:-}" ]; then
+    case $kind in
+      present) f=(m06x_sees "$A1" "$3");; absent) f=(m06x_not_sees "$A1" "$3");;
+      route) f=(m06x_route_at "$A1" "$3" "$4");; noroute) f=(m06x_no_route_at "$A1" "$3" "$4");;
+    esac
+    M06X_MS=$(m06x_wait "${f[@]}"); M06X_NOTE="harness poll"; return 0
+  fi
+  t0=$(date +%s%3N)
+  printf 'MARK %s %s %s %s\n' "$id" "$kind" "$3" "${4:-}" >&"${M06XW[1]:-}" || { M06X_NOTE="watcher gone"; return 1; }
+  while read -r -t 120 l <&"${M06XW[0]:-}"; do
+    l=${l%"$CR"}
+    case $l in
+      "ACK $id") t1=$(date +%s%3N); rtt=$((t1 - t0));;
+      "SEEN $id "*) read -r _ _ c pm <<<"$l"; M06X_MS=$((c + ${rtt:-0}))
+        M06X_NOTE="a1 $c ms + mark rtt ${rtt:-?} ms, poll $pm ms"; return 0;;
+      "MISS $id "*) M06X_NOTE="a1: not within $((M06X_BOUND * 6)) s"; return 0;;
+    esac
+  done
+  M06X_NOTE="watcher gone"; return 1
+}
 # m06x_isolated: B's clients unaffected, no M06x node in B's view.
 m06x_isolated() {
   [ "$(peers "$B1")" = n1-b2 ] || p="$p; b1 peers [$(peers "$B1")]"
@@ -86,7 +137,9 @@ m06x_setup() {
   M06X_BASE_A1=$(peers "$A1"); M06X_BASE_B1=$(peers "$B1")
   grep -qE '(^| )(n1-a|n1flood-)' <<<"$M06X_BASE_B1" && p="$p; b1 sees nodes of A before M06x [$M06X_BASE_B1]"
   for s in a b; do
-    cli c1 "tailnet apikey create --slug $s --user n1-$s --expiration 1h" >"$TMPD/m06x-key-$s.json" || p="$p; apikey $s"
+    # 1 h plus a minute a round, so a soak never outlives its keys (soak3
+    # 2026-11-27: the fixed 1 h keys expired at round 318 -> 401).
+    cli c1 "tailnet apikey create --slug $s --user n1-$s --expiration $((1 + (M06X_ROUNDS + 59) / 60))h" >"$TMPD/m06x-key-$s.json" || p="$p; apikey $s"
     py 'import json; d = json.load(open(sys.argv[1])); print(d["key"])' "$TMPD/m06x-key-$s.json" | strip_cr >"$TMPD/api-$s"
   done
   r=$(m06x_api a GET /api/v2/tailnet/-/acl "" "" "Accept: application/hujson")
@@ -106,9 +159,9 @@ m06x_tags() {
   local i ms off=() on=()
   for i in $(seq 1 "$M06X_ROUNDS"); do
     m06x_tag tag:m06x-off || { p="$p; tag off round $i"; break; }
-    ms=$(m06x_wait m06x_not_sees "$A1" n1-a2x); off+=("$ms"); m06x_time tag-off "$i" "$ms"
+    m06x_waitc "tag-off-$i" absent n1-a2x; ms=$M06X_MS; off+=("$ms"); m06x_time tag-off "$i" "$ms"
     m06x_tag tag:m06x-on || { p="$p; tag on round $i"; break; }
-    ms=$(m06x_wait m06x_sees "$A1" n1-a2x); on+=("$ms"); m06x_time tag-on "$i" "$ms"
+    m06x_waitc "tag-on-$i" present n1-a2x; ms=$M06X_MS; on+=("$ms"); m06x_time tag-on "$i" "$ms"
   done
   M06X_A="removal $(m06x_stats "${off[@]}"), addition $(m06x_stats "${on[@]}")"
   [[ $M06X_A == *MISSED* ]] && p="$p; tag change not within ${M06X_BOUND}s: $M06X_A"
@@ -123,9 +176,9 @@ m06x_route() {
   m06x_no_route_at "$A1" n1-a2x "$M06X_ROUTE" || p="$p; route visible before approval"
   for i in $(seq 1 "$M06X_ROUNDS"); do
     m06x_routes "\"$M06X_ROUTE\"" || { p="$p; approve round $i"; break; }
-    ms=$(m06x_wait m06x_route_at "$A1" n1-a2x "$M06X_ROUTE"); add+=("$ms"); m06x_time route-approve "$i" "$ms"
+    m06x_waitc "route-approve-$i" route n1-a2x "$M06X_ROUTE"; ms=$M06X_MS; add+=("$ms"); m06x_time route-approve "$i" "$ms"
     m06x_routes "" || { p="$p; unapprove round $i"; break; }
-    ms=$(m06x_wait m06x_no_route_at "$A1" n1-a2x "$M06X_ROUTE"); del+=("$ms"); m06x_time route-unapprove "$i" "$ms"
+    m06x_waitc "route-unapprove-$i" noroute n1-a2x "$M06X_ROUTE"; ms=$M06X_MS; del+=("$ms"); m06x_time route-unapprove "$i" "$ms"
   done
   TS "$A2" "set --advertise-routes=" >/dev/null 2>&1
   M06X_B="unapproval $(m06x_stats "${del[@]}"), approval $(m06x_stats "${add[@]}")"
@@ -139,9 +192,9 @@ m06x_acl() {
   local i ms r blk=() alw=()
   for i in $(seq 1 "$M06X_ROUNDS"); do
     r=$(m06x_setacl "$M06X_P2") || { p="$p; block round $i: $r"; break; }
-    ms=$(m06x_wait m06x_not_sees "$A1" n1-a2x); blk+=("$ms"); m06x_time acl-block "$i" "$ms"
+    m06x_waitc "acl-block-$i" absent n1-a2x; ms=$M06X_MS; blk+=("$ms"); m06x_time acl-block "$i" "$ms"
     r=$(m06x_setacl "$M06X_P1") || { p="$p; allow round $i: $r"; break; }
-    ms=$(m06x_wait m06x_sees "$A1" n1-a2x); alw+=("$ms"); m06x_time acl-allow "$i" "$ms"
+    m06x_waitc "acl-allow-$i" present n1-a2x; ms=$M06X_MS; alw+=("$ms"); m06x_time acl-allow "$i" "$ms"
   done
   M06X_C="block $(m06x_stats "${blk[@]}"), allow $(m06x_stats "${alw[@]}")"
   [[ $M06X_C == *MISSED* ]] && p="$p; setACL not within ${M06X_BOUND}s: $M06X_C"
@@ -154,11 +207,11 @@ m06x_delete() {
   local i ms r host=n1-a2x del=() add=()
   for i in $(seq 1 "$M06X_ROUNDS"); do
     r=$(m06x_api a DELETE "/api/v2/device/$M06X_DEV"); [ "${r%% *}" = 200 ] || { p="$p; delete $host round $i -> ${r%% *}"; break; }
-    ms=$(m06x_wait m06x_not_sees "$A1" "$host"); del+=("$ms"); m06x_time delete "$i" "$ms"
+    m06x_waitc "delete-$i" absent "$host"; ms=$M06X_MS; del+=("$ms"); m06x_time delete "$i" "$ms"
     host=n1-a2d$i
     ts_start "$A2" >/dev/null 2>&1 || { p="$p; fresh tailscaled round $i"; break; }
     ts_up "$A2" "$URL1" "$TMPD/key-a" "$host" >/dev/null 2>&1 || { p="$p; $host up"; break; }
-    ms=$(m06x_wait m06x_sees "$A1" "$host"); add+=("$ms"); m06x_time join "$i" "$ms"
+    m06x_waitc "join-$i" present "$host"; ms=$M06X_MS; add+=("$ms"); m06x_time join "$i" "$ms"
     M06X_DEV=$(s08c_dev a "$host"); [ -n "$M06X_DEV" ] || { p="$p; $host not in A's device list"; break; }
   done
   M06X_D="delete $(m06x_stats "${del[@]}"), join (enrolment included) $(m06x_stats "${add[@]}")"
@@ -188,33 +241,36 @@ m06x_undo() {
 m06x_fail() { local f=${p#"$ps"}; record "$1" FAIL "${f#; }"; }
 
 t_m06x() {
-  local p="" ps
+  local p="" ps okn=0
   M06X_SOAK_T0=$SECONDS
   M06X_A="" M06X_B="" M06X_C="" M06X_D=""
   m06x_setup
+  [ -z "$p" ] && { m06x_watch_start || p="$p; client watcher on a1 not ready"; }
   if [ -z "$p" ]; then
-    ps=$p; m06x_tags;   [ "$p" = "$ps" ] && record M06x.a PASS "netmap $MODE ($V): tag change via A's API, ${M06X_ROUNDS} rounds <= ${M06X_BOUND}s: $M06X_A" || m06x_fail M06x.a
-    ps=$p; m06x_route;  [ "$p" = "$ps" ] && record M06x.b PASS "netmap $MODE ($V): route approval via A's API: $M06X_B; b1 never sees the route" || m06x_fail M06x.b
-    ps=$p; m06x_acl;    [ "$p" = "$ps" ] && record M06x.c PASS "netmap $MODE ($V): setACL (If-Match) via A's API: $M06X_C" || m06x_fail M06x.c
-    ps=$p; m06x_delete; [ "$p" = "$ps" ] && record M06x.d PASS "netmap $MODE ($V): device delete via A's API / new enrolment: $M06X_D" || m06x_fail M06x.d
+    ps=$p; m06x_tags;   [ "$p" = "$ps" ] && { record M06x.a PASS "netmap $MODE ($V): tag change via A's API, ${M06X_ROUNDS} rounds <= ${M06X_BOUND}s: $M06X_A"; okn=$((okn + 1)); } || m06x_fail M06x.a
+    ps=$p; m06x_route;  [ "$p" = "$ps" ] && { record M06x.b PASS "netmap $MODE ($V): route approval via A's API: $M06X_B; b1 never sees the route"; okn=$((okn + 1)); } || m06x_fail M06x.b
+    ps=$p; m06x_acl;    [ "$p" = "$ps" ] && { record M06x.c PASS "netmap $MODE ($V): setACL (If-Match) via A's API: $M06X_C"; okn=$((okn + 1)); } || m06x_fail M06x.c
+    ps=$p; m06x_delete; [ "$p" = "$ps" ] && { record M06x.d PASS "netmap $MODE ($V): device delete via A's API / new enrolment: $M06X_D"; okn=$((okn + 1)); } || m06x_fail M06x.d
   else
     record M06x.a FAIL "setup: ${p#; }"
   fi
+  m06x_watch_stop
   p=""; m06x_undo
   [ -z "$p" ] && record M06x.0 PASS "setup and undo: extra node deleted, a2 restored, A's policy restored (If-Match), API keys revoked; B unaffected and refused (404) on A's device" \
     || record M06x.0 FAIL "${p#; }"
-  [ "${SOAK:-0}" = 1 ] && m06x_soak_verdict
+  [ "${SOAK:-0}" = 1 ] && m06x_soak_verdict "$okn"
   return 0
 }
 
 # Soak (P14f F6, SOAK=1): t_m06x with many rounds (M06X_ROUNDS) and the
 # production intervals (N1_RECONCILE_INTERVAL=60s, N1_FULL_MAP_INTERVAL=15m),
 # so the background reconcile and the periodic full maps run during the churn.
-# Verdict: every round within its bound (M06x.a-d) and, summed over the c1
+# Verdict: M06x.a-d all PASS (every round within its bound) and, summed over the c1
 # processes, netmap divergence 0 after at least one reconcile (the counter
 # has labels: no series means 0).
 m06x_soak_verdict() {
   local n out div=0 rec=0 d r
+  [ "$1" = 4 ] || { record M06x.soak FAIL "M06x.a-d: $1 of 4 passed (see their lines); divergence not judged"; return 0; }
   for n in $(nodesof c1); do
     out=$(on "$n" "curl -s -m 3 http://127.0.0.1:9095/metrics" 2>/dev/null) || continue
     d=$(awk '/^headscale_nodestore_netmap_divergence_total/ {s+=$2} END {printf "%d", s}' <<<"$out")
