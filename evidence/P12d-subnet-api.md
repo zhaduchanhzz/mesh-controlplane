@@ -185,3 +185,8 @@ Raw SQL guard và allowlist: không đổi (không thêm raw SQL; `TailnetRevisi
 Binary: `/home/mesh/binp12d` trên mc-ci (headscale `b1cd7663d43b3d3e`). Artifact (không commit): `artifacts/06c9f7b/N1/e2e-20261126T151208Z-off-1.84.3`, `artifacts/d1650fa/N1/e2e-20261126T153820Z-on-1.104.7`, `artifacts/d1650fa/P12b/…`. S99/M07: không có key/secret trong artifact.
 
 **Trạng thái sau §8:** `Verified`; merge vào `master` theo lệnh chủ dự án; chưa `Reviewed` (chờ chủ dự án). S08d (exit node, nhánh `feat/P12d-exitnode`) chưa merge: một lượt ON/1.104.7 bị dừng giữa chừng khi chủ dự án đổi hướng: S08d.1 PASS, **S08d.2 FAIL** (a1 qua exit node n1-a2 tới 203.0.113.10 và 2001:db8:77::10: ping/TCP timeout, kể cả allow-lan on), S08d.3 PASS. Chưa điều tra; nghi harness/lab (SNAT trên a2), chưa loại trừ lỗi sản phẩm.
+
+**Cập nhật S08d (2026-11-27, P14f F6):**
+- **Nguyên nhân S08d.2 FAIL:** do harness, không phải lỗi sản phẩm. "Internet giả" được đặt ngay trên bridge của chính exit node, mà Tailscale không bao giờ chuyển tiếp lưu lượng tới mạng nối trực tiếp với exit node (quy tắc "guest wifi", `shrinkDefaultRoute`).
+- **Sửa:** chuyển internet giả ra sau một hop định tuyến (`753b6dd`). Phân tích chi tiết ở `evidence/S08d-exitnode.md`.
+- **Kết quả trên binary P14f:** S08d.0–S08d.6 PASS ở N1 ON 1.104.7, ON 1.84.3 và OFF 1.84.3, xem `evidence/P14f-f6.md`.
