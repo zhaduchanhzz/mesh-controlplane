@@ -18,6 +18,9 @@ const (
 	shapeTagHeavy        = "tag_heavy"
 	shapeSharedService   = "shared_service"
 	shapeMix             = "mix"
+
+	// portHTTPS is the one port the shapes grant (tag_heavy adds tcp:22).
+	portHTTPS = "tcp:443"
 )
 
 // tag_heavy dimensions (§3): 100 role tags, 20 environment tags, every
@@ -117,13 +120,13 @@ func policyFor(shape string, users int, r *rand.Rand) ([]byte, error) {
 
 	switch shape {
 	case shapeAllowAll:
-		doc.Grants = []grant{{Src: []string{"*"}, Dst: []string{"*"}, IP: []string{"tcp:443"}}}
+		doc.Grants = []grant{{Src: []string{"*"}, Dst: []string{"*"}, IP: []string{portHTTPS}}}
 	case shapeIsolated:
 		// {"acls": []}: no rule at all (control shape: same-user visibility
 		// only where the server grants it).
 		doc.ACLs = &[]struct{}{}
 	case shapePersonalDevices:
-		doc.Grants = []grant{{Src: []string{"autogroup:member"}, Dst: []string{"autogroup:self"}, IP: []string{"tcp:443"}}}
+		doc.Grants = []grant{{Src: []string{"autogroup:member"}, Dst: []string{"autogroup:self"}, IP: []string{portHTTPS}}}
 	case shapeTagHeavy:
 		doc = tagHeavyPolicy(users, r)
 	case shapeSharedService:
@@ -131,8 +134,8 @@ func policyFor(shape string, users int, r *rand.Rand) ([]byte, error) {
 		// and every member reaches one shared service, the devices of user
 		// u0000.
 		doc.Grants = []grant{
-			{Src: []string{"autogroup:member"}, Dst: []string{"autogroup:self"}, IP: []string{"tcp:443"}},
-			{Src: []string{"autogroup:member"}, Dst: []string{userName(0) + "@"}, IP: []string{"tcp:443"}},
+			{Src: []string{"autogroup:member"}, Dst: []string{"autogroup:self"}, IP: []string{portHTTPS}},
+			{Src: []string{"autogroup:member"}, Dst: []string{userName(0) + "@"}, IP: []string{portHTTPS}},
 		}
 	default:
 		return nil, fmt.Errorf("%w %q", errShape, shape)
@@ -155,7 +158,7 @@ func tagHeavyPolicy(users int, r *rand.Rand) policyDoc {
 		doc.TagOwners[envTag(i)] = []string{"group:admin"}
 	}
 
-	ports := []string{"tcp:22", "tcp:443"}
+	ports := []string{"tcp:22", portHTTPS}
 
 	for i := range tagRoles {
 		for _, j := range pickDistinct(r, tagRoles, tagFanout, i) {
@@ -182,7 +185,7 @@ func tagHeavyPolicy(users int, r *rand.Rand) policyDoc {
 			dst = append(dst, roleTag(j))
 		}
 
-		doc.Grants = append(doc.Grants, grant{Src: []string{name}, Dst: dst, IP: []string{"tcp:443"}})
+		doc.Grants = append(doc.Grants, grant{Src: []string{name}, Dst: dst, IP: []string{portHTTPS}})
 	}
 
 	return doc
