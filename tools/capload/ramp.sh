@@ -140,8 +140,9 @@ step() {
 	log "step $shape N=$n INC=$INC db=$db"
 	db_fresh "$db"
 	local ip=${SERVER_ADDR%:*} port=${SERVER_ADDR#*:}
-	local maxpeer=1000000
-	[ "$shape" = allow_all ] && maxpeer=0
+	# F5 measures capacity, not the quota: no peer bound for any shape. Since
+	# review fix R2b the bound also refuses policy writes.
+	local maxpeer=${MAX_PEER_ENTRIES:-0}
 	local envs="HS=\$HOME/$RB/bin/headscale CLUSTER_ID=f5-$n CLASS=dedicated MAX_DEVICES=$((n * 2 + 10000)) PG_HOST=${DB_SSH#*@} PG_PORT=$DB_PORT PG_DB=$db PG_USER=headscale PG_PASSFILE=\$HOME/$RB/pg.pass NOISE_KEY=$sd/noise_private.key MAX_PEER_ENTRIES=$maxpeer INCREMENTAL=$INC RECONCILE_INTERVAL=${RECONCILE_INTERVAL:-1m} FULL_MAP_INTERVAL=${FULL_MAP_INTERVAL:-15m}"
 	on "$SERVER" "mkdir -p $sd && chmod 700 $sd && $envs bash ~/$RB/tools/cluster.sh config $sd/active $HOSTNAME_:$port $ip:$port >/dev/null && $envs bash ~/$RB/tools/cluster.sh register $sd/active >/dev/null && $envs bash ~/$RB/tools/cluster.sh start $sd/active active" | tee -a "$cell/server-setup.txt"
 	local t_seed=$SECONDS
