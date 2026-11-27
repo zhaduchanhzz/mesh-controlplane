@@ -540,9 +540,9 @@ in
         type = lib.types.int;
         default = 100;
         description = ''
-          Caps open connections to the database.
+          Caps open connections to the database. Behind PgBouncer (transaction mode) the pooler's pool for this database is the real bound; directly on PostgreSQL, the sum over processes must stay below max_connections. Never unbounded (0): one tailnet's join burst could then take every connection of a shared server.
         '';
-        example = 20;
+        example = 40;
       };
       max_idle_conns = lib.mkOption {
         type = lib.types.int;
@@ -582,6 +582,22 @@ in
           - `simple_protocol`: Sends each query with the simple protocol, arguments interpolated by the driver; needs no prepared statements, for PgBouncer in transaction mode without them.
         '';
         example = "simple_protocol";
+      };
+      lease_name = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = ''
+          The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6), one per cluster so one cluster's renewals never wait for another's (D9b). Empty uses `database.postgres.name`, still on a pool of its own; behind PgBouncer that shares the data pool's server connections, so set an alias there.
+        '';
+        example = "mesh_c1_lease";
+      };
+      lease_max_open_conns = lib.mkOption {
+        type = lib.types.int;
+        default = 2;
+        description = ''
+          Caps the open connections of the lease pool.
+        '';
+        example = 4;
       };
     };
   };

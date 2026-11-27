@@ -1302,6 +1302,8 @@ Where headscale stores nodes, users and keys. SQLite is recommended; PostgreSQL 
         max_idle_conns: 10
         conn_max_idle_time_secs: 3600
         query_exec_mode: cache_statement
+        lease_name: ""
+        lease_max_open_conns: 2
     ```
 
 ### `database.type` { #database.type data-toc-label="type" }
@@ -1583,6 +1585,8 @@ PostgreSQL, read only when [`database.type`](#database.type) is `postgres`. An e
         max_idle_conns: 10
         conn_max_idle_time_secs: 3600
         query_exec_mode: cache_statement
+        lease_name: ""
+        lease_max_open_conns: 2
     ```
 
 #### `database.postgres.host` { #database.postgres.host data-toc-label="host" }
@@ -1774,26 +1778,26 @@ Replaces `db_ssl` ([removed](#db_ssl)).
 - **Default:** `100`
 - **Env:** `HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS`
 
-Caps open connections to the database.
+Caps open connections to the database. Behind PgBouncer (transaction mode) the pooler's pool for this database is the real bound; directly on PostgreSQL, the sum over processes must stay below max_connections. Never unbounded (0): one tailnet's join burst could then take every connection of a shared server.
 
 === "YAML"
 
     ```yaml
     database:
       postgres:
-        max_open_conns: 20
+        max_open_conns: 40
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS=20
+    export HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS=40
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.database.postgres.max_open_conns = 20;
+    services.headscale.settings.database.postgres.max_open_conns = 40;
     ```
 
 #### `database.postgres.max_idle_conns` { #database.postgres.max_idle_conns data-toc-label="max_idle_conns" }
@@ -1886,6 +1890,62 @@ How the driver (pgx) sends queries, passed as its `default_query_exec_mode`. Beh
 
     ```nix
     services.headscale.settings.database.postgres.query_exec_mode = "simple_protocol";
+    ```
+
+#### `database.postgres.lease_name` { #database.postgres.lease_name data-toc-label="lease_name" }
+
+- **Type:** [string](#type-string)
+- **Default:** `""`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_LEASE_NAME`
+
+The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6), one per cluster so one cluster's renewals never wait for another's (D9b). Empty uses [`database.postgres.name`](#database.postgres.name), still on a pool of its own; behind PgBouncer that shares the data pool's server connections, so set an alias there.
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        lease_name: mesh_c1_lease
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_LEASE_NAME=mesh_c1_lease
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.lease_name = "mesh_c1_lease";
+    ```
+
+#### `database.postgres.lease_max_open_conns` { #database.postgres.lease_max_open_conns data-toc-label="lease_max_open_conns" }
+
+- **Type:** [integer](#type-integer)
+- **Default:** `2`
+- **Env:** `HEADSCALE_DATABASE_POSTGRES_LEASE_MAX_OPEN_CONNS`
+
+Caps the open connections of the lease pool.
+
+=== "YAML"
+
+    ```yaml
+    database:
+      postgres:
+        lease_max_open_conns: 4
+    ```
+
+=== "Environment"
+
+    ```shell
+    export HEADSCALE_DATABASE_POSTGRES_LEASE_MAX_OPEN_CONNS=4
+    ```
+
+=== "NixOS"
+
+    ```nix
+    services.headscale.settings.database.postgres.lease_max_open_conns = 4;
     ```
 
 ## `dns` { #dns data-toc-label="dns" }
