@@ -20,7 +20,7 @@
 #   METRICS       loopback metrics listener (default 127.0.0.1:9090; a standby on the same host needs another)
 #   NOISE_KEY     Noise private key path, shared by active and standby (default RUNDIR/../noise_private.key)
 #   MAX_PEER_ENTRIES (default 1000000), INCREMENTAL=1|0 (+RECONCILE_INTERVAL, FULL_MAP_INTERVAL; 0 writes enabled: false)
-#   PG_MAX_OPEN   database.postgres.max_open_conns (default 10, as production)
+#   PG_MAX_OPEN   database.postgres.max_open_conns (default 100, as production since 2026-11-27); PG_MAX_IDLE (default 10)
 #   LEASE_TTL (+LEASE_RENEW 3s, LEASE_ACQUIRE 1s, LEASE_MARGIN 5s)  tuning.cluster_lease; unset = product defaults
 #   GOMAXPROCS    default: all CPUs of the host
 #   HEADSCALE_BENCH_MUTEX_FRACTION / HEADSCALE_BENCH_BLOCK_RATE  passed through (benchpprof builds)
@@ -99,8 +99,8 @@ database:
     user: ${PG_USER:-headscale}
     pass: file:${PG_PASSFILE:?PG_PASSFILE is required}
     ssl: disable
-    max_open_conns: ${PG_MAX_OPEN:-10}
-    max_idle_conns: ${PG_MAX_OPEN:-10}
+    max_open_conns: ${PG_MAX_OPEN:-100}
+    max_idle_conns: ${PG_MAX_IDLE:-10}
 dns:
   magic_dns: true
   base_domain: bench.tailnet.internal

@@ -49,7 +49,11 @@ func Default() types.Config {
 			},
 			Postgres: types.PostgresConfig{
 				Ssl:                 "false",
-				MaxOpenConnections:  10,
+				// 100 (was 10, owner 2026-11-27): at 10 a join burst in one
+				// large tailnet held every connection and starved the cluster
+				// lease renewal (P14f F5). Idle stays at 10 so a quiet process
+				// does not keep 100 server connections.
+				MaxOpenConnections:  100,
 				MaxIdleConnections:  10,
 				ConnMaxIdleTimeSecs: 3600,
 				QueryExecMode:       types.PostgresQueryExecCacheStatement,

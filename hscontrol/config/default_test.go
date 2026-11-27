@@ -56,6 +56,8 @@ func TestDefaultHoldsDefaults(t *testing.T) {
 	assert.Equal(t, netip.MustParsePrefix("fd7a:115c:a1e0::/48"), *d.Prefixes.V6)
 	assert.Equal(t, types.DatabaseSqliteShort, d.Database.Type)
 	assert.Equal(t, "/var/lib/headscale/db.sqlite", d.Database.Sqlite.Path)
+	assert.Equal(t, 100, d.Database.Postgres.MaxOpenConnections, "owner 2026-11-27 (P14f F5): 10 starved the lease in a join burst")
+	assert.Equal(t, 10, d.Database.Postgres.MaxIdleConnections)
 	assert.Equal(t, []types.HTTPURL{"https://controlplane.tailscale.com/derpmap/default"}, d.DERP.URLs)
 	assert.True(t, d.DERP.AutoUpdate)
 	assert.Equal(t, 3*time.Hour, d.DERP.UpdateFrequency)
@@ -174,6 +176,22 @@ func TestValidateGoData(t *testing.T) {
 				c.Database.Type = types.DatabasePostgres
 				c.Database.Sqlite.Path = ""
 			},
+		},
+		{
+			name: "postgres pool unbounded",
+			set: func(c *types.Config) {
+				c.Database.Type = types.DatabasePostgres
+				c.Database.Postgres.MaxOpenConnections = 0
+			},
+			wantErr: "database.postgres.max_open_conns must be at least 1",
+		},
+		{
+			name: "postgres pool negative",
+			set: func(c *types.Config) {
+				c.Database.Type = types.DatabasePostgres
+				c.Database.Postgres.MaxOpenConnections = -1
+			},
+			wantErr: "database.postgres.max_open_conns must be at least 1",
 		},
 		{
 			name:    "unix socket empty",

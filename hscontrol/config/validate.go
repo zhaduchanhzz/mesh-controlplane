@@ -649,8 +649,8 @@ func keyFile(p string) string {
 	return abs
 }
 
-// validateDatabase records a ConfigError when database.type is unset, or
-// is sqlite without a path to open.
+// validateDatabase records a ConfigError when database.type is unset, is
+// sqlite without a path to open, or is postgres with an unbounded pool.
 func validateDatabase(c *types.Config, v *configValidator) {
 	const see = "https://headscale.net/stable/ref/database/"
 
@@ -674,6 +674,15 @@ func validateDatabase(c *types.Config, v *configValidator) {
 			},
 			Hint: `set database.sqlite.path, e.g. "/var/lib/headscale/db.sqlite"`,
 			See:  see,
+		})
+	case t == types.DatabasePostgres && c.Database.Postgres.MaxOpenConnections < 1:
+		// database/sql reads 0 as unbounded: one tailnet's join burst could
+		// then take every connection of a shared server (P14f F5).
+		v.Add(&types.ConfigError{
+			Reason:  "database.postgres.max_open_conns must be at least 1",
+			Current: []types.KV{{Key: "database.postgres.max_open_conns", Value: c.Database.Postgres.MaxOpenConnections}},
+			Hint:    "the default is 100; size it to the pooler's pool for this database",
+			See:     see,
 		})
 	}
 }
