@@ -120,13 +120,27 @@ m06x_isolated() {
   [ "$(peers "$B2")" = n1-b1 ] || p="$p; b2 peers [$(peers "$B2")]"
 }
 # m06x_setacl JSON: write A's policy through A's key with a fresh ETag.
+# A policy write is also bounded by the tailnet's config-write bucket
+# (tuning.tenant_api.config_write_rate, 30/min by default): a soak writing
+# faster gets 429 with Retry-After, as designed. The harness then behaves as a
+# well-written client: it waits Retry-After and writes again (fresh ETag).
+# Each 429 is counted in $TMPD/m06x-429 and reported; the time a change takes
+# to reach a1 starts after the write that succeeded.
 m06x_setacl() {
-  local r e
-  r=$(m06x_api a GET /api/v2/tailnet/-/acl "" "" "Accept: application/hujson"); e=$(s08c_etag)
-  [ "${r%% *}" = 200 ] && [ -n "$e" ] || { echo "GET acl -> ${r%% *}"; return 1; }
-  r=$(m06x_api a POST /api/v2/tailnet/-/acl "$1" application/hujson "If-Match: $e")
-  [ "${r%% *}" = 200 ] || { echo "POST acl -> ${r%% *}"; return 1; }
+  local r e i ra
+  for i in $(seq 1 30); do
+    r=$(m06x_api a GET /api/v2/tailnet/-/acl "" "" "Accept: application/hujson"); e=$(s08c_etag)
+    [ "${r%% *}" = 200 ] && [ -n "$e" ] || { echo "GET acl -> ${r%% *}"; return 1; }
+    r=$(m06x_api a POST /api/v2/tailnet/-/acl "$1" application/hujson "If-Match: $e")
+    [ "${r%% *}" = 200 ] && return 0
+    [ "${r%% *}" = 429 ] || { echo "POST acl -> ${r%% *}"; return 1; }
+    echo 429 >>"$TMPD/m06x-429"
+    ra=$(tr -d '\r' <"$TMPD/s08c-hdr" 2>/dev/null | awk 'tolower($1) == "retry-after:" {v = $2} END {print v + 0}')
+    sleep $((ra > 0 ? ra : 1))
+  done
+  echo "POST acl -> 429 thirty times"; return 1
 }
+m06x_429() { [ -f "$TMPD/m06x-429" ] && wc -l <"$TMPD/m06x-429" | tr -d ' ' || echo 0; }
 m06x_tag() { local r; r=$(m06x_api a POST "/api/v2/device/$M06X_DEV/tags" "{\"tags\":[\"$1\"]}"); [ "${r%% *}" = 200 ]; }
 m06x_routes() { local r; r=$(m06x_api a POST "/api/v2/device/$M06X_DEV/routes" "{\"routes\":[$1]}"); [ "${r%% *}" = 200 ]; }
 
@@ -134,6 +148,7 @@ m06x_setup() {
   local s r
   # The peer sets before M06x: undo must bring them back. In the full run
   # other cases may have left nodes of the same tailnet (S13: A's n1flood-*).
+  rm -f "$TMPD/m06x-429"
   M06X_BASE_A1=$(peers "$A1"); M06X_BASE_B1=$(peers "$B1")
   grep -qE '(^| )(n1-a|n1flood-)' <<<"$M06X_BASE_B1" && p="$p; b1 sees nodes of A before M06x [$M06X_BASE_B1]"
   for s in a b; do
@@ -196,7 +211,7 @@ m06x_acl() {
     r=$(m06x_setacl "$M06X_P1") || { p="$p; allow round $i: $r"; break; }
     m06x_waitc "acl-allow-$i" present n1-a2x; ms=$M06X_MS; alw+=("$ms"); m06x_time acl-allow "$i" "$ms"
   done
-  M06X_C="block $(m06x_stats "${blk[@]}"), allow $(m06x_stats "${alw[@]}")"
+  M06X_C="block $(m06x_stats "${blk[@]}"), allow $(m06x_stats "${alw[@]}"); config-write 429 answered (Retry-After honoured): $(m06x_429)"
   [[ $M06X_C == *MISSED* ]] && p="$p; setACL not within ${M06X_BOUND}s: $M06X_C"
   m06x_isolated
 }
