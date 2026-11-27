@@ -48,7 +48,7 @@ func Default() types.Config {
 				WALAutoCheckPoint: 1000, // SQLite default
 			},
 			Postgres: types.PostgresConfig{
-				Ssl:                 "false",
+				Ssl: "false",
 				// 100 (was 10, owner 2026-11-27): at 10 a join burst in one
 				// large tailnet held every connection and starved the cluster
 				// lease renewal (P14f F5). Idle stays at 10 so a quiet process
