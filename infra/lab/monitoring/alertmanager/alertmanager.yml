@@ -1,0 +1,33 @@
+# P13f: Alertmanager on mc-db. NOT APPLIED.
+#
+# The lab has no paging service. Alerts go to a webhook receiver whose URL
+# is in /opt/mc-mon/secrets/alertmanager-webhook-url (0600, outside Git;
+# read with url_file, never inlined). Until the owner picks a receiver the
+# file may point at a local sink; the Alertmanager UI (127.0.0.1:9093 over
+# SSH) always shows active alerts.
+route:
+  receiver: owner
+  group_by: [alertname, cluster, scope, stanza]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical"]
+      receiver: owner
+      repeat_interval: 1h
+
+# A lost lease or a missing leader explains the downstream alerts of the
+# same cluster; do not page twice.
+inhibit_rules:
+  - source_matchers: [alertname="MeshClusterNoLeaseHolder"]
+    target_matchers: [alertname=~"MeshClusterLeaseLost|MeshClusterLeaseDeadlineLow|MeshFenceRefusalsSpike"]
+    equal: [cluster]
+  - source_matchers: [alertname="PatroniNoLeader"]
+    target_matchers: [alertname=~"PatroniNoSyncStandby|PostgresReplicationLagBytes"]
+    equal: [scope]
+
+receivers:
+  - name: owner
+    webhook_configs:
+      - url_file: /etc/alertmanager/secrets/webhook-url
+        send_resolved: true

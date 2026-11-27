@@ -1,0 +1,276 @@
+# P13f alert rules (tickets/P13.md §P13f "Cảnh báo tối thiểu"). NOT APPLIED.
+# Unit tests: ../tests/mesh.rules.test.yml (promtool test rules), run by
+# ../../check.sh. Severity: critical = control plane (or its database) not
+# serving or at risk of split ownership; warning = degraded, act soon.
+
+groups:
+  - name: mesh-cluster-lease
+    rules:
+      # Lease TTL is 10 s (tuning.cluster_lease); a scrape every 15 s, so
+      # 30 s is "no holder for more than TTL" with margin for one scrape.
+      - alert: MeshClusterNoLeaseHolder
+        expr: max by (cluster) (headscale_cluster_lease_held) < 1
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "Cluster {{ $labels.cluster }}: no process holds the lease"
+          description: "No process of cluster {{ $labels.cluster }} has held the cluster lease for more than 30 s: its tailnets are not served."
+
+      - alert: MeshClusterLeaseLost
+        expr: sum by (cluster) (increase(headscale_cluster_lease_events_total{event=~"lost|self_fence"}[5m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Cluster {{ $labels.cluster }}: lease lost or self-fenced"
+          description: "The active process of {{ $labels.cluster }} lost its lease (taken over or expired) or self-fenced in the last 5 minutes."
+
+      # Flapping: more than 3 takeovers in 15 minutes.
+      - alert: MeshClusterLeaseFlapping
+        expr: sum by (cluster) (increase(headscale_cluster_lease_events_total{event="acquired"}[15m])) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "Cluster {{ $labels.cluster }}: lease changed hands {{ $value | humanize }} times in 15 min"
+
+      # The active process is close to its self-fence deadline: renewals
+      # are not succeeding (database or pooler slow or down).
+      - alert: MeshClusterLeaseDeadlineLow
+        expr: headscale_cluster_lease_deadline_seconds < 3 and on (cluster, holder) headscale_cluster_lease_held == 1
+        for: 15s
+        labels: { severity: warning }
+        annotations:
+          summary: "Cluster {{ $labels.cluster }}: {{ $value | humanize }} s left before the active process self-fences"
+
+      - alert: MeshClusterLeaseRenewSlow
+        expr: histogram_quantile(0.99, sum by (cluster, le) (rate(headscale_cluster_lease_renew_duration_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Cluster {{ $labels.cluster }}: lease renew p99 {{ $value | humanizeDuration }}"
+
+      # The highest lease epoch reported for a cluster went down (a restore
+      # without fence, ADR 0012). Processes keep reporting the epoch of the
+      # last lease they acquired.
+      - alert: MeshClusterLeaseEpochRegression
+        expr: max by (cluster) (headscale_cluster_lease_epoch) < max by (cluster) (max_over_time(headscale_cluster_lease_epoch[6h]))
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Cluster {{ $labels.cluster }}: lease epoch went backwards ({{ $value }})"
+          description: "Run the epoch fence (ADR 0012) before any process serves; check for a database restore."
+
+      - alert: MeshClusterLeaseRowExpired
+        expr: mesh_cluster_lease_live == 0 and mesh_cluster_lease_since_update_seconds > 30
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Cluster {{ $labels.cluster }}: lease row expired in the database for {{ $value | humanizeDuration }}"
+
+  - name: mesh-cluster-runtime
+    rules:
+      - alert: MeshFenceRefusalsSpike
+        expr: sum by (reason) (rate(headscale_tenant_fence_refusals_total[5m])) > 0.2
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Tenant writes refused by the ownership fence: {{ $value | humanize }}/s ({{ $labels.reason }})"
+          description: "Writes are being rolled back (stale owner, lost lease, database errors). reason=owner/lease right after a move or failover is expected for a few seconds."
+
+      - alert: MeshDBPoolSaturated
+        expr: |
+          headscale_db_pool_in_use_connections
+            / on (job, instance, pool) (headscale_db_pool_max_open_connections > 0) > 0.9
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} pool {{ $labels.pool }} at {{ $value | humanizePercentage }} of max_open_conns"
+
+      - alert: MeshDBPoolWaiting
+        expr: rate(headscale_db_pool_wait_count_total[5m]) > 1
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} pool {{ $labels.pool }}: callers wait for a connection ({{ $value | humanize }}/s)"
+
+      - alert: MeshReconcileSlow
+        expr: histogram_quantile(0.99, sum by (instance, le) (rate(headscale_cluster_reconcile_duration_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: reconcile p99 {{ $value | humanizeDuration }} (interval 2 s)"
+
+      - alert: MeshTailnetReloadPending
+        expr: headscale_cluster_tailnet_runtimes{state="reload_pending"} > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.cluster }}: {{ $value }} tailnet(s) keep failing to reload a new policy or DNS revision"
+          description: "The previous settings stay in force (never allow-all). See headscale_tailnet_reload_failures_total and the process log."
+
+      - alert: MeshRuntimeStuckStopping
+        expr: headscale_cluster_tailnet_runtimes{state="stopping"} > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.holder }}: {{ $value }} retired runtime(s) still draining after 2 min"
+
+      - alert: MeshTailnetLabelsNearCap
+        expr: headscale_tailnet_metric_labels > 0.9 * 2000 or increase(headscale_tailnet_metric_label_overflow_total[1h]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: per-tailnet metric labels near or past the cap (tuning.tailnet_metric_label_limit)"
+
+      - alert: MeshTailnetQuota80
+        expr: mesh_tailnet_quota_devices / mesh_tailnet_quota_limit_devices >= 0.8
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Tailnet {{ $labels.tailnet }} on {{ $labels.cluster }} at {{ $value | humanizePercentage }} of its device limit"
+
+      - alert: MeshTargetDown
+        expr: up{job=~"mesh-cluster|mesh-bootstrap|mesh-placement"} == 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} on {{ $labels.host }} ({{ $labels.instance }}) is not scraped"
+
+  - name: mesh-edge
+    rules:
+      # The global bucket of the bootstrap endpoint was hit: every tenant
+      # got 429 for a while (B7). With PROXY v2 the per-address bucket
+      # should stop a single source first.
+      - alert: MeshBootstrapGlobalLimit
+        expr: increase(mesh_bootstrap_requests_total{outcome="limited_global"}[5m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Bootstrap global rate limit hit {{ $value | humanize }} times in 5 min: all tenants were refused"
+
+      - alert: MeshBootstrapProxyHeaderRefused
+        expr: increase(mesh_bootstrap_proxy_refused_total[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Bootstrap closed {{ $value | humanize }} connections at the PROXY v2 check ({{ $labels.reason }})"
+          description: "missing_header/malformed/timeout: the front door is misconfigured. untrusted_header: a peer other than the front door sent a PROXY header (spoofing attempt or a path around the front door)."
+
+      - alert: MeshPlacementRevocationListUnavailable
+        expr: mesh_placement_revocation_list_ok == 0
+        labels: { severity: critical }
+        annotations:
+          summary: "mesh-placement refuses every operator request: the revocation file cannot be read or parsed"
+
+      - alert: MeshTLSCertExpiresSoon
+        expr: probe_ssl_earliest_cert_expiry - time() < 14 * 86400
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: TLS certificate expires in {{ $value | humanizeDuration }}"
+
+      - alert: MeshPublicEndpointDown
+        expr: probe_success{job="blackbox-https"} == 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} fails from outside (TLS or HTTP)"
+
+  - name: mesh-database
+    rules:
+      - alert: PgBouncerClientsWaiting
+        expr: max by (instance, database) (pgbouncer_pools_client_waiting_connections) > 0
+        for: 30s
+        labels: { severity: warning }
+        annotations:
+          summary: "PgBouncer {{ $labels.instance }} db {{ $labels.database }}: {{ $value }} clients waiting for a server connection"
+
+      - alert: PgBouncerMaxWaitHigh
+        expr: max by (instance, database) (pgbouncer_pools_client_maxwait_seconds) > 1
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "PgBouncer {{ $labels.instance }} db {{ $labels.database }}: oldest waiting client {{ $value | humanizeDuration }}"
+          description: "query_wait_timeout (5 s) is below the lease self-fence deadline (8 s, ADR 0006 §3.4); waits close to it make renewals fail."
+
+      - alert: PgBouncerDown
+        expr: pgbouncer_up == 0 or up{job="pgbouncer"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "PgBouncer {{ $labels.host }} is down or unreachable"
+
+      - alert: PatroniNoLeader
+        expr: max by (scope) (patroni_primary) < 1 or max by (scope) (patroni_cluster_unlocked) > 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "Patroni {{ $labels.scope }}: no primary (cluster unlocked)"
+
+      - alert: PatroniNoSyncStandby
+        expr: max by (scope) (patroni_sync_standby) < 1
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Patroni {{ $labels.scope }}: no synchronous standby (a failover may lose commits; ADR 0011)"
+
+      - alert: PostgresReplicationLagBytes
+        # Patroni reports xlog_location on the primary and
+        # xlog_replayed_location on replicas.
+        expr: |
+          max by (scope) (patroni_xlog_location)
+            - on (scope) group_right
+          max by (scope, host) (patroni_xlog_replayed_location and on (instance) (patroni_replica == 1))
+            > 16 * 1024 * 1024
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Replica {{ $labels.host }} is {{ $value | humanize1024 }}B behind the primary"
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL on {{ $labels.host }} does not answer its exporter"
+
+      - alert: PostgresWALArchiveFailing
+        expr: pgbackrest_archive_check_ok == 0 or time() - pgbackrest_archive_last_wal_timestamp_seconds > 900
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "WAL archiving to pgBackRest is failing or stale on stanza {{ $labels.stanza }}"
+
+      - alert: PostgresBackupTooOld
+        expr: time() - max by (stanza) (pgbackrest_backup_last_completed_timestamp_seconds) > 26 * 3600
+        labels: { severity: critical }
+        annotations:
+          summary: "Last pgBackRest backup of {{ $labels.stanza }} finished {{ $value | humanizeDuration }} ago"
+
+      - alert: BackupMetricsMissing
+        expr: absent(pgbackrest_backup_last_completed_timestamp_seconds)
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "No pgBackRest metrics: the textfile job on mc-db is not running"
+
+  - name: mesh-hosts
+    rules:
+      # L6 / P13 risk 1: the lease runs on the primary's clock; a skew above
+      # the safety margin (2 s) opens a window for two servers. Alert at
+      # 100 ms on the PostgreSQL nodes.
+      - alert: HostClockSkew
+        expr: abs(node_timex_offset_seconds{host=~"mc-pg-.*|mc-db"}) > 0.1 or node_timex_sync_status{host=~"mc-pg-.*|mc-db"} == 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.host }}: clock offset {{ $value }} s or not synchronised"
+
+      - alert: HostDiskAlmostFull
+        expr: |
+          1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.host }} {{ $labels.mountpoint }} is {{ $value | humanizePercentage }} full"
+
+      - alert: EtcdNoLeader
+        expr: etcd_server_has_leader == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "etcd member {{ $labels.host }} has no leader (Patroni DCS)"

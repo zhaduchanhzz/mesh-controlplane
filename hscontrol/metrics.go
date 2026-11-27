@@ -3,6 +3,7 @@ package hscontrol
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tenantlabel"
 	"tailscale.com/envknob"
 )
 
@@ -54,3 +55,9 @@ var (
 		Help:      "Open long-poll map sessions by tailnet; tailnets past the label cap are summed under tailnet=\"other\".",
 	}, []string{"tailnet"})
 )
+
+// P13f L4: a tailnet's series of these vectors are deleted when its label
+// is released (its runtime stopped).
+func init() {
+	tenantlabel.Register(tailnetMapSent, tailnetMapSessions, tailnetAPIRequests)
+}

@@ -1,0 +1,48 @@
+# P13f: the lab-ports HAProxy instance on the VPS (README.md). A unit of its
+# own, with its own config and runtime directory: it shares nothing with the
+# MeshGuard HAProxy (haproxy.service / mg-l4proxy) but the binary.
+[Unit]
+Description=HAProxy for the mesh-controlplane lab ports 8443-8445 (P13f; not MeshGuard)
+Documentation=https://github.com/zhaduchanhzz/mesh-controlplane/tree/master/infra/lab/vps-haproxy
+After=network-online.target wg-quick@wg-mesh.service
+Wants=network-online.target
+# As the socket-proxyd units it replaces: the backends are behind wg-mesh.
+Requires=wg-quick@wg-mesh.service
+
+[Service]
+Type=notify
+Environment="CONFIG=/etc/mesh-lab-haproxy/haproxy.cfg"
+ExecStartPre=/usr/sbin/haproxy -f ${CONFIG} -c -q
+ExecStart=/usr/sbin/haproxy -Ws -f ${CONFIG}
+ExecReload=/usr/sbin/haproxy -f ${CONFIG} -c -q
+ExecReload=/bin/kill -USR2 $MAINPID
+KillMode=mixed
+Restart=always
+RestartSec=2s
+
+# Ports above 1024 only: no capability, no root.
+DynamicUser=yes
+RuntimeDirectory=mesh-lab-haproxy
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

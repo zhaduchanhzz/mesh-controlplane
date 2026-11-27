@@ -1,0 +1,10 @@
+# P13f: dashboards from infra/lab/monitoring/grafana/dashboards. NOT APPLIED.
+apiVersion: 1
+providers:
+  - name: mesh
+    folder: Mesh control plane
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

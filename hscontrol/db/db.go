@@ -61,12 +61,14 @@ type HSDatabase struct {
 // Tailnet returns the tailnet this handle is bound to.
 func (hsdb *HSDatabase) Tailnet() types.Tailnet { return hsdb.tailnet }
 
-// NewHeadscaleDatabase is the single-tenant path: it opens the platform
-// (schema, version checks, validation; see [OpenPlatform]) and binds the
+// NewHeadscaleDatabase is the single-tenant path (`headscale serve`,
+// development and tests): it migrates and opens the platform (schema,
+// version checks, validation; see [MigrateAndOpenPlatform]) and binds the
 // handle to the runtime's tailnet (tenantscope). A fresh database gets one
-// default tailnet. The returned handle owns the connection pool.
+// default tailnet. The returned handle owns the connection pool. Cluster
+// mode never uses it (ADR 0013: cluster processes do not migrate).
 func NewHeadscaleDatabase(cfg *types.Config) (*HSDatabase, error) {
-	p, err := OpenPlatform(cfg)
+	p, err := MigrateAndOpenPlatform(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +89,10 @@ func NewHeadscaleDatabase(cfg *types.Config) (*HSDatabase, error) {
 }
 
 // openDB opens the database cfg names; sqlitePath is database.sqlite.path
-// resolved.
-func openDB(cfg types.DatabaseConfig, sqlitePath string) (*gorm.DB, error) {
+// resolved. readOnly (SQLite) opens a handle that cannot write on any of its
+// connections: query_only is in the DSN, which the driver applies to every
+// new connection (P13f L3), and no pragma that writes the file is set.
+func openDB(cfg types.DatabaseConfig, sqlitePath string, readOnly bool) (*gorm.DB, error) {
 	// TODO(kradalby): Integrate this with zerolog
 	var dbLogger logger.Interface
 	if cfg.Debug {
@@ -113,9 +117,13 @@ func openDB(cfg types.DatabaseConfig, sqlitePath string) (*gorm.DB, error) {
 
 		// Build SQLite configuration with pragmas set at connection time
 		sqliteConfig := sqliteconfig.Default(sqlitePath)
-		if cfg.Sqlite.WriteAheadLog {
+
+		switch {
+		case readOnly:
+			sqliteConfig = sqliteconfig.QueryOnly(sqlitePath)
+		case cfg.Sqlite.WriteAheadLog:
 			sqliteConfig.WALAutocheckpoint = cfg.Sqlite.WALAutoCheckPoint
-		} else {
+		default:
 			// The journal mode persists in the file, so leaving it unset keeps
 			// a database an earlier run put in WAL mode there. FULL is SQLite's
 			// default for a rollback journal; NORMAL can corrupt it on power loss.
@@ -341,7 +349,7 @@ func Write[T any](db *gorm.DB, fn func(tx *gorm.DB) (T, error)) (T, error) {
 }
 
 // validateSQLiteSchema checks the database against schema.sql with squibble.
-func validateSQLiteSchema(dbConn *gorm.DB) error {
+func validateSQLiteSchema(dbConn *gorm.DB, schema string) error {
 	sqlConn, err := dbConn.DB()
 	if err != nil {
 		return fmt.Errorf("getting DB from gorm: %w", err)
@@ -369,7 +377,7 @@ func validateSQLiteSchema(dbConn *gorm.DB) error {
 		},
 	}
 
-	if err := squibble.Validate(ctx, conn, dbSchema, &opts); err != nil { //nolint:noinlineerr
+	if err := squibble.Validate(ctx, conn, schema, &opts); err != nil { //nolint:noinlineerr
 		return fmt.Errorf("validating schema: %w", err)
 	}
 

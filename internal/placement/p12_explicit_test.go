@@ -26,8 +26,7 @@ func TestCreateTailnetOnNamedCluster(t *testing.T) {
 			addCluster(t, r, "drain", ClassShared, ClusterDraining, 100)
 			addCluster(t, r, "full", ClassShared, ClusterActive, 2)
 			addCluster(t, r, "ded", ClassDedicated, ClusterActive, 100)
-			addCluster(t, r, "cold", ClassShared, ClusterActive, 100)
-			require.NoError(t, gdb.Exec(`DELETE FROM cluster_leases WHERE cluster_id = 'cold'`).Error)
+			addClusterNoLease(t, r, "cold", ClassShared, ClusterActive, 100)
 
 			addNodes(t, gdb, rawTailnet(t, gdb, "full", types.TailnetActive), 2)
 

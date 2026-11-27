@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/config"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/db"
@@ -26,6 +27,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/state"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/types/change"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/dbstats"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/lease"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/placement"
 	"github.com/zhaduchanhzz/mesh-controlplane/internal/tailnet"
@@ -142,6 +144,76 @@ type Cluster struct {
 	// loadHook, when set (tests, SetLoadHook), runs between building a
 	// tailnet's runtime and starting it. Under mu.
 	loadHook func(tailnet.ID)
+
+	// epochs is the highest owner_epoch this process has seen per tailnet
+	// (P13c, ADR 0012 §3): loaded at, or set by its own hand-over and
+	// take-over. A tailnet whose owner_epoch is below it (the database went
+	// back: restore, lossy promote) is retired and not loaded again until
+	// the epoch fence raised owner_epoch.
+	epochs ownerEpochs
+}
+
+// ownerEpochs is the per-tailnet owner_epoch high-water mark of a cluster
+// process (memory only).
+type ownerEpochs struct {
+	mu     sync.Mutex
+	seen   map[tailnet.ID]uint64
+	logged map[tailnet.ID]uint64 // db epoch of the last regression logged
+}
+
+// note raises the high-water mark of id to epoch.
+func (e *ownerEpochs) note(id tailnet.ID, epoch uint64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.seen == nil {
+		e.seen = make(map[tailnet.ID]uint64)
+	}
+
+	e.seen[id] = max(e.seen[id], epoch)
+}
+
+// behind reports whether owner_epoch epoch of id is below the high-water
+// mark (returned), and whether this regression is new (log it once).
+func (e *ownerEpochs) behind(id tailnet.ID, epoch uint64) (uint64, bool, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	hwm := e.seen[id]
+	if epoch >= hwm {
+		return hwm, false, false
+	}
+
+	if e.logged == nil {
+		e.logged = make(map[tailnet.ID]uint64)
+	}
+
+	first := e.logged[id] != epoch
+	e.logged[id] = epoch
+
+	return hwm, true, first
+}
+
+// errOwnerEpochRegression: a tailnet's owner_epoch is below one this
+// process served or set it at.
+var errOwnerEpochRegression = errors.New("owner_epoch went backwards in the database (restore or lossy promote): " +
+	"not serving the tailnet until the epoch fence runs")
+
+// ownerEpochRegressed logs (once per database epoch) and reports a tailnet
+// whose owner_epoch went below this process's high-water mark.
+func (c *Cluster) ownerEpochRegressed(id tailnet.ID, epoch uint64) error {
+	hwm, back, first := c.epochs.behind(id, epoch)
+	if !back {
+		return nil
+	}
+
+	if first {
+		log.Error().Str("tailnet", id.String()).Uint64("owner_epoch", epoch).Uint64("owner_epoch_high_water_mark", hwm).
+			Msg("CRITICAL epoch regression: owner_epoch is below what this process saw (restore or lossy promote?); " +
+				"the tailnet is not served until the epoch fence runs")
+	}
+
+	return fmt.Errorf("%w: tailnet %s at owner_epoch %d, seen %d", errOwnerEpochRegression, id, epoch, hwm)
 }
 
 // runLoadHook runs the test hook of the load-to-start window (P12c B5).
@@ -169,6 +241,16 @@ type tenantRuntime struct {
 	// and by the reconcile loop, each under the lock that makes storing (or
 	// reading) and installing one step.
 
+	// P13f L9: the state records a revision only once its reload
+	// succeeded. Until then *Pending is set (read by the metrics
+	// collector) and reconcile retries every tick; *FailedRev is the
+	// revision whose failure was logged at error level, so a failing
+	// revision is logged once, not every tick. Only reconcile writes them.
+	policyPending   atomic.Bool
+	configPending   atomic.Bool
+	policyFailedRev uint64
+	configFailedRev uint64
+
 	cancel context.CancelFunc // stops its scheduled tasks
 	stop   func()             // from startRuntime
 
@@ -180,7 +262,16 @@ type tenantRuntime struct {
 // ACTIVE tailnet owned by cfg.ClusterID. cfg is shared by the runtimes:
 // per-tailnet DNS and IP settings come with the tailnet config revision
 // (later ticket); policy, users, nodes and keys are per tailnet already.
-func NewCluster(cfg *types.Config) (*Cluster, error) {
+//
+// The cluster's Noise key file must exist (P13e, ADR 0014 §3): only
+// [WithNoiseKeyInit] creates a missing one, and only for a cluster whose
+// registry entry names no key yet.
+func NewCluster(cfg *types.Config, opts ...ClusterOption) (*Cluster, error) {
+	var o clusterOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	err := config.Validate(cfg)
 	if err != nil {
 		return nil, err
@@ -194,14 +285,25 @@ func NewCluster(cfg *types.Config) (*Cluster, error) {
 	// A tenant without access rules is denied, not allow-all (AGENTS rule 8).
 	cfg.PolicyEmptyDenies = true
 
-	noiseKey, err := readOrCreatePrivateKey(cfg.AbsPath(cfg.Noise.PrivateKeyPath))
+	keyPath := cfg.AbsPath(cfg.Noise.PrivateKeyPath)
+
+	noiseKey, err := readClusterNoiseKey(keyPath, o.initNoiseKey)
 	if err != nil {
-		return nil, fmt.Errorf("reading or creating Noise protocol private key: %w", err)
+		return nil, err
 	}
 
 	platform, err := db.OpenPlatform(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("opening platform database: %w", err)
+	}
+
+	if noiseKey == nil {
+		noiseKey, err = initClusterNoiseKey(platform, keyPath)
+		if err != nil {
+			_ = platform.Close()
+
+			return nil, err
+		}
 	}
 
 	registry, err := placement.New(platform.RegistryDB(), placement.Config{})
@@ -343,6 +445,16 @@ func (c *Cluster) load(tn types.Tailnet) (*tenantRuntime, error) {
 		return nil, fmt.Errorf("tailnet %s: %w", id, err)
 	}
 
+	// P13c: never at an owner_epoch below one this process saw (fail closed).
+	err = c.ownerEpochRegressed(id, tdb.Tailnet().OwnerEpoch)
+	if err != nil {
+		_ = tdb.Close()
+
+		return nil, err
+	}
+
+	c.epochs.note(id, tdb.Tailnet().OwnerEpoch)
+
 	// The runtime's own config: the tailnet's DNS under <slug>.<base>, a
 	// live DNS no other runtime shares (ADR 0008 §5). Stored settings that
 	// do not parse or validate keep the tailnet out: never default DNS.
@@ -420,6 +532,37 @@ func (c *Cluster) Runtime(id tailnet.ID) (*Headscale, bool) {
 	return rt.h, true
 }
 
+// noiseKeyRotated re-checks, on every reconcile tick, the Noise key the
+// registry names for this cluster (P13e, ADR 0014 §3, owner D8). Checked
+// only when the lease was taken, a rotation in the registry (an emergency:
+// the old key is considered leaked) left this process serving with the old
+// key until its next takeover. On a mismatch it stops serving at once (not
+// ready, no new tenant handle) and steps down: onLeaseLost retires every
+// runtime, the lease is released for a process with the registered key,
+// and this one stays standby. Any other error is logged only: writes are
+// fenced in the database regardless. Callers hold leaseMu.
+func (c *Cluster) noiseKeyRotated() bool {
+	err := c.platform.RecordNoiseKey(c.noiseKey.Public().String()) //nolint:contextcheck // Platform bounds its own lookups (lookupContext)
+
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, db.ErrNoiseKeyMismatch):
+		log.Error().Err(err).Str("cluster", c.platform.ClusterID()).
+			Msg("the registry names another Noise key for this cluster: stepping down")
+
+		c.ready.Store(false)
+		c.platform.ClearLease()
+		c.lease.StepDown("the registry names another Noise key")
+
+		return true
+	default:
+		log.Warn().Err(err).Msg("reconcile: checking the registered Noise key")
+
+		return false
+	}
+}
+
 // reconcile loads the ACTIVE tailnets this cluster owns and does not serve
 // yet, and retires runtimes whose tailnet is no longer owned by this cluster
 // at the epoch they were loaded with (moved, epoch bumped, not ACTIVE,
@@ -430,6 +573,13 @@ func (c *Cluster) reconcile() {
 
 	if !c.ready.Load() || !c.leaseHeld() {
 		return // standby, or the lease is ending: onLeaseLost retires
+	}
+
+	start := time.Now()
+	defer func() { reconcileDuration.Observe(time.Since(start).Seconds()) }()
+
+	if c.noiseKeyRotated() {
+		return
 	}
 
 	// ADR 0010: first give away the tailnets with a move requested (they
@@ -480,11 +630,16 @@ func (c *Cluster) reconcile() {
 
 	c.mu.RUnlock()
 
+	// P13f L9: a revision whose reload fails is not recorded as applied: the
+	// runtime keeps its previous settings (never allow-all, never default
+	// DNS), the failure is counted, and the next tick tries again, so a
+	// transient failure (database read, a fix stored without a new
+	// revision) does not leave the tailnet on stale settings until the next
+	// revision. Each failing revision is logged once at error level.
 	for _, rt := range configChanged {
-		// The settings are read through the runtime's own scoped handle.
-		// As for policy: the revision is recorded even when the new
-		// settings do not load, so the runtime keeps serving its previous
-		// DNS and the error is logged once.
+		// The settings are read through the runtime's own scoped handle,
+		// under the lock tenant DNS writes hold; the revision is recorded
+		// by the state only once the settings are installed (L9).
 		rev, installed, err := rt.h.state.ReloadTenantDNS(func(d *types.TenantDNS) error {
 			err := c.checkTailnetDNS(rt.id, rt.slug, d)
 			if err == nil {
@@ -494,11 +649,13 @@ func (c *Cluster) reconcile() {
 			return err
 		})
 		if err != nil {
-			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("config_revision", rev).
-				Msg("reconcile: new DNS settings rejected, keeping the previous ones")
+			c.reloadFailed(rt, reloadDNS, rev, &rt.configFailedRev, &rt.configPending, err)
 
 			continue
 		}
+
+		rt.configFailedRev = 0
+		rt.configPending.Store(false)
 
 		if !installed {
 			continue
@@ -509,16 +666,19 @@ func (c *Cluster) reconcile() {
 	}
 
 	for _, rt := range policyChanged {
-		// The revision is recorded even when the new policy does not load:
-		// the runtime keeps enforcing the previous one (never allow-all) and
-		// the error is logged once, not on every tick.
+		// Read and installed under the lock policy writes hold; the
+		// revision is recorded by the state only once the policy is in
+		// force (L9): until then the previous one stays enforced (never
+		// allow-all) and the next tick retries.
 		changes, rev, reloaded, err := rt.h.state.ReloadTenantPolicy()
 		if err != nil {
-			log.Error().Err(err).Str("tailnet", rt.id.String()).Uint64("policy_revision", rev).
-				Msg("reconcile: new policy rejected, keeping the previous one")
+			c.reloadFailed(rt, reloadPolicy, rev, &rt.policyFailedRev, &rt.policyPending, err)
 
 			continue
 		}
+
+		rt.policyFailedRev = 0
+		rt.policyPending.Store(false)
 
 		if !reloaded {
 			continue
@@ -530,7 +690,12 @@ func (c *Cluster) reconcile() {
 	}
 
 	for _, rt := range stale {
-		c.retire(rt, "not ACTIVE and owned by this cluster at the loaded epoch any more")
+		reason := "not ACTIVE and owned by this cluster at the loaded epoch any more"
+		if tn, ok := want[rt.id.String()]; ok && tn.OwnerEpoch < rt.epoch {
+			reason = "owner_epoch went backwards (restore or lossy promote?)"
+		}
+
+		c.retire(rt, reason)
 	}
 
 	for _, tn := range owned {
@@ -538,10 +703,35 @@ func (c *Cluster) reconcile() {
 			continue
 		}
 
+		// P13c: an owner_epoch below what this process saw is not loaded
+		// (load refuses it too); checked here to skip the database reads.
+		id, err := tailnet.ParseID(tn.ID)
+		if err == nil && c.ownerEpochRegressed(id, tn.OwnerEpoch) != nil {
+			continue
+		}
+
 		c.serveTailnet(tn, "reconcile")
 	}
 
 	c.applyMoveNotices()
+}
+
+// reloadFailed records a failed reload of kind (policy, dns) at revision
+// rev of rt (P13f L9): counted, logged at error level once per revision,
+// left pending so the next reconcile retries it.
+func (c *Cluster) reloadFailed(rt *tenantRuntime, kind string, rev uint64, failedRev *uint64, pending *atomic.Bool, err error) {
+	tailnetReloadFailures.WithLabelValues(tenantlabel.Label(rt.id.String()), kind).Inc()
+	pending.Store(true)
+
+	level := zerolog.DebugLevel
+
+	if *failedRev != rev {
+		*failedRev = rev
+		level = zerolog.ErrorLevel
+	}
+
+	log.WithLevel(level).Err(err).Str("tailnet", rt.id.String()).Str("kind", kind).Uint64("revision", rev).
+		Msg("reconcile: new tailnet settings rejected, keeping the previous ones; retrying every reconcile")
 }
 
 // applyMoveNotices gives each served tailnet the notice of its planned move,
@@ -825,6 +1015,9 @@ func (c *Cluster) handOver(id tailnet.ID, epoch uint64, to string) {
 		return
 	}
 
+	// This process set epoch+1: it never serves the tailnet below it again.
+	c.epochs.note(id, epoch+1)
+
 	log.Info().Str("tailnet", id.String()).Str("to", newOwner).Uint64("owner_epoch", epoch+1).
 		Msg("tailnet handed over: no longer served here")
 }
@@ -860,6 +1053,8 @@ func (c *Cluster) takeOverOrphans() {
 
 			continue
 		}
+
+		c.epochs.note(id, tn.OwnerEpoch+1)
 
 		log.Warn().Str("tailnet", tn.ID).Str("from", tn.OwnerClusterID).Uint64("owner_epoch", tn.OwnerEpoch+1).
 			Msg("tailnet taken over from a cluster with no live lease")
@@ -1405,6 +1600,14 @@ func (c *Cluster) Serve(ctx context.Context) error {
 	c.serveCtx, c.serveGroup = ctx, errorGroup
 
 	defer c.shutdownRuntimes() //nolint:contextcheck // shutdown runs after ctx is done and bounds itself
+
+	// P13f: runtime counts and the shared pool's statistics on the
+	// operator metrics listener while this process serves.
+	defer registerCluster(c)()
+
+	if sqlDB, err := c.platform.RegistryDB().DB(); err == nil { //nolint:noinlineerr
+		defer dbstats.Register("platform", sqlDB)()
+	}
 
 	tlsBundle, err := c.front.getTLSSettings(ctx)
 	if err != nil {

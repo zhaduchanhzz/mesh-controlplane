@@ -369,6 +369,11 @@ backend c1
 EOF
   cp_ "sudo systemctl reset-failed mesh-c1-ha 2>/dev/null; sudo systemd-run --quiet --unit=mesh-c1-ha /usr/sbin/haproxy -Ws -f /etc/haproxy/mesh-c1-n1.cfg" || return 1
 
+  # P13d (ADR 0013): cluster processes, mesh-placement and the admin CLI never
+  # migrate; the operator step creates the schema of the fresh database.
+  log "schema: migrate step"
+  cli c1 "migrate" >"$ART_DIR/logs/migrate.json" || { log "migrate step failed"; return 1; }
+
   log "start processes"
   start_proc cp && wait_direct_ready cp 40 || { log "c1 on mc-cp not ready"; return 1; }
   start_proc c2 && wait_direct_ready c2 40 || { log "c2 on mc-c2 not ready"; return 1; }

@@ -15,3 +15,5 @@ docs/ref/config-example.yaml linguist-generated
 *.tftpl text eol=lf
 *.service text eol=lf
 infra/lab/mc-cp/** text eol=lf
+infra/lab/pg/*.nft text eol=lf
+infra/lab/pg/*.tmpl text eol=lf

@@ -110,7 +110,7 @@ func TestBootstrapStoreFollowsOwner(t *testing.T) {
 			ctx := context.Background()
 			cfg := b.cfg(t)
 
-			p, err := db.OpenPlatform(cfg)
+			p, err := db.MigrateAndOpenPlatform(cfg)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = p.Close() })
 
@@ -218,7 +218,7 @@ func TestOpenReadOnlyRefusesUnusableDatabase(t *testing.T) {
 	_, statErr := os.Stat(cfg.SQLitePath())
 	require.True(t, os.IsNotExist(statErr), "no database file was created")
 
-	p, err := db.OpenPlatform(cfg)
+	p, err := db.MigrateAndOpenPlatform(cfg)
 	require.NoError(t, err)
 	require.NoError(t, p.RegistryDB().Exec(`DELETE FROM migrations WHERE id = ?`, db.LatestMigrationID()).Error)
 	require.NoError(t, p.Close())

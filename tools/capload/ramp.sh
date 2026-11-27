@@ -163,7 +163,7 @@ step() {
 	# review fix R2b the bound also refuses policy writes.
 	local maxpeer=${MAX_PEER_ENTRIES:-0}
 	local envs="HS=\$HOME/$RB/bin/headscale CLUSTER_ID=f5-$n CLASS=dedicated MAX_DEVICES=$((n * 2 + 10000)) PG_HOST=${DB_SSH#*@} PG_PORT=$DB_PORT PG_DB=$db PG_USER=headscale PG_PASSFILE=\$HOME/$RB/pg.pass NOISE_KEY=$sd/noise_private.key MAX_PEER_ENTRIES=$maxpeer INCREMENTAL=$INC RECONCILE_INTERVAL=${RECONCILE_INTERVAL:-1m} FULL_MAP_INTERVAL=${FULL_MAP_INTERVAL:-15m} PG_MAX_OPEN=${PG_MAX_OPEN:-100} PG_MAX_IDLE=${PG_MAX_IDLE:-10} LEASE_TTL=${LEASE_TTL:-} LEASE_RENEW=${LEASE_RENEW:-3s} LEASE_MARGIN=${LEASE_MARGIN:-5s} LEASE_NAME=$leasename"
-	on "$SERVER" "mkdir -p $sd && chmod 700 $sd && $envs bash ~/$RB/tools/cluster.sh config $sd/active $HOSTNAME_:$port $ip:$port >/dev/null && $envs bash ~/$RB/tools/cluster.sh register $sd/active >/dev/null && $envs bash ~/$RB/tools/cluster.sh start $sd/active active" | tee -a "$cell/server-setup.txt"
+	on "$SERVER" "mkdir -p $sd && chmod 700 $sd && $envs bash ~/$RB/tools/cluster.sh config $sd/active $HOSTNAME_:$port $ip:$port >/dev/null && $envs bash ~/$RB/tools/cluster.sh migrate $sd/active && $envs bash ~/$RB/tools/cluster.sh register $sd/active >/dev/null && $envs bash ~/$RB/tools/cluster.sh start $sd/active active" | tee -a "$cell/server-setup.txt"
 	local t_seed=$SECONDS
 	on "$SERVER" "mkdir -p $sd/seed && ~/$RB/bin/capseed -mode cluster -config $sd/active/config.yaml -cluster-id f5-$n -out $sd/seed -tailnets 1 -devices $n -policy $shape -extra $REGISTER -prefix f5 -seed 7 >$sd/seed/capseed.log 2>&1; rc=\$?; tail -3 $sd/seed/capseed.log; exit \$rc" >>"$cell/server-setup.txt"
 	echo "seed_s=$((SECONDS - t_seed))" >>"$cell/server-setup.txt"

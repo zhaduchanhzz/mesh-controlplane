@@ -1,0 +1,142 @@
+# P13f (owner decision D10): monitoring of the lab control plane as
+# containers on mc-db (VMID 7704, 192.168.1.243). NOT APPLIED: see README.md
+# for the steps and what each one changes.
+#
+# Every image is pinned by tag (and by digest after the first pull, see
+# README.md "Pinning"). Secrets (exporter DSNs, Grafana admin password,
+# Alertmanager receiver) are read from /opt/mc-mon/secrets/*.env (0600,
+# outside Git); nothing secret is in this file.
+#
+# Listeners: Prometheus 9090, Alertmanager 9093 and Grafana 3000 are bound to
+# 127.0.0.1 only; operators reach them with an SSH tunnel from the LAN
+# (ssh -L 3000:127.0.0.1:3000 mesh@192.168.1.243). The exporters listen on
+# the compose network only. Nothing here is exposed to the Internet, and no
+# scraped endpoint is public (AGENTS rule 9).
+name: mc-mon
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=10GB
+      - --web.listen-address=:9090
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    networks: [mon]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --cluster.listen-address=
+    ports: ["127.0.0.1:9093:9093"]
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - /opt/mc-mon/secrets/alertmanager-webhook-url:/etc/alertmanager/secrets/webhook-url:ro
+      - alertmanager-data:/alertmanager
+    networks: [mon]
+
+  grafana:
+    image: grafana/grafana:12.0.2
+    restart: unless-stopped
+    env_file: [/opt/mc-mon/secrets/grafana.env] # GF_SECURITY_ADMIN_PASSWORD
+    environment:
+      GF_SERVER_HTTP_ADDR: 0.0.0.0
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    ports: ["127.0.0.1:3000:3000"]
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks: [mon]
+
+  # Host metrics of mc-db (disk, clock offset, textfile metrics of the
+  # pgBackRest repository). The PG nodes run node_exporter from apt (P13a).
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+      - --web.listen-address=:9100
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+      - /var/lib/mc-mon/textfile:/textfile:ro
+    networks: [mon]
+
+  # One postgres_exporter per PostgreSQL node (Patroni moves the primary).
+  # DATA_SOURCE_NAME comes from the env file: a monitoring role with
+  # pg_monitor only, never the superuser or the application role.
+  pg-exporter-01:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    env_file: [/opt/mc-mon/secrets/pg-exporter-01.env]
+    command: ["--collector.stat_statements=false"]
+    networks: [mon]
+  pg-exporter-02:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    env_file: [/opt/mc-mon/secrets/pg-exporter-02.env]
+    command: ["--collector.stat_statements=false"]
+    networks: [mon]
+  # Platform queries (device quota per tailnet): one exporter against the
+  # primary through HAProxy, with the reviewed read-only queries only.
+  pg-exporter-platform:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    env_file: [/opt/mc-mon/secrets/pg-exporter-platform.env]
+    command:
+      - --disable-default-metrics
+      - --disable-settings-metrics
+      - --extend.query-path=/etc/postgres-exporter/queries.yaml
+    volumes:
+      - ./exporters/platform-queries.yaml:/etc/postgres-exporter/queries.yaml:ro
+    networks: [mon]
+
+  # One pgbouncer_exporter per PgBouncer (admin console, stats_users only).
+  pgbouncer-exporter-01:
+    image: quay.io/prometheuscommunity/pgbouncer-exporter:v0.10.2
+    restart: unless-stopped
+    env_file: [/opt/mc-mon/secrets/pgbouncer-exporter-01.env] # PGBOUNCER_EXPORTER_CONNECTION_STRING
+    # The exporter takes the connection string only as a flag (v0.10.2 has no
+    # environment variable for it); the shell keeps it off the compose file.
+    entrypoint: ["/bin/sh", "-c", "exec /bin/pgbouncer_exporter --pgBouncer.connectionString=\"$$PGBOUNCER_EXPORTER_CONNECTION_STRING\""]
+    networks: [mon]
+  pgbouncer-exporter-02:
+    image: quay.io/prometheuscommunity/pgbouncer-exporter:v0.10.2
+    restart: unless-stopped
+    env_file: [/opt/mc-mon/secrets/pgbouncer-exporter-02.env]
+    entrypoint: ["/bin/sh", "-c", "exec /bin/pgbouncer_exporter --pgBouncer.connectionString=\"$$PGBOUNCER_EXPORTER_CONNECTION_STRING\""]
+    networks: [mon]
+
+  # TLS expiry and reachability of the public endpoints (cluster, bootstrap,
+  # relay) as a client sees them.
+  blackbox:
+    image: prom/blackbox-exporter:v0.27.0
+    restart: unless-stopped
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./exporters/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks: [mon]
+
+networks:
+  mon: {}
+
+volumes:
+  prometheus-data: {}
+  alertmanager-data: {}
+  grafana-data: {}

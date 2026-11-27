@@ -568,9 +568,11 @@ func (s *NodeStore) Stop() {
 	}
 }
 
-// SetMetricsTailnet labels this store's node count by the tailnet it
-// serves on headscale_tailnet_nodes (P08b). Call it once, before Start.
-func (s *NodeStore) SetMetricsTailnet(id string) {
+// SetMetricsTailnet labels this store's node count on headscale_tailnet_nodes
+// (P08b) with label: the tailnet label its State acquired
+// (tenantlabel.Acquire, P13f L4), or tenantlabel.Other. Call it once,
+// before Start.
+func (s *NodeStore) SetMetricsTailnet(label string) {
 	s.countMu.Lock()
 	defer s.countMu.Unlock()
 
@@ -578,7 +580,7 @@ func (s *NodeStore) SetMetricsTailnet(id string) {
 		return
 	}
 
-	s.metricLabel = tenantlabel.Label(id)
+	s.metricLabel = label
 	s.tailnetGauge = tailnetNodes.WithLabelValues(s.metricLabel)
 	s.tailnetGauge.Add(float64(s.counted))
 }
@@ -1462,4 +1464,10 @@ func (s *NodeStore) ListNodesByUser(uid types.UserID) views.Slice[types.NodeView
 // the sum, over all nodes, of the peers each node is sent (P10d).
 func (s *NodeStore) PeerEntries() int64 {
 	return s.data.Load().peerEntries
+}
+
+// P13f L4: a tailnet's node count and netmap divergence series are deleted
+// when its label is released (State.Close).
+func init() {
+	tenantlabel.Register(tailnetNodes, tailnetNetmapDivergence)
 }

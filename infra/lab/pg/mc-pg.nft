@@ -1,0 +1,35 @@
+#!/usr/sbin/nft -f
+# Host firewall of mc-pg-01/02 (P13a, tickets/P13.md LAB-P13 "Mạng").
+# Installed as /etc/nftables.conf by setup-pg.sh. No Docker on these VMs, so
+# this file owns the whole ruleset.
+flush ruleset
+
+define PG_NODES = { 192.168.1.247, 192.168.1.248 }
+define ETCD_MEMBERS = { 192.168.1.243, 192.168.1.247, 192.168.1.248 }
+# Direct PostgreSQL access besides the PG nodes: mc-ci (operator, tests,
+# dump/restore) and mc-db (pgBackRest repository, P13c; monitoring, P13f).
+define PG_DIRECT = { 192.168.1.240, 192.168.1.243 }
+# PgBouncer (P13b, port 6432): mc-ci, mc-cp, mc-bench and the cluster VMs.
+define PGB_CLIENTS = { 192.168.1.240, 192.168.1.241, 192.168.1.242, 192.168.1.244, 192.168.1.245, 192.168.1.246 }
+define ADMIN_NET = 192.168.1.0/24
+
+table inet mc_pg {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif "lo" accept
+		ct state established,related accept
+		ct state invalid drop
+		meta l4proto { icmp, ipv6-icmp } accept
+		tcp dport 22 ip saddr $ADMIN_NET accept
+		tcp dport 5432 ip saddr { $PG_NODES, $PG_DIRECT } accept
+		tcp dport 6432 ip saddr $PGB_CLIENTS accept
+		tcp dport { 2379, 2380 } ip saddr $ETCD_MEMBERS accept
+		# Patroni REST API: the peer node (leader race, rewind checks) and
+		# mc-db (monitoring). HAProxy of P13b checks it over localhost.
+		tcp dport 8008 ip saddr { $PG_NODES, 192.168.1.243 } accept
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+}

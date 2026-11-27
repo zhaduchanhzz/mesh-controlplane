@@ -258,8 +258,11 @@ func TestRejectsUnknownMigration(t *testing.T) {
 	require.NoError(t, hsdb.raw.Exec(`INSERT INTO migrations (id) VALUES ('209901010000-from-the-future')`).Error)
 	require.NoError(t, hsdb.Close())
 
+	// P13d: a newer v0.1 database, not a Headscale one; an unknown migration
+	// without a schema_compat row is refused as too new for this binary.
 	_, err = NewHeadscaleDatabase(sqliteTestConfig(dbPath))
-	require.ErrorIs(t, err, ErrNotV01Database)
+	require.ErrorIs(t, err, ErrSchemaTooNew)
+	require.NotErrorIs(t, err, ErrNotV01Database)
 }
 
 func TestScopedContextKeepsTailnet(t *testing.T) {

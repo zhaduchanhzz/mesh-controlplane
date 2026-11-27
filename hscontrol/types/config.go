@@ -537,13 +537,59 @@ type SqliteConfig struct {
 // deployments only.
 type PostgresConfig struct {
 	// Host is the server's host name or IP, or the directory of its Unix
-	// socket (a path starting with `/`).
+	// socket (a path starting with `/`). A comma-separated list of
+	// `host[:port]` is a list of servers, as `database.postgres.hosts`.
 	Host string `example:"\"db.example.com\"" koanf:"host"`
 
 	// Port is the server's port or, with a Unix socket directory in
 	// `database.postgres.host`, the port in the socket's file name. Zero
-	// uses the driver's default.
+	// uses the driver's default. It is also the port of a
+	// `database.postgres.hosts` entry that names none.
 	Port int `example:"5432" koanf:"port"`
+
+	// Hosts lists the servers to try in order, each `host` or `host:port`
+	// (an IPv6 address in brackets), for instance one PgBouncer on each
+	// PostgreSQL node. A connection goes to the first server that accepts
+	// it and matches `database.postgres.target_session_attrs`; a server
+	// that refuses or times out (`database.postgres.connect_timeout_secs`)
+	// is skipped. Set either this or `database.postgres.host`, which also
+	// takes a comma-separated list in the same form. A Unix socket cannot
+	// be listed.
+	Hosts []string `example:"[\"pg-01.example.com:6432\",\"pg-02.example.com:6432\"]" koanf:"hosts"`
+
+	// TargetSessionAttrs is the kind of server a connection accepts, as
+	// libpq's `target_session_attrs`; with several hosts, a server of
+	// another kind is skipped. Empty means `read-write` for the processes
+	// that write (`headscale cluster`, its admin commands,
+	// `mesh-placement`), so none of them ever writes through a read-only
+	// replica, and the driver default (`any`) elsewhere.
+	TargetSessionAttrs PostgresTargetSessionAttrs `example:"\"read-write\"" koanf:"target_session_attrs"`
+
+	// ConnectTimeoutSecs bounds, in seconds, each attempt to open a
+	// connection to one server, from the TCP connect to the end of
+	// authentication, before the next host is tried. Zero leaves only the
+	// caller's own deadline.
+	ConnectTimeoutSecs int `example:"5" koanf:"connect_timeout_secs"`
+
+	// StatementTimeout is PostgreSQL's `statement_timeout` for every
+	// connection, sent as a startup parameter (whole milliseconds); zero
+	// leaves the server's setting. PgBouncer passes it on only when
+	// `track_extra_parameters` lists `statement_timeout` (PgBouncer 1.20
+	// or later) and otherwise refuses the connection, so behind PgBouncer
+	// prefer `ALTER ROLE ... SET statement_timeout`.
+	StatementTimeout time.Duration `example:"\"30s\"" koanf:"statement_timeout"`
+
+	// LeaseName is the database the cluster lease is renewed and polled
+	// through, on a connection pool of its own, so that it never queues
+	// behind data traffic: behind PgBouncer, an alias of the same
+	// database with its own small pool (ADR 0006 §3.6), one per cluster so
+	// one cluster's renewals never wait for another's (D9b). Empty uses
+	// `database.postgres.name`, still on a pool of its own.
+	LeaseName string `example:"\"mesh_c1_lease\"" koanf:"lease_name"`
+
+	// LeaseMaxOpenConnections caps the open connections of the lease
+	// pool.
+	LeaseMaxOpenConnections int `example:"4" koanf:"lease_max_open_conns"`
 
 	// Name is the database name.
 	Name string `example:"\"headscale\"" koanf:"name"`
@@ -580,20 +626,6 @@ type PostgresConfig struct {
 	// `default_query_exec_mode`. Behind PgBouncer in transaction mode
 	// without `max_prepared_statements`, use `simple_protocol`.
 	QueryExecMode PostgresQueryExecMode `example:"\"simple_protocol\"" koanf:"query_exec_mode"`
-
-	// LeaseName is the database the cluster lease is renewed and polled
-	// through, on a connection pool of its own, so that it never queues
-	// behind data traffic: behind PgBouncer, an alias of the same
-	// database with its own small pool (ADR 0006 §3.6), one per cluster so
-	// one cluster's renewals never wait for another's (D9b). Empty uses
-	// `database.postgres.name`, still on a pool of its own; behind
-	// PgBouncer that shares the data pool's server connections, so set
-	// an alias there.
-	LeaseName string `example:"\"mesh_c1_lease\"" koanf:"lease_name"`
-
-	// LeaseMaxOpenConnections caps the open connections of the lease
-	// pool.
-	LeaseMaxOpenConnections int `example:"4" koanf:"lease_max_open_conns"`
 }
 
 // PostgresQueryExecMode is pgx's default_query_exec_mode. "" decodes without
@@ -619,6 +651,67 @@ const (
 	PostgresQueryExecSimpleProtocol PostgresQueryExecMode = "simple_protocol"
 )
 
+// PostgresTargetSessionAttrs is libpq's (and pgx's) target_session_attrs.
+// "" decodes without error to the zero value (unset).
+type PostgresTargetSessionAttrs string //nolint:recvcheck // UnmarshalText needs a pointer; the rest read the value
+
+const (
+	// PostgresTargetAny accepts any server.
+	PostgresTargetAny PostgresTargetSessionAttrs = "any"
+	// PostgresTargetReadWrite accepts a server whose sessions can write
+	// (`transaction_read_only` off): never a replica.
+	PostgresTargetReadWrite PostgresTargetSessionAttrs = "read-write"
+	// PostgresTargetReadOnly accepts only a server whose sessions are
+	// read-only.
+	PostgresTargetReadOnly PostgresTargetSessionAttrs = "read-only"
+	// PostgresTargetPrimary accepts a server that is not in recovery.
+	PostgresTargetPrimary PostgresTargetSessionAttrs = "primary"
+	// PostgresTargetStandby accepts only a server in recovery (a replica).
+	PostgresTargetStandby PostgresTargetSessionAttrs = "standby"
+	// PostgresTargetPreferStandby prefers a replica and falls back to any
+	// server.
+	PostgresTargetPreferStandby PostgresTargetSessionAttrs = "prefer-standby"
+)
+
+// postgresDefaultPort is the port of a listed server that names none when
+// Port is zero too: pgx needs one port per host.
+const postgresDefaultPort = 5432
+
+// HostList returns the servers of a multi-host configuration as
+// "host:port" (IPv6 in brackets) in order, from Hosts or else from a Host
+// holding a comma-separated list; nil for a single server. An entry
+// without a port takes Port, or 5432 when Port is zero.
+func (cfg PostgresConfig) HostList() []string {
+	entries := cfg.Hosts
+	if len(entries) == 0 {
+		if !strings.Contains(cfg.Host, ",") {
+			return nil
+		}
+
+		entries = strings.Split(cfg.Host, ",")
+	}
+
+	defPort := cfg.Port
+	if defPort == 0 {
+		defPort = postgresDefaultPort
+	}
+
+	out := make([]string, 0, len(entries))
+
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+
+		host, port, err := net.SplitHostPort(e)
+		if err != nil { // no port: a name, an IPv4 or a bare or bracketed IPv6
+			host, port = strings.TrimSuffix(strings.TrimPrefix(e, "["), "]"), strconv.Itoa(defPort)
+		}
+
+		out = append(out, net.JoinHostPort(host, port))
+	}
+
+	return out
+}
+
 // DSN returns the connection string for this configuration as a
 // postgres:// URL, the form lib/pq and pgx both accept. Building it with
 // net/url escapes every component, so a password (or host, user or
@@ -626,6 +719,8 @@ const (
 // is passed through intact instead of truncating the DSN or injecting
 // extra parameters. A Host starting with "/" is a Unix socket directory
 // and travels as the host query parameter, as the URL form requires.
+// Several servers ([PostgresConfig.HostList]) travel as comma-separated
+// host and port parameters, pgx's multi-host form.
 //
 // Ssl keeps its historical meaning: "true" leaves the driver default,
 // "false" sets sslmode=disable, and any other value is used as sslmode.
@@ -645,7 +740,17 @@ func (cfg PostgresConfig) DSN() string {
 	query := url.Values{}
 	port := strconv.Itoa(cfg.Port)
 
-	switch {
+	switch hosts := cfg.HostList(); {
+	case len(hosts) > 0:
+		// As host and port parameters, pgx's lists: net/url (and so pgx)
+		// refuses a bracketed IPv6 address in a comma-separated URL host.
+		names, ports := make([]string, len(hosts)), make([]string, len(hosts))
+		for i, hp := range hosts {
+			names[i], ports[i], _ = net.SplitHostPort(hp)
+		}
+
+		query.Set("host", strings.Join(names, ","))
+		query.Set("port", strings.Join(ports, ","))
 	case strings.HasPrefix(cfg.Host, "/"):
 		query.Set("host", cfg.Host)
 
@@ -662,6 +767,19 @@ func (cfg PostgresConfig) DSN() string {
 
 	if cfg.QueryExecMode != "" {
 		query.Set("default_query_exec_mode", string(cfg.QueryExecMode))
+	}
+
+	if cfg.TargetSessionAttrs != "" {
+		query.Set("target_session_attrs", string(cfg.TargetSessionAttrs))
+	}
+
+	if cfg.ConnectTimeoutSecs > 0 {
+		query.Set("connect_timeout", strconv.Itoa(cfg.ConnectTimeoutSecs))
+	}
+
+	// A startup parameter: PostgreSQL reads an integer as milliseconds.
+	if ms := cfg.StatementTimeout.Milliseconds(); ms > 0 {
+		query.Set("statement_timeout", strconv.FormatInt(ms, 10))
 	}
 
 	sslEnabled, err := strconv.ParseBool(cfg.Ssl)

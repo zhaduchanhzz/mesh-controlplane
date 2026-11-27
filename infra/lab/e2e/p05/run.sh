@@ -55,6 +55,13 @@ BOOT_BIN=${BOOT_BIN:-}
 BOOT_HOST=${BOOT_HOST:-boot.cp.gta5web.online}
 BOOT_PORT=${BOOT_PORT:-8444}
 BOOT_LISTEN=${BOOT_LISTEN:-10.99.77.2:8444}
+# P13f B7: once the VPS lab-ports HAProxy (infra/lab/vps-haproxy) sends PROXY
+# protocol v2 on 8444, run with BOOT_PROXY_PROTOCOL_FROM=10.99.77.1/32 so that
+# mesh-bootstrap requires the header from the VPS (and refuses it from anyone
+# else). Default off: the forwarder in use today sends no header.
+BOOT_PROXY_PROTOCOL_FROM=${BOOT_PROXY_PROTOCOL_FROM:-}
+case "$BOOT_PROXY_PROTOCOL_FROM" in *[!0-9a-fA-F:./,]*) echo "BOOT_PROXY_PROTOCOL_FROM: CIDRs only" >&2; exit 2 ;; esac
+BOOT_PROXY_ARGS=${BOOT_PROXY_PROTOCOL_FROM:+-proxy-protocol-from $BOOT_PROXY_PROTOCOL_FROM}
 BOOT_URL="https://$BOOT_HOST:$BOOT_PORT"
 # DB=postgres runs the cluster on the lab's long-lived PostgreSQL behind
 # PgBouncer on mc-db (ADR 0005, ADR 0006; infra/lab/db), in a database of its
@@ -204,6 +211,10 @@ setup() {
     sudo sh -c '! ls /var/lib/headscale/cluster-e2e/db.sqlite* 2>/dev/null'
     rm -f /tmp/$(basename "$bin") /tmp/config.yaml /tmp/headscale-cluster.service" || return 1
 
+  # P13d (ADR 0013): cluster processes, mesh-placement and the admin CLI never
+  # migrate; the operator step creates the schema of the fresh database.
+  log "schema: migrate step"
+  cp_ "$HSC migrate" >"$ART_DIR/logs/migrate.json" || { log "migrate step failed"; return 1; }
   # P12 (owner decision 2026-11-25): tailnets are created only on a
   # registered ACTIVE cluster whose process holds its lease, so the cluster
   # is registered and started first and the tailnets are created live (it
@@ -754,7 +765,7 @@ t_bootstrap() {
     sudo systemctl stop mesh-bootstrap-e2e 2>/dev/null || true
     sudo systemd-run --quiet --unit=mesh-bootstrap-e2e --uid=headscale --gid=headscale \
       /usr/local/bin/mesh-bootstrap -config /etc/headscale/cluster/config.yaml -listen $BOOT_LISTEN \
-      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST" \
+      -tls-cert /etc/headscale/tls/fullchain.pem -tls-key /etc/headscale/tls/privkey.pem -hostname $BOOT_HOST $BOOT_PROXY_ARGS" \
     || { record B01 FAIL "could not start mesh-bootstrap"; return; }
   for k in $(seq 1 20); do
     code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$BOOT_URL/health" || true)

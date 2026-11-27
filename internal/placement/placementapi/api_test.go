@@ -112,7 +112,15 @@ func (e *env) live(t *testing.T, id string) {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 
-	p, err := db.OpenPlatform(&types.Config{
+	return newEnvWith(t, nil)
+}
+
+// newEnvWith is newEnv with setup applied to the authorizer (P13f: a
+// revocation list).
+func newEnvWith(t *testing.T, setup func(*Authorizer)) *env {
+	t.Helper()
+
+	p, err := db.MigrateAndOpenPlatform(&types.Config{
 		Database: types.DatabaseConfig{
 			Type:   types.DatabaseSqlite,
 			Sqlite: types.SqliteConfig{Path: filepath.Join(t.TempDir(), "api.db")},
@@ -127,6 +135,10 @@ func newEnv(t *testing.T) *env {
 
 	auth, err := NewAuthorizer([]string{alice, "ops-bot.mesh.internal"})
 	require.NoError(t, err)
+
+	if setup != nil {
+		setup(auth)
+	}
 
 	serverCA := newCA(t, "server-ca")
 	opCA := newCA(t, "operator-ca")
@@ -517,7 +529,7 @@ func TestOperatorReconcile(t *testing.T) {
 	e.live(t, "c1")
 	assert.Equal(t, []any{map[string]any{"code": "R6_CLUSTER_NO_NOISE_KEY", "cluster_id": "c1"}}, findings())
 
-	code, _ = e.do(t, c, call{method: http.MethodPatch, path: "/v1/clusters/c1", key: "k1", body: map[string]any{"noise_public_key": "mkey:c1"}})
+	code, _ = e.do(t, c, call{method: http.MethodPatch, path: "/v1/clusters/c1", key: "k1", body: map[string]any{"noise_public_key": p13eKey}})
 	require.Equal(t, http.StatusOK, code)
 	assert.Empty(t, findings(), "clean")
 

@@ -41,6 +41,7 @@ import (
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog"
 	"github.com/zhaduchanhzz/mesh-controlplane/hscontrol/util/zlog/zf"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/tenantlabel"
 	"gorm.io/gorm"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -220,6 +221,10 @@ type State struct {
 	// is set once one was ever announced.
 	moveNotice     atomic.Pointer[types.MoveNotice]
 	moveNoticeSeen atomic.Bool
+
+	// metricLabel is the tailnet label this State acquired for its
+	// per-tailnet metrics (P13f L4), released by Close.
+	metricLabel string
 
 	// cfg holds the current Headscale configuration
 	cfg *types.Config
@@ -482,14 +487,18 @@ func NewStateWithDB(cfg *types.Config, db *hsdb.HSDatabase) (*State, error) {
 	}
 
 	polMan.SetRouterSession(nodeStore.RouterSession)
-	nodeStore.SetMetricsTailnet(db.Tailnet().ID)
+	// P13f L4: this runtime serves its tailnet from here on; the label is
+	// released by Close.
+	metricLabel := tenantlabel.Acquire(db.Tailnet().ID)
+	nodeStore.SetMetricsTailnet(metricLabel)
 	nodeStore.reservedLabel = func(label string) bool {
 		return cfg.DNSConfig.BaseDomain != "" && cfg.HasExtraRecord(label+"."+cfg.DNSConfig.BaseDomain)
 	}
 	nodeStore.Start()
 
 	s := &State{
-		cfg: cfg,
+		cfg:         cfg,
+		metricLabel: metricLabel,
 
 		db:                  db,
 		ipAlloc:             ipAlloc,
@@ -615,6 +624,11 @@ func (s *State) Close() error {
 
 	s.pings.drain()
 	s.nodeStore.Stop()
+
+	if s.metricLabel == s.db.Tailnet().ID {
+		tenantlabel.Release(s.metricLabel)
+		s.metricLabel = tenantlabel.Other
+	}
 	// Purge before Close: Close stops the sweeper, so anything still cached
 	// would never expire and its WaitForAuth caller would hang.
 	s.authCache.Purge()
@@ -2273,9 +2287,10 @@ func (s *State) InstalledRevisions() (uint64, uint64) {
 // reconcile loop). The revision is read first and under policyMu, the lock
 // every policy write through this State holds from store to install: a
 // revision a write stored and installed is never installed again, and
-// what is read is at least that revision. The revision is recorded even
-// when the policy does not load: the previous one stays enforced (never
-// allow-all) and the error is reported once. It returns the changes to
+// what is read is at least that revision. The revision is recorded only
+// when the policy is installed (P13f L9): on an error the previous one
+// stays enforced (never allow-all) and the next call retries; the caller
+// reports each failing revision once. It returns the changes to
 // send (none when the stored policy is the one in force), the revision
 // read, and whether it was a new one.
 func (s *State) ReloadTenantPolicy() ([]change.Change, uint64, bool, error) {
@@ -2291,12 +2306,12 @@ func (s *State) ReloadTenantPolicy() ([]change.Change, uint64, bool, error) {
 		return nil, rev, false, nil
 	}
 
-	s.policyRev.Store(rev)
-
 	changed, derpChanged, err := s.reloadPolicyLocked()
 	if err != nil {
 		return nil, rev, true, err
 	}
+
+	s.policyRev.Store(rev)
 
 	var changes []change.Change
 
@@ -2318,8 +2333,8 @@ func (s *State) ReloadTenantPolicy() ([]change.Change, uint64, bool, error) {
 // hold from store to install, so settings read here are never older than
 // settings a write installed, and a revision a write installed is not
 // installed again. check validates the settings read (nil: the defaults);
-// an error keeps the previous settings, and the revision is recorded so
-// it is reported once. It returns the revision read and whether the
+// an error keeps the previous settings and leaves the revision unrecorded,
+// so the next call retries (P13f L9). It returns the revision read and whether the
 // settings were replaced; the caller then sends [change.DNSConfig].
 func (s *State) ReloadTenantDNS(check func(*types.TenantDNS) error) (uint64, bool, error) {
 	s.tenantDNSMu.Lock()
@@ -2334,8 +2349,6 @@ func (s *State) ReloadTenantDNS(check func(*types.TenantDNS) error) (uint64, boo
 		return rev, false, nil
 	}
 
-	s.configRev.Store(rev)
-
 	d, err := s.db.TenantDNS()
 	if err != nil {
 		return rev, false, err
@@ -2349,6 +2362,7 @@ func (s *State) ReloadTenantDNS(check func(*types.TenantDNS) error) (uint64, boo
 	}
 
 	s.cfg.ReplaceTenantDNS("", d)
+	s.configRev.Store(rev)
 
 	return rev, true, nil
 }

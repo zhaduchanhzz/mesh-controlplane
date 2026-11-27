@@ -272,3 +272,32 @@ CREATE TRIGGER trg_policies_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON 
   FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
 CREATE TRIGGER trg_tailnet_settings_tailnet_id_immutable BEFORE UPDATE OF tailnet_id ON tailnet_settings
   FOR EACH ROW EXECUTE FUNCTION tenant_tailnet_id_immutable();
+
+-- Schema compatibility (P13d, ADR 0013): min_reader_id of each migration
+-- from 202611271000-schema-compat on; see hscontrol/db/schema_compat.go.
+CREATE TABLE schema_compat(
+  migration_id text PRIMARY KEY,
+  min_reader_id text NOT NULL
+);
+
+-- Epoch fence (P13c, ADR 0012): the record of every fence; lease rows are
+-- never deleted. See hscontrol/db/epoch_fence.go.
+CREATE TABLE platform_epoch_fences(
+  id bigserial PRIMARY KEY,
+  epoch_floor bigint NOT NULL CHECK(epoch_floor >= 1),
+  fenced_at timestamptz NOT NULL,
+  reason text NOT NULL,
+  operator text NOT NULL,
+  leases bigint NOT NULL,
+  tailnets bigint NOT NULL,
+  moves_cancelled bigint NOT NULL
+);
+CREATE FUNCTION cluster_leases_no_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'cluster_leases rows are never deleted: the epoch would restart at 1 (ADR 0012)' USING ERRCODE = 'check_violation';
+END;
+$$;
+CREATE TRIGGER trg_cluster_leases_no_delete BEFORE DELETE ON cluster_leases
+  FOR EACH ROW EXECUTE FUNCTION cluster_leases_no_delete();
+CREATE TRIGGER trg_cluster_leases_no_truncate BEFORE TRUNCATE ON cluster_leases
+  FOR EACH STATEMENT EXECUTE FUNCTION cluster_leases_no_delete();

@@ -138,7 +138,9 @@ func (tc *TestCluster) startProcess(tb testing.TB, addr string) *ClusterProcess 
 		cfg.UnixSocket = fmt.Sprintf("%s.%d", cfg.UnixSocket, len(tc.procs))
 	}
 
-	c, err := hscontrol.NewCluster(&cfg)
+	// The first process of a test cluster creates its Noise key, as
+	// `cluster serve --init-noise-key` does (P13e); later ones read it.
+	c, err := hscontrol.NewCluster(&cfg, hscontrol.WithNoiseKeyInit())
 	if err != nil {
 		tb.Fatalf("servertest: NewCluster: %v", err)
 	}

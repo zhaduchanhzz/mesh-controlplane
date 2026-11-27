@@ -59,6 +59,10 @@ func v01Migrations() []*gormigrate.Migration {
 		clusterLeasesMigration(),
 		tailnetMovesMigration(),
 		tenantIDImmutableMigration(),
+		// P13 (ADR 0013): every migration from here on declares its
+		// min_reader_id in migrationCompat.
+		schemaCompatMigration(),
+		epochFenceMigration(),
 	}
 }
 
@@ -128,7 +132,7 @@ func (p *Platform) currentLease() (string, uint64, error) {
 // check the lease inside their own transaction, on the data pool.
 func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.leaseDB) }
 
-// leaseDatabase is the configuration of the lease pool: the same server
+// leaseDatabase is the configuration of the lease pool: the same servers
 // and settings, database.postgres.lease_name (an alias with its own small
 // PgBouncer pool) when set, and lease_max_open_conns connections.
 func leaseDatabase(cfg types.DatabaseConfig) types.DatabaseConfig {
@@ -159,12 +163,33 @@ func closePool(conn *gorm.DB) {
 	}
 }
 
-// OpenPlatform opens the database, creates the v0.1 schema on a fresh one,
-// refuses databases from Headscale or unknown versions, runs the v0.1
-// migrations, validates the schema (SQLite) and registers tenantscope on the
-// pool. It never creates a tailnet.
-func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
-	dbConn, err := openDB(cfg.Database, cfg.SQLitePath())
+// OpenPlatform opens the database for a cluster process, mesh-placement or
+// an operator command, refuses a pooler this code cannot work with or a
+// read-only server (P13b), refuses databases from Headscale or of an
+// unknown layout, applies the version check, refuses a schema this binary
+// cannot run with (ADR 0013 §4: behind it, ErrSchemaNeedsMigration; past a
+// newer contract migration, ErrSchemaTooNew), validates the schema
+// (SQLite, when it is exactly this binary's), registers tenantscope on the
+// pool and opens the lease pool. It never creates or migrates the schema
+// (that is [Migrate], an operator step) and never creates a tailnet.
+func OpenPlatform(cfg *types.Config) (*Platform, error) {
+	return openPlatformChain(cfg, currentChain(), false)
+}
+
+// openPlatformChain is OpenPlatform for the binary of chain ch; migrate runs
+// [Migrate] on the same pool first: the explicit development and
+// single-tenant option ([MigrateAndOpenPlatform]).
+func openPlatformChain(cfg *types.Config, ch chain, migrate bool) (_ *Platform, retErr error) {
+	dbCfg := writableDatabase(cfg.Database)
+
+	// P13b: a pooler this code cannot work with, or a read-only server, is
+	// refused here with what to change, not later at random.
+	err := checkPooler(dbCfg, true)
+	if err != nil {
+		return nil, err
+	}
+
+	dbConn, err := openDB(dbCfg, cfg.SQLitePath(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -180,44 +205,45 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 		}
 	}()
 
-	err = checkV01Database(dbConn)
-	if err != nil {
-		return nil, fmt.Errorf("version check: %w", err)
-	}
-
-	err = checkVersionUpgradePath(dbConn)
-	if err != nil {
-		return nil, fmt.Errorf("version check: %w", err)
-	}
-
-	migrations := gormigrate.New(dbConn, gormigrate.DefaultOptions, v01Migrations())
-
-	migrations.InitSchema(func(tx *gorm.DB) error {
-		return tx.Transaction(createSchema)
-	})
-
-	err = runMigrations(cfg.Database, dbConn, migrations)
-	if err != nil {
-		return nil, fmt.Errorf("migration failed: %w", err)
-	}
-
-	// Store the current version in the database after migrations succeed.
-	// Dev builds skip this to preserve the stored version for the next
-	// real versioned binary.
-	currentVersion := types.GetVersionInfo().Version
-	if !isDev(currentVersion) {
-		err = setDatabaseVersion(dbConn, currentVersion)
+	if migrate {
+		_, err = migrateConn(context.Background(), dbConn, cfg, ch)
 		if err != nil {
-			return nil, fmt.Errorf("storing database version: %w", err)
+			return nil, err
 		}
 	}
 
-	// Validate that the schema ends up in the expected state (SQLite only;
-	// squibble does not support PostgreSQL). Done in a helper so its
-	// dedicated connection is released before the pool is used: SQLite
-	// allows a single open connection.
-	if cfg.Database.IsSQLite() {
-		err = validateSQLiteSchema(dbConn)
+	// versioncheck first (ADR 0013 §6), without creating its table: a
+	// database without one has no stored version, as on a first start.
+	_, err = checkV01Database(dbConn)
+	if err != nil {
+		return nil, fmt.Errorf("version check: %w", err)
+	}
+
+	hasVersions, err := tableExists(dbConn, "database_versions")
+	if err != nil {
+		return nil, err
+	}
+
+	if hasVersions {
+		err = compareStoredVersion(dbConn)
+		if err != nil {
+			return nil, fmt.Errorf("version check: %w", err)
+		}
+	}
+
+	exact, err := verifySchema(dbConn, ch)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate that the schema is in the expected state (SQLite only;
+	// squibble does not support PostgreSQL), when the database has exactly
+	// this binary's migrations: a newer expand migration changes the schema
+	// files this binary does not have. Done in a helper so its dedicated
+	// connection is released before the pool is used: SQLite allows a
+	// single open connection.
+	if exact && cfg.Database.IsSQLite() {
+		err = validateSQLiteSchema(dbConn, ch.sqliteSchema)
 		if err != nil {
 			return nil, err
 		}
@@ -231,7 +257,16 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 	leaseConn := dbConn
 
 	if !cfg.Database.IsSQLite() {
-		leaseConn, err = openDB(leaseDatabase(cfg.Database), "")
+		leaseCfg := leaseDatabase(dbCfg)
+
+		if leaseCfg.Postgres.Name != dbCfg.Postgres.Name {
+			err = checkPooler(leaseCfg, true) // the alias is a pooler entry of its own
+			if err != nil {
+				return nil, fmt.Errorf("lease pool: %w", err)
+			}
+		}
+
+		leaseConn, err = openDB(leaseCfg, "", false)
 		if err != nil {
 			return nil, fmt.Errorf("opening the lease pool: %w", err)
 		}
@@ -249,6 +284,18 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 	return &Platform{db: dbConn, leaseDB: leaseConn, cfg: cfg, cluster: clusterIDOf(cfg)}, nil
 }
 
+// writableDatabase is cfg for a process that writes (P13b, ADR 0011 §D):
+// on PostgreSQL an unset target_session_attrs becomes read-write, so with a
+// host list (one PgBouncer per PostgreSQL node) a server that answers
+// read-only, a replica, is skipped instead of failing every write.
+func writableDatabase(cfg types.DatabaseConfig) types.DatabaseConfig {
+	if cfg.Type == types.DatabasePostgres && cfg.Postgres.TargetSessionAttrs == "" {
+		cfg.Postgres.TargetSessionAttrs = types.PostgresTargetReadWrite
+	}
+
+	return cfg
+}
+
 // ClusterID returns the cluster this platform serves for.
 func (p *Platform) ClusterID() string { return p.cluster }
 
@@ -262,7 +309,7 @@ func (p *Platform) Ping(ctx context.Context) error {
 	return sqlDB.PingContext(ctx)
 }
 
-// Close closes the data pool and the lease pool; every handle from
+// Close closes the shared pool and the lease pool; every handle from
 // TenantDB stops working.
 func (p *Platform) Close() error {
 	if p.leaseDB != nil && p.leaseDB != p.db {

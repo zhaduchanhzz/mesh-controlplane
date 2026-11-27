@@ -71,11 +71,10 @@ var rawSQLAllowlist = []rawSQLEntry{
 	{"hscontrol/db/handover.go", "5c79111541ae4436", "HandOver CAS on tailnets (platform table), dedicated-target guard (P12c C3); dbNow is the dialect's now(); EXISTS reads cluster_leases"},
 	{"hscontrol/db/noisekey.go", "fb8701509d049b66", "cluster Noise key registration on clusters (platform table) under the lease; dbNow is the dialect's now()"},
 	{"hscontrol/db/tenantscope/tenantscope.go", "6d4127be02fd74d7", "LockOwnership: SET LOCAL lock_timeout from an integer duration, no table"},
-	{"internal/lease/lease.go", "1908e1bbb6a4294c", "lease Get on cluster_leases (platform table); now() is the dialect's clock"},
+	{"internal/lease/lease.go", "ae3fd8e44c7bd9ac", "lease get on cluster_leases (platform table): Get, and the lock-free read of AcquireAbove (P12c B1, P13c floor check); now() is the dialect's clock"},
+	{"internal/lease/lease.go", "f110b6c0e3f8e729", "lease AcquireAbove: SET LOCAL lock_timeout from an integer millisecond count, no table (P12c B1)"},
 	{"internal/lease/lease.go", "560e0bc57dc77763", "lease Renew on cluster_leases; now()/nowPlus() are the dialect's clock"},
 	{"internal/lease/lease.go", "8f109ce712d23d27", "lease Release on cluster_leases; now() is the dialect's clock"},
 	{"internal/lease/lease.go", "5f6903d7977cd4c8", "lease acquire upsert on cluster_leases; q embeds the dialect's clock (P12c B1)"},
-	{"internal/lease/lease.go", "2c879f711d09f405", "lease Acquire: lock-free liveness read on cluster_leases (P12c B1); now() is the dialect's clock"},
-	{"internal/lease/lease.go", "5e553bace6cb0f8a", "lease Acquire: SET LOCAL lock_timeout from an integer millisecond count, no table (P12c B1)"},
 	{"internal/placement/moves.go", "40a70a65947699db", "queryMoves on tailnet_moves (platform table); where is a fixed condition of the callers in moves.go"},
 }

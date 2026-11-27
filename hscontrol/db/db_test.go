@@ -516,7 +516,7 @@ func TestOpenDBReturnsOpenError(t *testing.T) {
 
 			require.NotPanics(t, func() {
 				cfg := tt.cfg(t)
-				db, err = openDB(cfg, cfg.Sqlite.Path)
+				db, err = openDB(cfg, cfg.Sqlite.Path, false)
 			})
 			require.Error(t, err)
 			assert.Nil(t, db)

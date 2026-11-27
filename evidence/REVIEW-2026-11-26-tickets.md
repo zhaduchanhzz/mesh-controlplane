@@ -62,7 +62,7 @@ Cột "Kiểm lại": **đã** = coordinator đọc lại code và xác nhận; 
 | L7 | P12b | Kết quả move ghi sai trong vài thứ tự (`RunDueMoves`); `updated_at` bị đổi làm reset tuổi R10; `CancelScheduledMove` REQUESTED không kiểm epoch, bỏ qua `RowsAffected`; hai process mở DB cùng lúc chạy migration mới thì một bên thoát |
 | L8 | P04/P05 | "Đúng một `(machine_key, node_key)`" áp theo tailnet, không theo dòng node (cố ý, ADR 0007); quyền sở hữu kiểm lại mỗi 2 s, không mỗi request; đăng ký web chưa có (fail closed); kiểm SNI phụ thuộc nơi terminate TLS |
 | L9 | P06/P08b | Policy reload lỗi vẫn ghi revision đã áp (chỉ có log) |
-| L10 | P03b | `hasPrimaryKey` coi slice khác rỗng là có khóa: `Delete(&[]Node{{}})` xóa mọi node của tenant (trong một tenant); `stampOne` với `[]map` panic; `.After` chuỗi chỉ giữ cái cuối; `createDefaultTailnet` tạo tailnet ACTIVE không qua transaction PENDING + `{"grants":[]}` |
+| L10 | P03b | `hasPrimaryKey` coi slice khác rỗng là có khóa: `Delete(&[]Node{{}})` xóa mọi node của tenant (trong một tenant); `stampOne` với `[]map` panic; `.After` chuỗi chỉ giữ cái cuối; `createDefaultTailnet` tạo tailnet ACTIVE không qua transaction PENDING + `{"grants":[]}`. **`createDefaultTailnet`: giữ hành vi single-tenant upstream, cluster mode được canh bởi test P13f — chủ dự án chấp nhận 2026-11-26** |
 
 **Đã chấp nhận trước đó (không đổi):** P12 P08 một frame sau SIGCONT (R5: không tệ hơn mô tả; khe check-then-act không đóng được ở user space), giới hạn B3, phương án (a), cửa sổ nạp ở cluster đích + retry.
 

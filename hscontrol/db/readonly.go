@@ -25,10 +25,17 @@ func LatestMigrationID() string {
 // platform tables (the bootstrap service, P11). Unlike [OpenPlatform] it
 // never creates the schema, never runs migrations and does not register
 // tenantscope: the caller reads with reviewed raw SQL only. It refuses a
-// missing SQLite file and a database whose migrations do not include
-// [LatestMigrationID]. On SQLite the connection is put in query_only mode;
-// on PostgreSQL callers read in READ ONLY transactions.
+// missing SQLite file and a database this binary cannot run with (the rule
+// of [OpenPlatform], ADR 0013 §4: every migration it knows present, every
+// newer one marked compatible); the version check is not applied, as
+// before P13d. On SQLite every connection of the handle is in query_only
+// mode (set in the DSN, P13f L3); on PostgreSQL callers read in READ ONLY
+// transactions.
 func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
+	return openReadOnly(cfg, currentChain())
+}
+
+func openReadOnly(cfg *types.Config, ch chain) (*gorm.DB, error) {
 	if cfg.Database.IsSQLite() {
 		_, err := os.Stat(cfg.SQLitePath())
 		if err != nil {
@@ -36,7 +43,14 @@ func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 		}
 	}
 
-	conn, err := openDB(cfg.Database, cfg.SQLitePath())
+	// P13b: the pooler must keep prepared statements (ADR 0006 §3.5); a
+	// read-only server is fine for a reader.
+	err := checkPooler(cfg.Database, false)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := openDB(cfg.Database, cfg.SQLitePath(), true)
 	if err != nil {
 		return nil, err
 	}
@@ -48,22 +62,14 @@ func OpenReadOnly(cfg *types.Config) (*gorm.DB, error) {
 		}
 	}
 
-	var n int64
-
-	err = conn.Raw(`SELECT count(*) FROM migrations WHERE id = ?`, LatestMigrationID()).Scan(&n).Error
-	if err != nil || n != 1 {
+	// The compatibility rule of the cluster processes (ADR 0013 §4), read
+	// only: a newer expand migration is accepted, a newer contract
+	// migration or a missing one is not.
+	_, err = verifySchema(conn, ch)
+	if err != nil {
 		closeConn()
 
-		return nil, fmt.Errorf("%w: want migration %s (err=%w)", ErrSchemaNotCurrent, LatestMigrationID(), err)
-	}
-
-	if cfg.Database.IsSQLite() {
-		err = conn.Exec(`PRAGMA query_only = ON`).Error
-		if err != nil {
-			closeConn()
-
-			return nil, fmt.Errorf("setting query_only: %w", err)
-		}
+		return nil, fmt.Errorf("%w: %w", ErrSchemaNotCurrent, err)
 	}
 
 	return conn, nil

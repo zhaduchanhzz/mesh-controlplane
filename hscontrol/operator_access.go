@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	"github.com/rs/zerolog/log"
+	"github.com/zhaduchanhzz/mesh-controlplane/internal/opsmetrics"
 )
 
 // operatorLoopbackAddr is what handlers behind [operatorOnly] see as the
@@ -61,25 +62,9 @@ func peerIP(remoteAddr string) (netip.Addr, bool) {
 	return ip.Unmap(), true
 }
 
-var (
-	tailscaleCGNATRange = netip.MustParsePrefix("100.64.0.0/10")
-	tailscaleULARange   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
-)
-
+// isOperatorIP is the one operator rule of every metrics listener
+// (opsmetrics.IsOperatorIP; P13f shares it with mesh-bootstrap and
+// mesh-placement).
 func isOperatorIP(ip netip.Addr, cidrs []netip.Prefix) bool {
-	if ip.IsLoopback() {
-		return true
-	}
-
-	if tailscaleCGNATRange.Contains(ip) || tailscaleULARange.Contains(ip) {
-		return false
-	}
-
-	for _, p := range cidrs {
-		if p.Bits() > 0 && p.Contains(ip) {
-			return true
-		}
-	}
-
-	return false
+	return opsmetrics.IsOperatorIP(ip, cidrs)
 }
