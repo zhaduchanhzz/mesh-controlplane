@@ -81,6 +81,10 @@ m06x_routes() { local r; r=$(m06x_api a POST "/api/v2/device/$M06X_DEV/routes" "
 
 m06x_setup() {
   local s r
+  # The peer sets before M06x: undo must bring them back. In the full run
+  # other cases may have left nodes of the same tailnet (S13: A's n1flood-*).
+  M06X_BASE_A1=$(peers "$A1"); M06X_BASE_B1=$(peers "$B1")
+  grep -qE '(^| )(n1-a|n1flood-)' <<<"$M06X_BASE_B1" && p="$p; b1 sees nodes of A before M06x [$M06X_BASE_B1]"
   for s in a b; do
     cli c1 "tailnet apikey create --slug $s --user n1-$s --expiration 1h" >"$TMPD/m06x-key-$s.json" || p="$p; apikey $s"
     py 'import json; d = json.load(open(sys.argv[1])); print(d["key"])' "$TMPD/m06x-key-$s.json" | strip_cr >"$TMPD/api-$s"
@@ -174,8 +178,9 @@ m06x_undo() {
     [ -n "$i" ] && cli c1 "tailnet apikey revoke --slug $s --id $i" >/dev/null 2>&1 || p="$p; API key $s not revoked"
   done
   rm -f "$TMPD"/m06x-key-?.json "$TMPD"/api-? "$TMPD/s08c-hdr"
-  wait_peers "$A1" n1-a2 40 || p="$p; a1 peers after M06x [$(peers "$A1")]"
-  wait_peers "$B1" n1-b2 40 || p="$p; b1 peers after M06x [$(peers "$B1")]"
+  wait_peers "$A1" "${M06X_BASE_A1:-n1-a2}" 40 || p="$p; a1 peers after M06x [$(peers "$A1")], before [${M06X_BASE_A1:-n1-a2}]"
+  wait_peers "$B1" "${M06X_BASE_B1:-n1-b2}" 40 || p="$p; b1 peers after M06x [$(peers "$B1")], before [${M06X_BASE_B1:-n1-b2}]"
+  grep -qE '(^| )(n1-a|n1flood-)' <<<"$(peers "$B1")" && p="$p; b1 sees nodes of A after M06x"
   M06X_ORIG="" M06X_DEV=""
 }
 
