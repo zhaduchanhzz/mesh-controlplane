@@ -1789,7 +1789,7 @@ PostgreSQL's `statement_timeout` for every connection, sent as a startup paramet
 - **Default:** `""`
 - **Env:** `HEADSCALE_DATABASE_POSTGRES_LEASE_NAME`
 
-The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6), one per cluster so one cluster's renewals never wait for another's (D9b). Empty uses [`database.postgres.name`](#database.postgres.name), still on a pool of its own. That pool connects with [`database.postgres.connect_timeout_secs`](#database.postgres.connect_timeout_secs), at most 1 second, so a renewal can skip a dead host within one attempt.
+The database the cluster lease is renewed and polled through, on a connection pool of its own, so that it never queues behind data traffic: behind PgBouncer, an alias of the same database with its own small pool (ADR 0006 §3.6), one per cluster so one cluster's renewals never wait for another's (D9b). Empty uses [`database.postgres.name`](#database.postgres.name), still on a pool of its own. That pool connects with [`database.postgres.connect_timeout_secs`](#database.postgres.connect_timeout_secs), at most 1 second, so a renewal can skip a dead host within one attempt. Behind PgBouncer an empty name shares the data pool's server connections, so set an alias there.
 
 === "YAML"
 
@@ -1968,26 +1968,26 @@ Replaces `db_ssl` ([removed](#db_ssl)).
 - **Default:** `100`
 - **Env:** `HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS`
 
-Caps open connections to the database.
+Caps open connections to the database. Behind PgBouncer (transaction mode) the pooler's pool for this database is the real bound; directly on PostgreSQL, the sum over processes must stay below max_connections. Never unbounded (0): one tailnet's join burst could then take every connection of a shared server.
 
 === "YAML"
 
     ```yaml
     database:
       postgres:
-        max_open_conns: 20
+        max_open_conns: 100
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS=20
+    export HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS=100
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.database.postgres.max_open_conns = 20;
+    services.headscale.settings.database.postgres.max_open_conns = 100;
     ```
 
 #### `database.postgres.max_idle_conns` { #database.postgres.max_idle_conns data-toc-label="max_idle_conns" }

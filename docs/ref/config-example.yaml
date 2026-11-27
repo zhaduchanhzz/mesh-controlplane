@@ -271,6 +271,8 @@ database:
     # another's (D9b). Empty uses `database.postgres.name`, still on a pool of
     # its own. That pool connects with `database.postgres.connect_timeout_secs`,
     # at most 1 second, so a renewal can skip a dead host within one attempt.
+    # Behind PgBouncer an empty name shares the data pool's server connections,
+    # so set an alias there.
     lease_name: ""
     # Caps the open connections of the lease pool.
     lease_max_open_conns: 2
@@ -287,7 +289,11 @@ database:
     # disables TLS, any other value is passed as `sslmode` (`require`,
     # `verify-full`, ...).
     ssl: "false"
-    # Caps open connections to the database.
+    # Caps open connections to the database. Behind PgBouncer (transaction mode)
+    # the pooler's pool for this database is the real bound; directly on
+    # PostgreSQL, the sum over processes must stay below max_connections. Never
+    # unbounded (0): one tailnet's join burst could then take every connection
+    # of a shared server.
     max_open_conns: 100
     # Caps idle connections kept in the pool.
     max_idle_conns: 10

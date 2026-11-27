@@ -48,7 +48,7 @@ func Default() types.Config {
 				WALAutoCheckPoint: 1000, // SQLite default
 			},
 			Postgres: types.PostgresConfig{
-				Ssl:                 "false",
+				Ssl: "false",
 				// 100 (was 10, owner 2026-11-27): at 10 a join burst in one
 				// large tailnet held every connection and starved the cluster
 				// lease renewal (P14f F5). Idle stays at 10 so a quiet process
@@ -59,7 +59,7 @@ func Default() types.Config {
 				QueryExecMode:       types.PostgresQueryExecCacheStatement,
 				// ADR 0011 §D: a dead host of the list costs 2 s, well
 				// within the cluster lease's self-fence deadline (8 s).
-				ConnectTimeoutSecs:      2,
+				ConnectTimeoutSecs: 2,
 				// The lease pool (P13b, ported in P14f F5): renewals never
 				// wait for a data connection.
 				LeaseMaxOpenConnections: 2,
