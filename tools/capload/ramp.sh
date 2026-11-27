@@ -119,6 +119,22 @@ db_fresh() { # NAME
 	on "$DB_SSH" "sudo docker exec mc-pg dropdb -U postgres --if-exists --force $1 && sudo docker exec mc-pg createdb -U postgres -O headscale $1"
 }
 db_drop() { [[ $1 =~ ^capf5_[a-z0-9]+$ ]] && on "$DB_SSH" "sudo docker exec mc-pg dropdb -U postgres --if-exists --force $1" || true; }
+
+# The lease alias (ADR 0006 §3.6, P13b design D9b): a PgBouncer entry of the
+# step's database with its own pool of 2, so lease renewals never queue
+# behind the data pool's server connections. One line, marked, in mc-db's
+# pgbouncer.ini; PgBouncer reloads on SIGHUP. LEASE_ALIAS=0 skips it.
+LEASE_ALIAS=${LEASE_ALIAS:-1}
+PGB_INI=${PGB_INI:-/opt/mc-db/pgbouncer.ini}
+lease_alias_up() { # DB
+	[ "$LEASE_ALIAS" = 1 ] || return 0
+	[[ $1 =~ ^capf5_[a-z0-9]+$ ]] || return 1
+	on "$DB_SSH" "sudo sed -i '/^; p14f5-lease\$/d; /^capf5lease = /d' $PGB_INI && sudo sed -i '/^\[databases\]\$/a capf5lease = host=mc-pg port=5432 dbname=$1 pool_size=2 max_db_connections=2' $PGB_INI && sudo sed -i '/^\[databases\]\$/a ; p14f5-lease' $PGB_INI && sudo grep -q '^capf5lease = ' $PGB_INI && sudo docker kill -s HUP mc-pgb >/dev/null"
+}
+lease_alias_down() {
+	[ "$LEASE_ALIAS" = 1 ] || return 0
+	on "$DB_SSH" "sudo sed -i '/^; p14f5-lease\$/d; /^capf5lease = /d' $PGB_INI && sudo docker kill -s HUP mc-pgb >/dev/null" || true
+}
 db_pass() { # write the app password to the server host (0600), never printed
 	on "$SERVER" "test -s ~/$RB/pg.pass" && return 0
 	local env=${MC_DB_ENV:-$HOME/.mesh-lab/mc-db.env}
@@ -139,11 +155,14 @@ step() {
 	sd="\$HOME/$RB/run/$id"
 	log "step $shape N=$n INC=$INC db=$db"
 	db_fresh "$db"
+	lease_alias_up "$db"
+	local leasename=
+	[ "$LEASE_ALIAS" = 1 ] && leasename=capf5lease
 	local ip=${SERVER_ADDR%:*} port=${SERVER_ADDR#*:}
 	# F5 measures capacity, not the quota: no peer bound for any shape. Since
 	# review fix R2b the bound also refuses policy writes.
 	local maxpeer=${MAX_PEER_ENTRIES:-0}
-	local envs="HS=\$HOME/$RB/bin/headscale CLUSTER_ID=f5-$n CLASS=dedicated MAX_DEVICES=$((n * 2 + 10000)) PG_HOST=${DB_SSH#*@} PG_PORT=$DB_PORT PG_DB=$db PG_USER=headscale PG_PASSFILE=\$HOME/$RB/pg.pass NOISE_KEY=$sd/noise_private.key MAX_PEER_ENTRIES=$maxpeer INCREMENTAL=$INC RECONCILE_INTERVAL=${RECONCILE_INTERVAL:-1m} FULL_MAP_INTERVAL=${FULL_MAP_INTERVAL:-15m} PG_MAX_OPEN=${PG_MAX_OPEN:-100} PG_MAX_IDLE=${PG_MAX_IDLE:-10} LEASE_TTL=${LEASE_TTL:-} LEASE_RENEW=${LEASE_RENEW:-3s} LEASE_MARGIN=${LEASE_MARGIN:-5s}"
+	local envs="HS=\$HOME/$RB/bin/headscale CLUSTER_ID=f5-$n CLASS=dedicated MAX_DEVICES=$((n * 2 + 10000)) PG_HOST=${DB_SSH#*@} PG_PORT=$DB_PORT PG_DB=$db PG_USER=headscale PG_PASSFILE=\$HOME/$RB/pg.pass NOISE_KEY=$sd/noise_private.key MAX_PEER_ENTRIES=$maxpeer INCREMENTAL=$INC RECONCILE_INTERVAL=${RECONCILE_INTERVAL:-1m} FULL_MAP_INTERVAL=${FULL_MAP_INTERVAL:-15m} PG_MAX_OPEN=${PG_MAX_OPEN:-100} PG_MAX_IDLE=${PG_MAX_IDLE:-10} LEASE_TTL=${LEASE_TTL:-} LEASE_RENEW=${LEASE_RENEW:-3s} LEASE_MARGIN=${LEASE_MARGIN:-5s} LEASE_NAME=$leasename"
 	on "$SERVER" "mkdir -p $sd && chmod 700 $sd && $envs bash ~/$RB/tools/cluster.sh config $sd/active $HOSTNAME_:$port $ip:$port >/dev/null && $envs bash ~/$RB/tools/cluster.sh register $sd/active >/dev/null && $envs bash ~/$RB/tools/cluster.sh start $sd/active active" | tee -a "$cell/server-setup.txt"
 	local t_seed=$SECONDS
 	on "$SERVER" "mkdir -p $sd/seed && ~/$RB/bin/capseed -mode cluster -config $sd/active/config.yaml -cluster-id f5-$n -out $sd/seed -tailnets 1 -devices $n -policy $shape -extra $REGISTER -prefix f5 -seed 7 >$sd/seed/capseed.log 2>&1; rc=\$?; tail -3 $sd/seed/capseed.log; exit \$rc" >>"$cell/server-setup.txt"
@@ -213,6 +232,7 @@ step() {
 		on "$h" "rm -rf $ld"
 	done
 	on "$SERVER" "rm -f $sd/noise_private.key; rm -rf $sd"
+	lease_alias_down
 	db_drop "$db"
 	echo "server_alive_at_end=$alive load_rc=$lrc" >>"$cell/server-setup.txt"
 	"$PY" "$here/ramp-verdict.py" "$cell" --shape "$shape" --n "$n" --inc "$INC" --register "$REGISTER" --alive "$alive" | tee -a "$OUT/ramp.log"
@@ -245,10 +265,12 @@ limit() { # SHAPE: ramp then bisect
 }
 
 cleanup() {
+	case ${1:-} in step | limit | matrix) lease_alias_down ;; esac
 	[ -n "$binsrv_pid" ] && on "$CI_SSH" "kill $binsrv_pid" 2>/dev/null || true
 	rm -f "$OUT/.binsrv.pid"
 }
-trap cleanup EXIT
+trap 'cleanup "${CMD:-}"' EXIT
+CMD=${1:-}
 
 case ${1:-} in
 keys-up)

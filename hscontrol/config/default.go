@@ -57,6 +57,9 @@ func Default() types.Config {
 				MaxIdleConnections:  10,
 				ConnMaxIdleTimeSecs: 3600,
 				QueryExecMode:       types.PostgresQueryExecCacheStatement,
+				// The lease pool (P13b, ported in P14f F5): renewals never
+				// wait for a data connection.
+				LeaseMaxOpenConnections: 2,
 			},
 		},
 		DNSConfig: types.DNSConfig{

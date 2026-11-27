@@ -63,9 +63,10 @@ func v01Migrations() []*gormigrate.Migration {
 }
 
 // Platform is the unscoped, cluster-level database handle (ADR 0007 §1). It
-// owns the one connection pool of the process, reads the platform table
-// tailnets, resolves the tenant of a Noise session, and hands out
-// [HSDatabase] handles scoped to one tailnet on that same pool.
+// owns the data connection pool of the process (and, P13b, the lease
+// pool), reads the platform table tailnets, resolves the tenant of a Noise
+// session, and hands out [HSDatabase] handles scoped to one tailnet on that
+// same data pool.
 //
 // Its lookups on tenant tables use raw SQL, which tenantscope does not
 // filter; every such statement is in this file and selects only tailnet_id
@@ -74,6 +75,12 @@ type Platform struct {
 	db      *gorm.DB // tenantscope registered: tenant tables need a scope
 	cfg     *types.Config
 	cluster string
+
+	// leaseDB is the pool of the cluster lease (P13b, ADR 0006 §3.6): on
+	// PostgreSQL a pool of its own, so that a renewal or a standby's poll
+	// never waits for a data connection; on SQLite db itself (one
+	// connection). tenantscope is registered on it too.
+	leaseDB *gorm.DB
 
 	// P11b: a cluster process (RequireLease) gets tenant handles only while
 	// it holds the cluster lease, and every such handle's fence claims that
@@ -117,8 +124,40 @@ func (p *Platform) currentLease() (string, uint64, error) {
 	return p.leaseHolder, p.leaseEpoch, nil
 }
 
-// LeaseStore is the cluster_leases table on this pool.
-func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.db) }
+// LeaseStore is the cluster_leases table on the lease pool. Fenced writes
+// check the lease inside their own transaction, on the data pool.
+func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.leaseDB) }
+
+// leaseDatabase is the configuration of the lease pool: the same server
+// and settings, database.postgres.lease_name (an alias with its own small
+// PgBouncer pool) when set, and lease_max_open_conns connections.
+func leaseDatabase(cfg types.DatabaseConfig) types.DatabaseConfig {
+	pg := &cfg.Postgres
+	if pg.LeaseName != "" {
+		pg.Name = pg.LeaseName
+	}
+
+	n := pg.LeaseMaxOpenConnections
+	if n <= 0 {
+		n = 2
+	}
+
+	pg.MaxOpenConnections, pg.MaxIdleConnections = n, n
+
+	return cfg
+}
+
+// closePool closes the pool of conn, ignoring errors (failure paths).
+func closePool(conn *gorm.DB) {
+	if conn == nil {
+		return
+	}
+
+	sqlDB, err := conn.DB()
+	if err == nil {
+		_ = sqlDB.Close()
+	}
+}
 
 // OpenPlatform opens the database, creates the v0.1 schema on a fresh one,
 // refuses databases from Headscale or unknown versions, runs the v0.1
@@ -189,7 +228,25 @@ func OpenPlatform(cfg *types.Config) (_ *Platform, retErr error) {
 		return nil, fmt.Errorf("registering tenantscope: %w", err)
 	}
 
-	return &Platform{db: dbConn, cfg: cfg, cluster: clusterIDOf(cfg)}, nil
+	leaseConn := dbConn
+
+	if !cfg.Database.IsSQLite() {
+		leaseConn, err = openDB(leaseDatabase(cfg.Database), "")
+		if err != nil {
+			return nil, fmt.Errorf("opening the lease pool: %w", err)
+		}
+
+		// The lease pool reads platform tables only; a tenant table still
+		// needs a scope there (defence in depth).
+		err = tenantscope.Register(leaseConn)
+		if err != nil {
+			closePool(leaseConn)
+
+			return nil, fmt.Errorf("registering tenantscope on the lease pool: %w", err)
+		}
+	}
+
+	return &Platform{db: dbConn, leaseDB: leaseConn, cfg: cfg, cluster: clusterIDOf(cfg)}, nil
 }
 
 // ClusterID returns the cluster this platform serves for.
@@ -205,8 +262,13 @@ func (p *Platform) Ping(ctx context.Context) error {
 	return sqlDB.PingContext(ctx)
 }
 
-// Close closes the shared pool; every handle from TenantDB stops working.
+// Close closes the data pool and the lease pool; every handle from
+// TenantDB stops working.
 func (p *Platform) Close() error {
+	if p.leaseDB != nil && p.leaseDB != p.db {
+		closePool(p.leaseDB)
+	}
+
 	sqlDB, err := p.db.DB()
 	if err != nil {
 		return err

@@ -562,8 +562,12 @@ type PostgresConfig struct {
 	// (`require`, `verify-full`, ...).
 	Ssl string `example:"\"verify-full\"" koanf:"ssl"`
 
-	// MaxOpenConnections caps open connections to the database.
-	MaxOpenConnections int `example:"20" koanf:"max_open_conns"`
+	// MaxOpenConnections caps open connections to the database. Behind
+	// PgBouncer (transaction mode) the pooler's pool for this database is
+	// the real bound; directly on PostgreSQL, the sum over processes must
+	// stay below max_connections. Never unbounded (0): one tailnet's join
+	// burst could then take every connection of a shared server.
+	MaxOpenConnections int `example:"100" koanf:"max_open_conns"`
 
 	// MaxIdleConnections caps idle connections kept in the pool.
 	MaxIdleConnections int `example:"5" koanf:"max_idle_conns"`
@@ -576,6 +580,20 @@ type PostgresConfig struct {
 	// `default_query_exec_mode`. Behind PgBouncer in transaction mode
 	// without `max_prepared_statements`, use `simple_protocol`.
 	QueryExecMode PostgresQueryExecMode `example:"\"simple_protocol\"" koanf:"query_exec_mode"`
+
+	// LeaseName is the database the cluster lease is renewed and polled
+	// through, on a connection pool of its own, so that it never queues
+	// behind data traffic: behind PgBouncer, an alias of the same
+	// database with its own small pool (ADR 0006 §3.6), one per cluster so
+	// one cluster's renewals never wait for another's (D9b). Empty uses
+	// `database.postgres.name`, still on a pool of its own; behind
+	// PgBouncer that shares the data pool's server connections, so set
+	// an alias there.
+	LeaseName string `example:"\"mesh_c1_lease\"" koanf:"lease_name"`
+
+	// LeaseMaxOpenConnections caps the open connections of the lease
+	// pool.
+	LeaseMaxOpenConnections int `example:"4" koanf:"lease_max_open_conns"`
 }
 
 // PostgresQueryExecMode is pgx's default_query_exec_mode. "" decodes without
