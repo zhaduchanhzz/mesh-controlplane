@@ -248,7 +248,7 @@ database:
     # `verify-full`, ...).
     ssl: "false"
     # Caps open connections to the database.
-    max_open_conns: 10
+    max_open_conns: 100
     # Caps idle connections kept in the pool.
     max_idle_conns: 10
     # How long, in seconds, a connection may stay idle before it is closed.

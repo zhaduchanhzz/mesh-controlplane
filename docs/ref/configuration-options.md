@@ -1298,7 +1298,7 @@ Where headscale stores nodes, users and keys. SQLite is recommended; PostgreSQL 
         user: ""
         pass: ""
         ssl: "false"
-        max_open_conns: 10
+        max_open_conns: 100
         max_idle_conns: 10
         conn_max_idle_time_secs: 3600
         query_exec_mode: cache_statement
@@ -1579,7 +1579,7 @@ PostgreSQL, read only when [`database.type`](#database.type) is `postgres`. An e
         user: ""
         pass: ""
         ssl: "false"
-        max_open_conns: 10
+        max_open_conns: 100
         max_idle_conns: 10
         conn_max_idle_time_secs: 3600
         query_exec_mode: cache_statement
@@ -1771,7 +1771,7 @@ Replaces `db_ssl` ([removed](#db_ssl)).
 #### `database.postgres.max_open_conns` { #database.postgres.max_open_conns data-toc-label="max_open_conns" }
 
 - **Type:** [integer](#type-integer)
-- **Default:** `10`
+- **Default:** `100`
 - **Env:** `HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS`
 
 Caps open connections to the database.

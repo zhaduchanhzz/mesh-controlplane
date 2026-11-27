@@ -538,7 +538,7 @@ in
       };
       max_open_conns = lib.mkOption {
         type = lib.types.int;
-        default = 10;
+        default = 100;
         description = ''
           Caps open connections to the database.
         '';

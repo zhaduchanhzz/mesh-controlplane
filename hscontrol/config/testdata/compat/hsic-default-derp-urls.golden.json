@@ -49,7 +49,7 @@
         "Name": "",
         "User": "",
         "Ssl": "false",
-        "MaxOpenConnections": 10,
+        "MaxOpenConnections": 100,
         "MaxIdleConnections": 10,
         "ConnMaxIdleTimeSecs": 3600
       }
