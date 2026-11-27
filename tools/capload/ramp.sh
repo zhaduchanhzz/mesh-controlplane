@@ -252,8 +252,8 @@ case ${1:-} in
 keys-up)
 	lh=${OPERATOR:-mesh@192.168.1.249}
 	pub=$(on "$lh" "test -f ~/.ssh/p14f-ramp || ssh-keygen -q -t ed25519 -N '' -C p14f-ramp -f ~/.ssh/p14f-ramp; cat ~/.ssh/p14f-ramp.pub")
+	# The operator host is also a load host: it ssh-es to itself too.
 	for h in "$SERVER" $(loads) "$DB_SSH" "$CI_SSH"; do
-		[ "$h" = "$lh" ] && continue
 		on "$h" "grep -q p14f-ramp ~/.ssh/authorized_keys || echo '$pub' >> ~/.ssh/authorized_keys"
 	done
 	db_pass
