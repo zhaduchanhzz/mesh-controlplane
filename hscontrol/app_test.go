@@ -238,7 +238,7 @@ func TestNewHeadscaleSecrets(t *testing.T) {
 			name: "postgres pass file missing",
 			set: func(c *types.Config) {
 				c.Database.Type = types.DatabasePostgres
-				c.Database.Postgres = types.PostgresConfig{Host: "127.0.0.1", Port: 1, Name: "headscale", Pass: missing}
+				c.Database.Postgres = types.PostgresConfig{Host: "127.0.0.1", Port: 1, Name: "headscale", Pass: missing, MaxOpenConnections: 10}
 			},
 			wantErr: "database.postgres.pass: ",
 		},
