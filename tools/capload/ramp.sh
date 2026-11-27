@@ -122,18 +122,28 @@ db_drop() { [[ $1 =~ ^capf5_[a-z0-9]+$ ]] && on "$DB_SSH" "sudo docker exec mc-p
 
 # The lease alias (ADR 0006 §3.6, P13b design D9b): a PgBouncer entry of the
 # step's database with its own pool of 2, so lease renewals never queue
-# behind the data pool's server connections. One line, marked, in mc-db's
-# pgbouncer.ini; PgBouncer reloads on SIGHUP. LEASE_ALIAS=0 skips it.
+# behind the data pool's server connections. One line in mc-db's
+# pgbouncer.ini, named <db>l: a fresh name per step, because PgBouncer keeps
+# an auto-database (from the `*` entry) of a name it has seen, and that
+# entry would shadow a later alias of the same name. The file is a bind
+# mount of a single file: it is rewritten in place (same inode; `sed -i`
+# would leave the container reading the old file), then PgBouncer reloads
+# on SIGHUP and the container's copy is checked. LEASE_ALIAS=0 skips it.
 LEASE_ALIAS=${LEASE_ALIAS:-1}
 PGB_INI=${PGB_INI:-/opt/mc-db/pgbouncer.ini}
+pgb_rewrite() { # SED-SCRIPT: apply to pgbouncer.ini in place, keep the inode
+	on "$DB_SSH" "sudo sh -c \"sed -e '$1' $PGB_INI > /tmp/pgb.ini.new && cat /tmp/pgb.ini.new > $PGB_INI && rm -f /tmp/pgb.ini.new\""
+}
 lease_alias_up() { # DB
 	[ "$LEASE_ALIAS" = 1 ] || return 0
 	[[ $1 =~ ^capf5_[a-z0-9]+$ ]] || return 1
-	on "$DB_SSH" "sudo sed -i '/^; p14f5-lease\$/d; /^capf5lease = /d' $PGB_INI && sudo sed -i '/^\[databases\]\$/a capf5lease = host=mc-pg port=5432 dbname=$1 pool_size=2 max_db_connections=2' $PGB_INI && sudo sed -i '/^\[databases\]\$/a ; p14f5-lease' $PGB_INI && sudo grep -q '^capf5lease = ' $PGB_INI && sudo docker kill -s HUP mc-pgb >/dev/null"
+	pgb_rewrite '/^capf5_[a-z0-9]*l = /d'
+	pgb_rewrite "/^\\[databases\\]\$/a ${1}l = host=mc-pg port=5432 dbname=$1 pool_size=2 max_db_connections=2"
+	on "$DB_SSH" "sudo docker kill -s HUP mc-pgb >/dev/null && sudo docker exec mc-pgb grep -q '^${1}l = ' /etc/pgbouncer/pgbouncer.ini"
 }
 lease_alias_down() {
 	[ "$LEASE_ALIAS" = 1 ] || return 0
-	on "$DB_SSH" "sudo sed -i '/^; p14f5-lease\$/d; /^capf5lease = /d' $PGB_INI && sudo docker kill -s HUP mc-pgb >/dev/null" || true
+	pgb_rewrite '/^capf5_[a-z0-9]*l = /d' && on "$DB_SSH" "sudo docker kill -s HUP mc-pgb >/dev/null" || true
 }
 db_pass() { # write the app password to the server host (0600), never printed
 	on "$SERVER" "test -s ~/$RB/pg.pass" && return 0
@@ -157,7 +167,7 @@ step() {
 	db_fresh "$db"
 	lease_alias_up "$db"
 	local leasename=
-	[ "$LEASE_ALIAS" = 1 ] && leasename=capf5lease
+	[ "$LEASE_ALIAS" = 1 ] && leasename=${db}l
 	local ip=${SERVER_ADDR%:*} port=${SERVER_ADDR#*:}
 	# F5 measures capacity, not the quota: no peer bound for any shape. Since
 	# review fix R2b the bound also refuses policy writes.

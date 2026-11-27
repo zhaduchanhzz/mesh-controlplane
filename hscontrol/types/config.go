@@ -567,7 +567,7 @@ type PostgresConfig struct {
 	// the real bound; directly on PostgreSQL, the sum over processes must
 	// stay below max_connections. Never unbounded (0): one tailnet's join
 	// burst could then take every connection of a shared server.
-	MaxOpenConnections int `example:"100" koanf:"max_open_conns"`
+	MaxOpenConnections int `example:"40" koanf:"max_open_conns"`
 
 	// MaxIdleConnections caps idle connections kept in the pool.
 	MaxIdleConnections int `example:"5" koanf:"max_idle_conns"`
