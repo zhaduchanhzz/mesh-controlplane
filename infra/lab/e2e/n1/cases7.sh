@@ -47,7 +47,24 @@ M06X_P2='{
 M06X_ORIG="" M06X_DEV=""
 
 # shellcheck disable=SC2034 # read by s08c_api through bash dynamic scope
-m06x_api() { local S08C_APILOG=M06x-api.log; s08c_api "$@"; }
+# The operator laptop may reach the lab over a Tailscale subnet route that
+# drops for a minute (2026-11-28 00:17: POST -> 000, the ssh to b1 failed, the
+# a1 watcher was lost). A call with no answer (000) is sent again after 5 s,
+# up to 6 times, each counted in $TMPD/m06x-000. Every M06x write is
+# idempotent (tags, routes, setACL with a fresh ETag) except a device delete:
+# a 404 on the resend of a DELETE whose first send got no answer means the
+# first send was applied.
+m06x_api() {
+  local S08C_APILOG=M06x-api.log r i
+  for i in 1 2 3 4 5 6; do
+    r=$(s08c_api "$@")
+    [ "${r%% *}" != 000 ] && break
+    echo 000 >>"$TMPD/m06x-000"; sleep 5
+  done
+  [ "$i" -gt 1 ] && [ "$2" = DELETE ] && [ "${r%% *}" = 404 ] && r="200 (applied by the send that got no answer)"
+  printf '%s\n' "$r"
+}
+m06x_count() { [ -f "$TMPD/$1" ] && wc -l <"$TMPD/$1" | tr -d ' ' || echo 0; }
 m06x_sees() { grep -qw "$2" <<<"$(peers "$1")"; }
 m06x_not_sees() { ! m06x_sees "$1" "$2"; }
 # m06x_route_at CLIENT HOST PREFIX: the peer HOST carries PREFIX at CLIENT.
@@ -68,7 +85,20 @@ m06x_wait() {
 # m06x_stats MS...: "p50=… max=…", or MISSED with the offending values when
 # one is -1 or above the bound (a change seen only after M06X_BOUND is a miss,
 # however the wait ended; soak3 2026-11-27 had such values counted as met).
-m06x_stats() { py 'b = int(sys.argv[1]) * 1000; v = sorted(int(x) for x in sys.argv[2:]); print("p50=%d max=%d" % (v[(len(v) - 1) // 2], v[-1]) if v and min(v) >= 0 and max(v) <= b else "MISSED " + " ".join(x for x in sys.argv[2:] if int(x) < 0 or int(x) > b))' "$M06X_BOUND" "$@" | strip_cr; }
+# -2 is a void round: the harness lost its path to a1 while the change
+# propagated, so the round has no measurement (m06x_waitc). Void rounds are
+# reported; more than max(2, 1 %) of them is MISSED.
+m06x_stats() { py '
+b = int(sys.argv[1]) * 1000
+a = [int(x) for x in sys.argv[2:]]
+void = sum(1 for x in a if x == -2)
+v = sorted(x for x in a if x != -2)
+bad = [x for x in v if x < 0 or x > b]
+vs = " void=%d (harness path lost)" % void if void else ""
+if v and not bad and void <= max(2, len(a) // 100):
+    print("p50=%d max=%d%s" % (v[(len(v) - 1) // 2], v[-1], vs))
+else:
+    print("MISSED " + " ".join(str(x) for x in bad) + vs)' "$M06X_BOUND" "$@" | strip_cr; }
 m06x_time() { printf 'M06x %s %s %s round %s: %s ms%s\n' "$MODE" "$V" "$1" "$2" "$3" "${M06X_NOTE:+ ($M06X_NOTE)}" >>"$ART_DIR/timings.txt"; }
 
 # Client-side watcher on a1 (m06x-watch.py) as coproc M06XW.
@@ -80,10 +110,22 @@ m06x_watch_start() {
   coproc M06XW { vm "$A1" "sudo python3 -u /tmp/m06x-watch.py /opt/tailscale/$V/tailscale $TSS $((M06X_BOUND * 6))" 2>/dev/null; }
   read -r -t 60 l <&"${M06XW[0]:-}" && [ "${l%"$CR"}" = READY ] || { m06x_watch_stop; return 1; }
 }
+# m06x_send WORD...: one line to the watcher. A write to a dead watcher
+# raises SIGPIPE, which would end the whole harness without its cleanup, so
+# SIGPIPE is ignored for the write (it then fails with EPIPE). Not in a
+# subshell: bash does not pass coproc fds to subshells.
+m06x_send() {
+  local rc
+  [ -n "${M06XW[1]:-}" ] || return 1
+  trap '' PIPE
+  printf '%s\n' "$*" >&"${M06XW[1]}" 2>/dev/null; rc=$?
+  trap - PIPE
+  return $rc
+}
 m06x_watch_stop() {
   [ -n "${M06XW_PID:-}" ] || return 0
   # Bash unsets M06XW and M06XW_PID once the coproc has exited (set -u).
-  [ -n "${M06XW[1]:-}" ] && printf 'QUIT\n' >&"${M06XW[1]}" 2>/dev/null
+  [ -n "${M06XW[1]:-}" ] && m06x_send QUIT
   sleep 1; local pid=${M06XW_PID:-}; [ -n "$pid" ] && { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; }
   M06XW_PID=""
 }
@@ -91,9 +133,30 @@ m06x_watch_stop() {
 # a1): M06X_MS = ms from the API call returning until the state holds (-1:
 # not within the watcher's deadline, or the watcher is gone); M06X_NOTE = the
 # parts of the measurement. Without the watcher: the harness-side poll.
+#
+# A watcher lost to a dropped path (M06X_WATCHING=1 but no coproc, or EOF in
+# the wait) makes the round void (M06X_MS=-2): the time is unknown. The
+# watcher is restarted and the harness waits for the state on it (up to
+# 2 min) so the next round starts from the expected state.
+m06x_resync() {
+  local i l
+  m06x_watch_stop
+  for i in 1 2 3 4 5 6; do m06x_watch_start && break; sleep 10; done
+  [ -n "${M06XW_PID:-}" ] || return 1
+  m06x_send MARK "resync-$1" "$2" "$3" "${4:-}" || return 1
+  while read -r -t 150 l <&"${M06XW[0]:-}"; do
+    case ${l%"$CR"} in "SEEN resync-$1 "*) return 0;; "MISS resync-$1 "*) return 1;; esac
+  done
+  return 1
+}
 m06x_waitc() {
   local id=$1 kind=$2 t0 t1 l rtt="" c pm f
   M06X_MS=-1 M06X_NOTE=""
+  if [ "${M06X_WATCHING:-0}" = 1 ] && [ -z "${M06XW_PID:-}" ]; then
+    echo "$id" >>"$TMPD/m06x-void"
+    m06x_resync "$@" && { M06X_MS=-2; M06X_NOTE="void: watcher was lost, restarted, state reached"; return 0; }
+    M06X_NOTE="watcher lost and not restarted, or state not reached"; return 1
+  fi
   if [ -z "${M06XW_PID:-}" ]; then
     case $kind in
       present) f=(m06x_sees "$A1" "$3");; absent) f=(m06x_not_sees "$A1" "$3");;
@@ -102,8 +165,8 @@ m06x_waitc() {
     M06X_MS=$(m06x_wait "${f[@]}"); M06X_NOTE="harness poll"; return 0
   fi
   t0=$(date +%s%3N)
-  printf 'MARK %s %s %s %s\n' "$id" "$kind" "$3" "${4:-}" >&"${M06XW[1]:-}" || { M06X_NOTE="watcher gone"; return 1; }
-  while read -r -t 120 l <&"${M06XW[0]:-}"; do
+  m06x_send MARK "$id" "$kind" "$3" "${4:-}" \
+    && while read -r -t 120 l <&"${M06XW[0]:-}"; do
     l=${l%"$CR"}
     case $l in
       "ACK $id") t1=$(date +%s%3N); rtt=$((t1 - t0));;
@@ -112,12 +175,21 @@ m06x_waitc() {
       "MISS $id "*) M06X_NOTE="a1: not within $((M06X_BOUND * 6)) s"; return 0;;
     esac
   done
-  M06X_NOTE="watcher gone"; return 1
+  # The MARK could not be written, or EOF / no line for 120 s: the watcher
+  # (its ssh) is gone.
+  echo "$id" >>"$TMPD/m06x-void"
+  m06x_resync "$@" && { M06X_MS=-2; M06X_NOTE="void: watcher lost during the wait, restarted, state reached"; return 0; }
+  M06X_NOTE="watcher lost and not restarted, or state not reached"; return 1
 }
+# m06x_peers IP: peers, asked again (5 s apart, 4 tries) while the answer is
+# empty: an ssh that failed on a dropped path also prints nothing, and B's
+# clients always have one peer.
+m06x_peers() { local v i; for i in 1 2 3 4; do v=$(peers "$1"); [ -n "$v" ] && break; sleep 5; done; printf '%s' "$v"; }
 # m06x_isolated: B's clients unaffected, no M06x node in B's view.
 m06x_isolated() {
-  [ "$(peers "$B1")" = n1-b2 ] || p="$p; b1 peers [$(peers "$B1")]"
-  [ "$(peers "$B2")" = n1-b1 ] || p="$p; b2 peers [$(peers "$B2")]"
+  local v
+  v=$(m06x_peers "$B1"); [ "$v" = n1-b2 ] || p="$p; b1 peers [$v]"
+  v=$(m06x_peers "$B2"); [ "$v" = n1-b1 ] || p="$p; b2 peers [$v]"
 }
 # m06x_setacl JSON: write A's policy through A's key with a fresh ETag.
 # A policy write is also bounded by the tailnet's config-write bucket
@@ -148,7 +220,7 @@ m06x_setup() {
   local s r
   # The peer sets before M06x: undo must bring them back. In the full run
   # other cases may have left nodes of the same tailnet (S13: A's n1flood-*).
-  rm -f "$TMPD/m06x-429"
+  rm -f "$TMPD/m06x-429" "$TMPD/m06x-000" "$TMPD/m06x-void"
   M06X_BASE_A1=$(peers "$A1"); M06X_BASE_B1=$(peers "$B1")
   grep -qE '(^| )(n1-a|n1flood-)' <<<"$M06X_BASE_B1" && p="$p; b1 sees nodes of A before M06x [$M06X_BASE_B1]"
   for s in a b; do
@@ -260,7 +332,7 @@ t_m06x() {
   M06X_SOAK_T0=$SECONDS
   M06X_A="" M06X_B="" M06X_C="" M06X_D=""
   m06x_setup
-  [ -z "$p" ] && { m06x_watch_start || p="$p; client watcher on a1 not ready"; }
+  [ -z "$p" ] && { m06x_watch_start && M06X_WATCHING=${M06X_WATCH:-1} || p="$p; client watcher on a1 not ready"; }
   if [ -z "$p" ]; then
     ps=$p; m06x_tags;   [ "$p" = "$ps" ] && { record M06x.a PASS "netmap $MODE ($V): tag change via A's API, ${M06X_ROUNDS} rounds <= ${M06X_BOUND}s: $M06X_A"; okn=$((okn + 1)); } || m06x_fail M06x.a
     ps=$p; m06x_route;  [ "$p" = "$ps" ] && { record M06x.b PASS "netmap $MODE ($V): route approval via A's API: $M06X_B; b1 never sees the route"; okn=$((okn + 1)); } || m06x_fail M06x.b
@@ -269,7 +341,7 @@ t_m06x() {
   else
     record M06x.a FAIL "setup: ${p#; }"
   fi
-  m06x_watch_stop
+  M06X_WATCHING=0; m06x_watch_stop
   p=""; m06x_undo
   [ -z "$p" ] && record M06x.0 PASS "setup and undo: extra node deleted, a2 restored, A's policy restored (If-Match), API keys revoked; B unaffected and refused (404) on A's device" \
     || record M06x.0 FAIL "${p#; }"
@@ -294,7 +366,7 @@ m06x_soak_verdict() {
     printf 'SOAK %s %s divergence=%s reconciles=%s\n' "$V" "$n" "$d" "$r" >>"$ART_DIR/timings.txt"
   done
   if [ "$div" -eq 0 ] && [ "$rec" -ge 1 ]; then
-    record M06x.soak PASS "soak ($V, netmap $MODE, reconcile ${N1_RECONCILE_INTERVAL:-1h}, full map ${N1_FULL_MAP_INTERVAL:-1h}): ${M06X_ROUNDS} rounds of tag/route/setACL/delete+join via A's API in $((SECONDS - M06X_SOAK_T0)) s, every change <= ${M06X_BOUND}s; c1 netmap divergence 0 over $rec reconciles"
+    record M06x.soak PASS "soak ($V, netmap $MODE, reconcile ${N1_RECONCILE_INTERVAL:-1h}, full map ${N1_FULL_MAP_INTERVAL:-1h}): ${M06X_ROUNDS} rounds of tag/route/setACL/delete+join via A's API in $((SECONDS - M06X_SOAK_T0)) s, every measured change <= ${M06X_BOUND}s; c1 netmap divergence 0 over $rec reconciles; harness: $(m06x_count m06x-void) void round(s), $(m06x_count m06x-000) API send(s) with no answer resent, $(m06x_429) config-write 429"
   else
     record M06x.soak FAIL "divergence=$div reconciles=$rec (need 0 and >= 1)"
   fi

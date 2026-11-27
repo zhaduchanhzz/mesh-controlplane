@@ -53,7 +53,7 @@ def poll():
         t0 = time.monotonic()
         try:
             r = subprocess.run([TS_BIN, "--socket=" + SOCK, "status", "--json"],
-                               capture_output=True, timeout=30, check=False)
+                               stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
             d = json.loads(r.stdout)
         except (subprocess.SubprocessError, ValueError, OSError):
             d = None
