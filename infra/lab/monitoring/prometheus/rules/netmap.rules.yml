@@ -1,0 +1,70 @@
+# P14f F6 (ADR 0015 D3): alerts for the incremental netmap safety nets.
+# NOT APPLIED. Deployed with the P13f monitoring stack (infra/lab/monitoring
+# on feat/P13-integration: prometheus.yml loads /etc/prometheus/rules/*.yml),
+# next to mesh.rules.yml. Unit tests: ../tests/netmap.rules.test.yml
+# (promtool test rules).
+#
+# Metrics (hscontrol/state/node_store_reconcile.go), on each cluster
+# process's operator metrics listener:
+#   headscale_nodestore_netmap_divergence_total{kind="extra"|"missing"}
+#     counter; a reconciliation that diverged adds to BOTH kinds (one may
+#     add 0), so a series can appear with value 0. Series exist only from the
+#     first divergence on: a series that appears is a divergence even though
+#     increase() cannot see its first value, hence the "unless offset" term.
+#   headscale_tailnet_netmap_divergence_total{tailnet,kind}: same by tenant
+#     (label cap; overflow under tailnet="other"): which tenant to look at.
+#   headscale_nodestore_netmap_reconcile_duration_seconds (histogram): one
+#     observation per reconciliation of each tailnet runtime.
+#
+# kind="extra": the incremental adjacency listed a peer the full build does
+# not, i.e. a node was (briefly) told about a peer it may not see: a possible
+# isolation fault, critical. The reconciliation already replaced the
+# adjacency and sent full maps; the alert is for a person to investigate and,
+# if it repeats, flip tuning.incremental_netmap.enabled to false (kill
+# switch; standby first, then switchover).
+# kind="missing": a peer the node may see was missing; it is repaired the
+# same way; warning.
+
+groups:
+  - name: mesh-netmap-incremental
+    rules:
+      - alert: MeshNetmapDivergenceExtra
+        expr: |
+          (increase(headscale_nodestore_netmap_divergence_total{kind="extra"}[10m]) > 0)
+          or
+          ((headscale_nodestore_netmap_divergence_total{kind="extra"} > 0)
+            unless headscale_nodestore_netmap_divergence_total{kind="extra"} offset 10m)
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }}: incremental netmap listed peers the full build does not (possible isolation fault)"
+          description: "Reconciliation on {{ $labels.instance }} found peer entries the full build does not allow (kind=extra) in the last 10 minutes. They were replaced and full maps sent; find the tenant in headscale_tailnet_netmap_divergence_total{kind=\"extra\"} and the redacted log 'netmap divergence'. If it repeats, set tuning.incremental_netmap.enabled: false (standby first, then switchover)."
+
+      - alert: MeshNetmapDivergenceMissing
+        expr: |
+          (increase(headscale_nodestore_netmap_divergence_total{kind="missing"}[10m]) > 0)
+          or
+          ((headscale_nodestore_netmap_divergence_total{kind="missing"} > 0)
+            unless headscale_nodestore_netmap_divergence_total{kind="missing"} offset 10m)
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: incremental netmap missed peers the full build has"
+          description: "Reconciliation on {{ $labels.instance }} found peer entries missing from the incremental adjacency (kind=missing) in the last 10 minutes; they were repaired and full maps sent. Repeated firing means a bug in the incremental path."
+
+      # No reconciliation for 3 x reconcile_interval (default 60 s) on a
+      # process that holds its cluster lease and has reconciled before (so
+      # the incremental netmap is on and it serves tailnets). A process that
+      # holds no tenant runtime never reconciles: the "has reconciled in the
+      # last 6 h" condition keeps a fresh empty cluster quiet. Raise the 3m
+      # window with reconcile_interval.
+      - alert: MeshNetmapReconcileStalled
+        expr: |
+          (increase(headscale_nodestore_netmap_reconcile_duration_seconds_count[3m]) == 0)
+          and on (job, instance)
+            (max_over_time(headscale_nodestore_netmap_reconcile_duration_seconds_count[6h]) > 0)
+          and on (job, instance)
+            (max by (job, instance) (headscale_cluster_lease_held) == 1)
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }}: no netmap reconciliation for more than 3 minutes"
+          description: "The active process {{ $labels.instance }} has reconciled before but not in the last 3 minutes (3 x reconcile_interval): the background check of the incremental netmap is not running, so a divergence would go unnoticed until the periodic full map."
