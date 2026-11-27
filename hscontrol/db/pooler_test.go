@@ -428,12 +428,16 @@ func TestLeaseDatabase(t *testing.T) {
 	assert.Equal(t, 2, got.MaxIdleConnections)
 	assert.Equal(t, base.Postgres.Hosts, got.Hosts)
 	assert.Equal(t, types.PostgresTargetReadWrite, got.TargetSessionAttrs)
+	assert.Equal(t, 1, got.ConnectTimeoutSecs, "unset connect_timeout: 1 s on the lease pool")
 
 	base.Postgres.LeaseName, base.Postgres.LeaseMaxOpenConnections = "mesh_lease", 4
+	base.Postgres.ConnectTimeoutSecs = 5
 	got = leaseDatabase(base).Postgres
 	assert.Equal(t, "mesh_lease", got.Name)
 	assert.Equal(t, 4, got.MaxOpenConnections)
+	assert.Equal(t, 1, got.ConnectTimeoutSecs, "a dead host must be skipped within one renewal attempt")
 	assert.Equal(t, "meshlab", base.Postgres.Name, "the data pool's config is not changed")
+	assert.Equal(t, 5, base.Postgres.ConnectTimeoutSecs, "the data pool keeps its connect_timeout")
 }
 
 func atoiOr(s string, def int) int {

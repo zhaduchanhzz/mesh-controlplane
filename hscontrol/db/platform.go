@@ -132,13 +132,26 @@ func (p *Platform) currentLease() (string, uint64, error) {
 // check the lease inside their own transaction, on the data pool.
 func (p *Platform) LeaseStore() *lease.Store { return lease.NewStore(p.leaseDB) }
 
+// leaseConnectTimeoutSecs caps connect_timeout on the lease pool: a
+// renewal that finds its server dead is retried within one attempt
+// (2.5 s with the default lease timing, internal/lease Config), so the
+// fresh connection must give up on a dead host (packets dropped, no reset)
+// and reach the next one of the list well within it. One second covers a
+// TCP connect and authentication to a PgBouncer on the same network.
+const leaseConnectTimeoutSecs = 1
+
 // leaseDatabase is the configuration of the lease pool: the same servers
 // and settings, database.postgres.lease_name (an alias with its own small
-// PgBouncer pool) when set, and lease_max_open_conns connections.
+// PgBouncer pool) when set, lease_max_open_conns connections, and a
+// connect_timeout of at most leaseConnectTimeoutSecs per host.
 func leaseDatabase(cfg types.DatabaseConfig) types.DatabaseConfig {
 	pg := &cfg.Postgres
 	if pg.LeaseName != "" {
 		pg.Name = pg.LeaseName
+	}
+
+	if pg.ConnectTimeoutSecs <= 0 || pg.ConnectTimeoutSecs > leaseConnectTimeoutSecs {
+		pg.ConnectTimeoutSecs = leaseConnectTimeoutSecs
 	}
 
 	n := pg.LeaseMaxOpenConnections
