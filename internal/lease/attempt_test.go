@@ -63,25 +63,25 @@ func (b *blackholeStore) Renew(ctx context.Context, l Lease, ttl time.Duration) 
 	return b.Store.Renew(ctx, l, ttl)
 }
 
-// runHeld starts m and waits until it holds the lease; lost receives every
-// onLose reason.
-func runHeld(t *testing.T, m *Manager) (time.Time, chan string) {
+// runHeld starts m and waits until it holds the lease; the channel it
+// returns receives every onLose reason.
+func runHeld(t *testing.T, m *Manager) chan string {
 	t.Helper()
 
-	acquired := make(chan time.Time, 1)
+	acquired := make(chan struct{}, 1)
 	lost := make(chan string, 4)
 
-	go m.Run(t.Context(), func(context.Context, Lease) error { acquired <- time.Now(); return nil },
+	go m.Run(t.Context(), func(context.Context, Lease) error { acquired <- struct{}{}; return nil },
 		func(_ Lease, r string) { lost <- r })
 
 	select {
-	case t0 := <-acquired:
-		return t0, lost
+	case <-acquired:
+		return lost
 	case <-time.After(5 * time.Second):
 		t.Fatal("never acquired")
 	}
 
-	return time.Time{}, nil
+	return nil
 }
 
 // TestManagerRetriesAfterHungRenewal (P13 drill K3, F05.3/F05.4): one
@@ -112,7 +112,7 @@ func TestManagerRetriesAfterHungRenewal(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, lost := runHeld(t, m)
+			lost := runHeld(t, m)
 
 			select {
 			case r := <-lost:
@@ -241,7 +241,7 @@ func (a *auditStore) Renew(ctx context.Context, l Lease, ttl time.Duration) erro
 
 	if n%2 == 1 {
 		// Commits now, answers late (after its context ended).
-		err := a.Store.Renew(context.Background(), l, ttl)
+		err := a.Store.Renew(context.WithoutCancel(ctx), l, ttl)
 		if err == nil {
 			a.succeeded(start)
 		}

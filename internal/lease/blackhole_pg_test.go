@@ -35,7 +35,9 @@ type blackholeProxy struct {
 func newBlackholeProxy(t *testing.T, upstream func() (net.Conn, error)) *blackholeProxy {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,6 +152,8 @@ func TestRenewSkipsBlackholedPgBouncer(t *testing.T) {
 
 	kv := pgKV(dsn)
 
+	var dialer net.Dialer
+
 	upstream := func() (net.Conn, error) {
 		host, port := kv["host"], kv["port"]
 		if port == "" {
@@ -157,10 +161,10 @@ func TestRenewSkipsBlackholedPgBouncer(t *testing.T) {
 		}
 
 		if strings.HasPrefix(host, "/") {
-			return net.Dial("unix", filepath.Join(host, ".s.PGSQL."+port))
+			return dialer.DialContext(t.Context(), "unix", filepath.Join(host, ".s.PGSQL."+port))
 		}
 
-		return net.Dial("tcp", net.JoinHostPort(host, port))
+		return dialer.DialContext(t.Context(), "tcp", net.JoinHostPort(host, port))
 	}
 
 	admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
@@ -169,18 +173,21 @@ func TestRenewSkipsBlackholedPgBouncer(t *testing.T) {
 	}
 
 	sch := fmt.Sprintf("lease_bh_%d", time.Now().UnixNano())
-	if err := admin.Exec("CREATE SCHEMA " + sch).Error; err != nil {
+	err = admin.Exec("CREATE SCHEMA " + sch).Error
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	t.Cleanup(func() {
 		_ = admin.Exec("DROP SCHEMA " + sch + " CASCADE").Error
-		if d, err := admin.DB(); err == nil {
+		d, err := admin.DB()
+		if err == nil {
 			_ = d.Close()
 		}
 	})
 
-	if err := admin.Exec("SET search_path = " + sch + "; " + PostgresDDL).Error; err != nil {
+	err = admin.Exec("SET search_path = " + sch + "; " + PostgresDDL).Error
+	if err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 
@@ -214,7 +221,7 @@ func TestRenewSkipsBlackholedPgBouncer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, lost := runHeld(t, m)
+	lost := runHeld(t, m)
 
 	time.Sleep(DefaultConfig.RenewInterval + 500*time.Millisecond) //nolint:forbidigo // one renewal through the first host
 
@@ -223,6 +230,7 @@ func TestRenewSkipsBlackholedPgBouncer(t *testing.T) {
 	}
 
 	first.dropped.Store(true)
+
 	dropAt := time.Now()
 
 	select {
