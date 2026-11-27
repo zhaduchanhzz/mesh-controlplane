@@ -152,6 +152,10 @@ def main():
     errs = read(os.path.join(c, "server-errors.txt"))
     m = re.search(r"server_logs=(\d+)", errs)
     restarts = max(int(m.group(1)) - 2, 0) if m else 0  # start + one planned restart
+    m = re.search(r"lease_lost=(\d+)", errs)
+    lease_lost = int(m.group(1)) if m else 0
+    m = re.search(r"fenced=(\d+)", errs)
+    fenced = int(m.group(1)) if m else 0
 
     rss_frac = rss_peak_kb / mem_kb if mem_kb else None
     checks = {
@@ -177,6 +181,11 @@ def main():
             blocker = "server RAM"
         elif div > 0:
             blocker = "netmap divergence (correctness)"
+        elif lease_lost or fenced:
+            # The process stopped renewing its cluster lease in time (it shares
+            # the data pool before P13b) and fenced itself: writes refused,
+            # sessions retired. Not a netmap limit.
+            blocker = f"cluster lease lost under load (lease_lost={lease_lost}, fenced writes={fenced})"
         elif not checks["divergence_zero"]:
             blocker = "no reconcile ran: divergence unchecked (lengthen HOLD or shorten RECONCILE_INTERVAL)"
         elif load_sat or re.search(r"too many open files|cannot assign requested address|address already in use", err_text):

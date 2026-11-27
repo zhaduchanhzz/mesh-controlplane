@@ -143,7 +143,7 @@ step() {
 	# F5 measures capacity, not the quota: no peer bound for any shape. Since
 	# review fix R2b the bound also refuses policy writes.
 	local maxpeer=${MAX_PEER_ENTRIES:-0}
-	local envs="HS=\$HOME/$RB/bin/headscale CLUSTER_ID=f5-$n CLASS=dedicated MAX_DEVICES=$((n * 2 + 10000)) PG_HOST=${DB_SSH#*@} PG_PORT=$DB_PORT PG_DB=$db PG_USER=headscale PG_PASSFILE=\$HOME/$RB/pg.pass NOISE_KEY=$sd/noise_private.key MAX_PEER_ENTRIES=$maxpeer INCREMENTAL=$INC RECONCILE_INTERVAL=${RECONCILE_INTERVAL:-1m} FULL_MAP_INTERVAL=${FULL_MAP_INTERVAL:-15m}"
+	local envs="HS=\$HOME/$RB/bin/headscale CLUSTER_ID=f5-$n CLASS=dedicated MAX_DEVICES=$((n * 2 + 10000)) PG_HOST=${DB_SSH#*@} PG_PORT=$DB_PORT PG_DB=$db PG_USER=headscale PG_PASSFILE=\$HOME/$RB/pg.pass NOISE_KEY=$sd/noise_private.key MAX_PEER_ENTRIES=$maxpeer INCREMENTAL=$INC RECONCILE_INTERVAL=${RECONCILE_INTERVAL:-1m} FULL_MAP_INTERVAL=${FULL_MAP_INTERVAL:-15m} PG_MAX_OPEN=${PG_MAX_OPEN:-10} LEASE_TTL=${LEASE_TTL:-} LEASE_RENEW=${LEASE_RENEW:-3s} LEASE_MARGIN=${LEASE_MARGIN:-5s}"
 	on "$SERVER" "mkdir -p $sd && chmod 700 $sd && $envs bash ~/$RB/tools/cluster.sh config $sd/active $HOSTNAME_:$port $ip:$port >/dev/null && $envs bash ~/$RB/tools/cluster.sh register $sd/active >/dev/null && $envs bash ~/$RB/tools/cluster.sh start $sd/active active" | tee -a "$cell/server-setup.txt"
 	local t_seed=$SECONDS
 	on "$SERVER" "mkdir -p $sd/seed && ~/$RB/bin/capseed -mode cluster -config $sd/active/config.yaml -cluster-id f5-$n -out $sd/seed -tailnets 1 -devices $n -policy $shape -extra $REGISTER -prefix f5 -seed 7 >$sd/seed/capseed.log 2>&1; rc=\$?; tail -3 $sd/seed/capseed.log; exit \$rc" >>"$cell/server-setup.txt"
@@ -198,7 +198,9 @@ step() {
 	on "$SERVER" "cat $sd/active/samples.csv" >"$cell/server-samples.csv" || true
 	on "$SERVER" "cat $sd/active/metrics-final.txt" >"$cell/metrics-final.txt" 2>/dev/null || true
 	on "$SERVER" "grep -h -E 'divergence|^# T' $sd/active/metrics.log" >"$cell/metrics-divergence.txt" 2>/dev/null || true
-	on "$SERVER" "echo server_logs=\$(ls $sd/active/server-*.log | wc -l); grep -iE 'panic|fatal|out of memory' $sd/active/server.log | head -5" >"$cell/server-errors.txt" 2>/dev/null || true
+	on "$SERVER" "echo server_logs=\$(ls $sd/active/server-*.log | wc -l); echo lease_lost=\$(cat $sd/active/server-*.log | grep -c 'cluster standby: not serving'); echo fenced=\$(cat $sd/active/server-*.log | grep -c 'ownership fence failed'); grep -iE 'panic|fatal|out of memory' $sd/active/server.log | head -5" >"$cell/server-errors.txt" 2>/dev/null || true
+	# Warn/error lines of the server, counted by message, ids and keys cut.
+	on "$SERVER" "cat $sd/active/server-*.log | grep -E ' (WRN|ERR|FTL) ' | sed -E 's/^[^ ]+ //; s/[0-9a-f]{12,}/X/g; s/(mkey|nodekey|discokey|privkey|tskey)[:-][^ \"]+/\1:X/g; s/[0-9]+(\.[0-9]+)?(ns|µs|ms|s)\b/N\2/g; s/=[0-9]+/=N/g' | cut -c1-240 | sort | uniq -c | sort -rn | head -40" >"$cell/server-log-summary.txt" 2>/dev/null || true
 	on "$SERVER" "sudo dmesg --time-format iso | grep -iE 'out of memory|oom-kill|killed process' | tail -5" >"$cell/dmesg-oom.txt" 2>/dev/null || true
 	on "$SERVER" "awk '/^MemTotal/{print \$2}' /proc/meminfo; nproc" >"$cell/server-vm.txt"
 	k=0

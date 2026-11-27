@@ -21,6 +21,7 @@
 #   NOISE_KEY     Noise private key path, shared by active and standby (default RUNDIR/../noise_private.key)
 #   MAX_PEER_ENTRIES (default 1000000), INCREMENTAL=1|0 (+RECONCILE_INTERVAL, FULL_MAP_INTERVAL; 0 writes enabled: false)
 #   PG_MAX_OPEN   database.postgres.max_open_conns (default 10, as production)
+#   LEASE_TTL (+LEASE_RENEW 3s, LEASE_ACQUIRE 1s, LEASE_MARGIN 5s)  tuning.cluster_lease; unset = product defaults
 #   GOMAXPROCS    default: all CPUs of the host
 #   HEADSCALE_BENCH_MUTEX_FRACTION / HEADSCALE_BENCH_BLOCK_RATE  passed through (benchpprof builds)
 #
@@ -126,6 +127,17 @@ EOF
 		cat >>"$cfg" <<EOF
   incremental_netmap:
     enabled: false
+EOF
+	fi
+	# Lease timing (tuning.cluster_lease), only when asked: otherwise the
+	# product defaults (ttl 10s, renew 3s, acquire 1s, margin 2s).
+	if [ -n "${LEASE_TTL:-}" ]; then
+		cat >>"$cfg" <<EOF
+  cluster_lease:
+    ttl: ${LEASE_TTL}
+    renew_interval: ${LEASE_RENEW:-3s}
+    acquire_interval: ${LEASE_ACQUIRE:-1s}
+    safety_margin: ${LEASE_MARGIN:-5s}
 EOF
 	fi
 	echo "config $cfg (server_url http://$hostport, listen $listen, metrics ${METRICS:-127.0.0.1:9090})"
