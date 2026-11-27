@@ -95,3 +95,16 @@ Cho các full map ở D3 (nhất là bão kết nối lại sau failover/restart
 - N1 E2E: mặc định chạy ON; lượt OFF giữ để kiểm công tắc khẩn cấp.
 - P14 (dung lượng): netmap delta-first là tối ưu chính; quota/SLO tính trên ON.
 - Rủi ro chính: bỏ sót một phần của MapResponse khi chỉ gửi diff (client giữ trạng thái cũ). M07 là cổng chặn; thiếu M07 xanh thì không bật pha tương ứng.
+
+## Kết quả kiểm chứng (2026-11-27)
+
+| Hạng mục | Kết quả | Nguồn |
+|---|---|---|
+| M07/M08 (oracle replay hai tailnet, chạy dài và race, cả ON và OFF) | Đạt | `evidence/P14f-f3.md`, `P14f-f4.md`, `P14f-review.md` |
+| Review bảo mật độc lập | Không có BLOCKER. R1–R8 đã sửa có RED→GREEN | `evidence/P14f-review.md` |
+| N1 client thật, binary cuối | ON 1.104.7 / 1.84.3 đạt mọi case cô lập; OFF 43/43; P12b 13/13 | `evidence/P14f-f6.md` |
+| M06 mở rộng (M06x, chỉ qua đường delta) | Chậm nhất 3,8 s, ngưỡng 10 s | như trên |
+| Soak (interval 60 s / 15 m) | 90 vòng: divergence 0 qua 80 lần đối chiếu. Lượt ≥ 2 h đang chạy | như trên |
+| M09 | Byte gửi ở 5k: isolated ít hơn 14 lần, personal_devices 24 lần, shared_service 31 lần. `allow_all` ON đạt ở 1k–2k, nơi OFF trượt | `evidence/P14f-f5.md` §2 |
+
+**Interval mặc định giữ nguyên** (`reconcile_interval` 60 s, `full_map_interval` 15 m). Đối chiếu tốn dưới 0,1 s mỗi lần ở 5k với policy không full mesh, và khoảng 3,9 s với `allow_all` 5k (`evidence/P14f-f5.md` §4).

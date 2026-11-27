@@ -74,3 +74,29 @@ PgBouncer là điểm lỗi chung mới cho mọi cluster. Yêu cầu:
 1. **Không pooler, chỉ giới hạn pool Go.** Đơn giản nhất. Bị loại vì số kết nối vẫn tăng tuyến tính theo số process và standby, và không có điểm hàng đợi chung.
 2. **Pooler phía ứng dụng** (pgxpool dùng chung) — không áp dụng được vì các process là OS process riêng.
 3. **Pgpool-II / Odyssey / pgcat.** Không có số đo; PgBouncer là lựa chọn phổ biến và đủ cho yêu cầu. Có thể xem lại nếu P14 cho thấy PgBouncer (single-threaded) là nút thắt.
+
+## Cập nhật 2026-11-27 (P14f F5): pool lease riêng đã có trong code
+
+**Phát hiện.** Đo F5 xác nhận rủi ro ở §3.6 bằng số liệu thật:
+- Khi một tailnet `allow_all` có 5.000 thiết bị đăng ký cùng lúc, các transaction đăng ký xếp hàng qua advisory lock `placement/quota/<tailnet>` và giữ hết 10 kết nối của pool dữ liệu.
+- Gia hạn lease dùng chung pool này, không lấy được kết nối trong 8 s, nên process tự fence.
+
+Phân tích và số đo: `evidence/P14f-f5.md` §3.
+
+**Đã làm trong P14f** (chủ dự án duyệt, 2026-11-27):
+- **Pool lease riêng** (port tối thiểu của P13b `4556c82`):
+  - `database.postgres.lease_name`: alias PgBouncer có pool nhỏ của riêng nó;
+  - `lease_max_open_conns`, mặc định 2.
+- Lease, cùng lượt hỏi lease của standby, chạy trên pool này. Fence vẫn kiểm lease trong transaction của chính nó, trên pool dữ liệu.
+- Kết quả: hết mất lease dưới bão đăng ký (`lease_lost=0`, `fenced=0`).
+- **Pool dữ liệu mặc định 100** (trước là 10; `max_idle_conns` 10). Giá trị < 1 (không giới hạn trong `database/sql`) bị validate từ chối.
+  - Sau PgBouncer, giới hạn thật là pool của PgBouncer cho database/alias đó.
+  - Nếu chạy thẳng vào PostgreSQL, tổng `max_open_conns` của mọi process phải nhỏ hơn `max_connections`.
+
+**Chưa làm, thuộc P13:**
+- alias lease theo cluster (D9b, `mesh_cN_lease`);
+- timeout và retry cho mỗi lần gia hạn (`9f752f1`);
+- self-check pooler trên alias lease (`0772366`);
+- HA PgBouncer.
+
+Thiếu alias riêng thì pool lease vẫn chung kết nối server của PgBouncer với dữ liệu. Vì vậy alias theo cluster là **bắt buộc trước production**.
