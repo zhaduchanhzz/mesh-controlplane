@@ -1975,19 +1975,19 @@ Caps open connections to the database. Behind PgBouncer (transaction mode) the p
     ```yaml
     database:
       postgres:
-        max_open_conns: 100
+        max_open_conns: 50
     ```
 
 === "Environment"
 
     ```shell
-    export HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS=100
+    export HEADSCALE_DATABASE_POSTGRES_MAX_OPEN_CONNS=50
     ```
 
 === "NixOS"
 
     ```nix
-    services.headscale.settings.database.postgres.max_open_conns = 100;
+    services.headscale.settings.database.postgres.max_open_conns = 50;
     ```
 
 #### `database.postgres.max_idle_conns` { #database.postgres.max_idle_conns data-toc-label="max_idle_conns" }

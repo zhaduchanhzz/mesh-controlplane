@@ -610,7 +610,7 @@ in
         description = ''
           Caps open connections to the database. Behind PgBouncer (transaction mode) the pooler's pool for this database is the real bound; directly on PostgreSQL, the sum over processes must stay below max_connections. Never unbounded (0): one tailnet's join burst could then take every connection of a shared server.
         '';
-        example = 100;
+        example = 50;
       };
       max_idle_conns = lib.mkOption {
         type = lib.types.int;
