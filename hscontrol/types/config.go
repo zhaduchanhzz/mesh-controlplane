@@ -587,6 +587,8 @@ type PostgresConfig struct {
 	// `database.postgres.name`, still on a pool of its own. That pool
 	// connects with `database.postgres.connect_timeout_secs`, at most
 	// 1 second, so a renewal can skip a dead host within one attempt.
+	// Behind PgBouncer an empty name shares the data pool's server
+	// connections, so set an alias there.
 	LeaseName string `example:"\"mesh_c1_lease\"" koanf:"lease_name"`
 
 	// LeaseMaxOpenConnections caps the open connections of the lease
