@@ -181,7 +181,7 @@ def main():
             blocker = "server RAM"
         elif div > 0:
             blocker = "netmap divergence (correctness)"
-        elif lease_lost or fenced:
+        elif lease_lost:  # fenced writes after a planned shutdown are normal
             # The process stopped renewing its cluster lease in time (it shares
             # the data pool before P13b) and fenced itself: writes refused,
             # sessions retired. Not a netmap limit.

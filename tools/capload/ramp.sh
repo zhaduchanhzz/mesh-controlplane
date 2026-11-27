@@ -198,7 +198,7 @@ step() {
 	on "$SERVER" "cat $sd/active/samples.csv" >"$cell/server-samples.csv" || true
 	on "$SERVER" "cat $sd/active/metrics-final.txt" >"$cell/metrics-final.txt" 2>/dev/null || true
 	on "$SERVER" "grep -h -E 'divergence|^# T' $sd/active/metrics.log" >"$cell/metrics-divergence.txt" 2>/dev/null || true
-	on "$SERVER" "echo server_logs=\$(ls $sd/active/server-*.log | wc -l); echo lease_lost=\$(cat $sd/active/server-*.log | grep -c 'cluster standby: not serving'); echo fenced=\$(cat $sd/active/server-*.log | grep -c 'ownership fence failed'); grep -iE 'panic|fatal|out of memory' $sd/active/server.log | head -5" >"$cell/server-errors.txt" 2>/dev/null || true
+	on "$SERVER" "echo server_logs=\$(ls $sd/active/server-*.log | wc -l); echo lease_lost=\$(cat $sd/active/server-*.log | grep 'cluster standby: not serving' | grep -vc 'reason=shutdown'); echo fenced=\$(cat $sd/active/server-*.log | grep -c 'ownership fence failed'); grep -iE 'panic|fatal|out of memory' $sd/active/server.log | head -5" >"$cell/server-errors.txt" 2>/dev/null || true
 	# Warn/error lines of the server, counted by message, ids and keys cut.
 	on "$SERVER" "cat $sd/active/server-*.log | grep -E ' (WRN|ERR|FTL) ' | sed -E 's/^[^ ]+ //; s/[0-9a-f]{12,}/X/g; s/(mkey|nodekey|discokey|privkey|tskey)[:-][^ \"]+/\1:X/g; s/[0-9]+(\.[0-9]+)?(ns|µs|ms|s)\b/N\2/g; s/=[0-9]+/=N/g' | cut -c1-240 | sort | uniq -c | sort -rn | head -40" >"$cell/server-log-summary.txt" 2>/dev/null || true
 	on "$SERVER" "sudo dmesg --time-format iso | grep -iE 'out of memory|oom-kill|killed process' | tail -5" >"$cell/dmesg-oom.txt" 2>/dev/null || true
