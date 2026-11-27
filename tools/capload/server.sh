@@ -9,6 +9,8 @@
 #                                        snapshot's db) + 1 s RSS/CPU sampler
 #   server.sh setup RUNDIR USERS         create users + reusable keys -> RUNDIR/keys.txt (0600)
 #   server.sh stop  RUNDIR               scrape metrics, stop, summarise samples
+#   server.sh cluster-<sub> RUNDIR …     P14a cluster mode (PostgreSQL via
+#                                        PgBouncer, active/standby): cluster.sh <sub>
 #
 # POLICY is allow_all | isolated | personal_devices (TestScale's policies).
 # INCREMENTAL=1 (with RECONCILE_INTERVAL, FULL_MAP_INTERVAL) turns on
@@ -18,9 +20,14 @@
 # and are never printed.
 set -euo pipefail
 
-HS=${HS:-$HOME/p00c/bin/headscale}
 cmd=$1
 dir=$2
+
+case $cmd in
+cluster-*) exec bash "$(dirname "$0")/cluster.sh" "${cmd#cluster-}" "$dir" "${@:3}" ;;
+esac
+
+HS=${HS:-$HOME/p00c/bin/headscale}
 
 policy_json() {
 	case $1 in
