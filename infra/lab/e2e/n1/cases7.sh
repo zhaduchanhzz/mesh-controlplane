@@ -189,6 +189,7 @@ m06x_fail() { local f=${p#"$ps"}; record "$1" FAIL "${f#; }"; }
 
 t_m06x() {
   local p="" ps
+  M06X_SOAK_T0=$SECONDS
   M06X_A="" M06X_B="" M06X_C="" M06X_D=""
   m06x_setup
   if [ -z "$p" ]; then
@@ -202,4 +203,28 @@ t_m06x() {
   p=""; m06x_undo
   [ -z "$p" ] && record M06x.0 PASS "setup and undo: extra node deleted, a2 restored, A's policy restored (If-Match), API keys revoked; B unaffected and refused (404) on A's device" \
     || record M06x.0 FAIL "${p#; }"
+  [ "${SOAK:-0}" = 1 ] && m06x_soak_verdict
+  return 0
+}
+
+# Soak (P14f F6, SOAK=1): t_m06x with many rounds (M06X_ROUNDS) and the
+# production intervals (N1_RECONCILE_INTERVAL=60s, N1_FULL_MAP_INTERVAL=15m),
+# so the background reconcile and the periodic full maps run during the churn.
+# Verdict: every round within its bound (M06x.a-d) and, summed over the c1
+# processes, netmap divergence 0 after at least one reconcile (the counter
+# has labels: no series means 0).
+m06x_soak_verdict() {
+  local n out div=0 rec=0 d r
+  for n in $(nodesof c1); do
+    out=$(on "$n" "curl -s -m 3 http://127.0.0.1:9095/metrics" 2>/dev/null) || continue
+    d=$(awk '/^headscale_nodestore_netmap_divergence_total/ {s+=$2} END {printf "%d", s}' <<<"$out")
+    r=$(awk '/^headscale_nodestore_netmap_reconcile_duration_seconds_count/ {s+=$2} END {printf "%d", s}' <<<"$out")
+    div=$((div + d)) rec=$((rec + r))
+    printf 'SOAK %s %s divergence=%s reconciles=%s\n' "$V" "$n" "$d" "$r" >>"$ART_DIR/timings.txt"
+  done
+  if [ "$div" -eq 0 ] && [ "$rec" -ge 1 ]; then
+    record M06x.soak PASS "soak ($V, netmap $MODE, reconcile ${N1_RECONCILE_INTERVAL:-1h}, full map ${N1_FULL_MAP_INTERVAL:-1h}): ${M06X_ROUNDS} rounds of tag/route/setACL/delete+join via A's API in $((SECONDS - M06X_SOAK_T0)) s, every change <= ${M06X_BOUND}s; c1 netmap divergence 0 over $rec reconciles"
+  else
+    record M06x.soak FAIL "divergence=$div reconciles=$rec (need 0 and >= 1)"
+  fi
 }
