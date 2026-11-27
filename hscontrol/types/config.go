@@ -1028,7 +1028,8 @@ type Tuning struct {
 	// MaxPeerEntries bounds the peer relationships of a tailnet: the sum,
 	// over its nodes, of the peers each node is sent. A new node is refused
 	// while the tailnet is at the bound. 1000000 is a full mesh of 1000
-	// nodes; 0 means no bound. Policy changes are not refused.
+	// nodes; 0 means no bound. A policy write that would take the tailnet
+	// past the bound, and above its current count, is refused and not stored.
 	MaxPeerEntries int64 `example:"4000000" koanf:"max_peer_entries"`
 
 	// TenantDNS bounds the DNS settings each tailnet may store in cluster
